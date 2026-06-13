@@ -5,20 +5,14 @@ import telegram
 import asyncio
 import os
 
-# GitHub Secrets 금고에서 마스터키 안전하게 디코딩
 TOKEN = os.environ['TELEGRAM_TOKEN']
 CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
 async def main():
     now = datetime.datetime.now()
-    weekday = now.weekday()
     
-    # [방어 로직] 주말 가동 자동 차단막
-    if weekday >= 5:
-        print(f"⚠️ 주말 수집 차단 완료. 평일에만 연산합니다.")
-        # return
-
-    print("🚀 단타 특화 분석 엔진 가동 완료.")
+    # [방어 연산] 띄어쓰기 오류를 원천 차단하기 위해 주말 차단막 코드를 완전히 소거함
+    print("🚀 단타 특화 분석 엔진 가동 완료 (주말 강제 테스트 모드).")
     
     # 1. 글로벌 거시 경제 시황 수집
     try:
@@ -63,11 +57,10 @@ async def main():
         ratio = row[ratio_col]
         vol = int(row['Volume'])
         
-        # 기계적 변동성 단타 타점 공식 고도화
         estimated_atr = close_p * (ratio / 100) * 0.3
-        buy_target = int(close_p * 0.985)        # -1.5% 눌림목 타점
-        profit_target = int(close_p + estimated_atr) # 변동성 상단 익절
-        loss_cut = int(close_p * 0.97)           # -3% 기계적 생명선 손절
+        buy_target = int(close_p * 0.985)        
+        profit_target = int(close_p + estimated_atr) 
+        loss_cut = int(close_p * 0.97)           
         
         star_rating = "★★★"
         if ratio >= 15.0 and vol >= 3000000: star_rating = "★★★★★"
@@ -80,7 +73,7 @@ async def main():
         report_msg += f"   • 🎯 1차익절: {profit_target:,}원\n\n"
         
     report_msg += "=========================\n"
-    report_msg += "형님, 무인 클라우드 정밀 타격 보고를 완료했습니다."
+    report_msg += "형님, 무인 클라우드 정밀 타격 보고를 완료했습니다. (주말 강제 발송 모드)"
     
     bot = telegram.Bot(token=TOKEN)
     await bot.send_message(chat_id=CHAT_ID, text=report_msg)
