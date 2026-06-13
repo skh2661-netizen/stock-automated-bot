@@ -20,7 +20,7 @@ async def main():
         print("⚠️ 주말 휴장일 차단막 가동.")
         return
 
-    # 한국거래소 전 종목 수집
+    # [1. 얌체 정찰] 1초 만에 가볍게 전체 데이터 스캔
     krx_df = fdr.StockListing('KRX')
     ratio_col = 'ChangesRatio' if 'ChangesRatio' in krx_df.columns else 'Change'
     krx_df['Amount'] = krx_df['Close'] * krx_df['Volume']
@@ -28,46 +28,65 @@ async def main():
     safe_target = ~krx_df['Name'].str.contains('스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호', regex=True)
     krx_df = krx_df[safe_target].copy()
 
-    # 기본 필터링 (2천원 이상, 상승률 5~25%, 거래량 100만 이상)
-    cond = (krx_df['Close'] >= 2000) & (krx_df[ratio_col] >= 5.0) & (krx_df[ratio_col] <= 25.0) & (krx_df['Volume'] >= 1000000)
-    top_10 = krx_df[cond].sort_values(by='Amount', ascending=False).head(10)
+    # [2. 썩은 사과 버리기] 고점 대비 7% 이하로 밀린(설거지 아닌) 종목만 살림
+    krx_df['Upper_Shadow'] = (krx_df['High'] - krx_df['Close']) / krx_df['Close'] * 100
+    cond = (krx_df['Close'] >= 2000) & (krx_df[ratio_col] >= 5.0) & (krx_df[ratio_col] <= 25.0) & \
+           (krx_df['Volume'] >= 1000000) & (krx_df['Upper_Shadow'] <= 7.0)
+           
+    filtered_df = krx_df[cond].sort_values(by='Amount', ascending=False)
 
-    # [시간대별 3방향 리포트 분기 연산]
+    # [3. 편식 방지] 업종(Sector) 쏠림 방지. 같은 업종은 최대 2개까지만 바구니에 담음
+    final_top_10 = []
+    sector_counts = {}
+    for idx, row in filtered_df.iterrows():
+        sector = str(row.get('Sector', '기타'))
+        if sector == 'nan' or sector == 'None': sector = '기타 테마'
+        
+        count = sector_counts.get(sector, 0)
+        if count < 2:
+            final_top_10.append(row)
+            sector_counts[sector] = count + 1
+        if len(final_top_10) == 10:
+            break
+            
+    top_10_df = pd.DataFrame(final_top_10)
+
+    # 시간에 따른 보고 포맷
     if hour == 8:
         title_mode = "☀️ [08:50 시초가 돌파 타격 지시]"
-        desc = "당일 아침 강한 수급 쏠림 시 즉각 추격 매수 대기"
     elif hour == 15 and minute < 30:
-        title_mode = "⚠️ [15:00 종가 베팅 정찰 (수동 검열)]"
-        desc = "지연 데이터 혼재 구간. 반드시 MTS 육안 확인 후 진입할 것"
+        title_mode = "⚠️ [15:00 종가 베팅 정찰 (서버 우회 및 육안 검열)]"
     else:
         title_mode = "🌙 [15:40 당일 완결 복기 리포트]"
-        desc = "금일 주도주 최종 정산 및 내일장 관심 종목"
 
     report_msg = f"{title_mode}\n"
     report_msg += f"기준: {now.strftime('%m/%d %H:%M')}\n"
-    report_msg += f"전술: {desc}\n"
     report_msg += "=========================\n\n"
     
-    for idx, row in top_10.iterrows():
-        close_p = int(row['Close'])
-        ratio = row[ratio_col]
-        vol = int(row['Volume'])
-        
-        report_msg += f"📈 [{row['Name']}] ({ratio}%)\n"
-        report_msg += f"   • 현재가: {close_p:,}원\n"
-        
-        # 15시 정찰 전용 추가 세부 지표
-        if hour == 15 and minute < 30:
-            report_msg += f"   • 🔍 [육안 검열 지표]\n"
-            report_msg += f"     - 거래량: {vol:,}주 터짐\n"
-            report_msg += f"     - 지휘관 확인 요망: 현재 차트상 윗꼬리가 길게 달렸다면 즉시 매수 포기할 것.\n\n"
-        elif hour == 8:
-            report_msg += f"   • 🎯 돌파진입: 아침 시가 대비 +2% 돌파 시 추격\n\n"
-        else:
-            report_msg += f"   • 💰 거래대금: 최상위권 유지 마감\n\n"
+    if top_10_df.empty:
+        report_msg += "조건을 만족하는 방어 대상 종목이 없습니다.\n"
+    else:
+        for idx, row in top_10_df.iterrows():
+            close_p = int(row['Close'])
+            ratio = round(row[ratio_col], 2)
+            upper_s = round(row['Upper_Shadow'], 1)
+            sector_name = str(row.get('Sector', '기타 테마'))
+            
+            # [4. 자동 브레이크] 종목의 위아래 흔들림(변동성)을 계산하여 시드머니 투입 비중 조절
+            volatility = (row['High'] - row['Low']) / row['Close'] * 100
+            if volatility >= 15.0:
+                weight = "3% (초고위험)"
+            elif volatility >= 10.0:
+                weight = "5% (고위험)"
+            else:
+                weight = "10% (표준 안전)"
+            
+            report_msg += f"📈 [{row['Name']}] ({ratio}%) - {sector_name}\n"
+            report_msg += f"   • 현재가: {close_p:,}원 (고점대비 -{upper_s}% 밀림)\n"
+            report_msg += f"   • 🛡️ 진입비중: 시드머니의 {weight}\n\n"
         
     report_msg += "=========================\n"
-    report_msg += "형님, 명령하신 시간대별 전술 타격 보고를 완료했습니다."
+    report_msg += "형님, V8 철벽 방어 엔진 기반 전술 보고를 완료했습니다."
     
     bot = telegram.Bot(token=TOKEN)
     await bot.send_message(chat_id=CHAT_ID, text=report_msg)
