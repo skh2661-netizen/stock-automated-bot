@@ -2,7 +2,7 @@ name: Automated Stock Bot
 
 on:
   schedule:
-    - cron: '45 6 * * 1-5'  # UTC 06:45 = 한국시간 월~금 오후 15:45 타격 보정 완료
+    - cron: '45 6 * * 1-5'  # UTC 06:45 = 한국시간 월~금 오후 15:45 타격
   workflow_dispatch:        # 수동 강제 테스트 버튼 활성화
 
 jobs:
@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: 저장소 코드 체크아웃
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: 파이썬 가상 컴퓨터 세팅
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
 
