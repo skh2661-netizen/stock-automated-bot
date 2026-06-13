@@ -5,14 +5,20 @@ import telegram
 import asyncio
 import os
 
+# GitHub Secrets 금고에서 마스터키 안전하게 디코딩
 TOKEN = os.environ['TELEGRAM_TOKEN']
 CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
 async def main():
     now = datetime.datetime.now()
+    weekday = now.weekday()
     
-    # [방어 연산] 띄어쓰기 오류를 원천 차단하기 위해 주말 차단막 코드를 완전히 소거함
-    print("🚀 단타 특화 분석 엔진 가동 완료 (주말 강제 테스트 모드).")
+    # [실전 방어 연산] 주말 가동 2중 차단막 복구
+    if weekday >= 5:
+        print("⚠️ 주말 휴장일입니다. 실전 연산을 중단합니다.")
+        return
+
+    print("🚀 [실전 가동] 단타 특화 분석 엔진 점화 완료.")
     
     # 1. 글로벌 거시 경제 시황 수집
     try:
@@ -43,10 +49,10 @@ async def main():
     filtered_df = krx_df[cond_price & cond_ratio & cond_vol].copy()
     top_10 = filtered_df.sort_values(by='Amount', ascending=False).head(10)
     
-    # 5. 모바일 전용 초정밀 리포트 작성
-    report_msg = f"🎯 [무인 요새 단타 리포트 - {now.strftime('%m/%d')}]\n"
+    # 5. 모바일 전용 초정밀 리포트 작성 (실전용 포맷)
+    report_msg = f"🎯 [실전 단타 타점 보고서 - {now.strftime('%m/%d')}]\n"
     report_msg += "=========================\n"
-    report_msg += "🌐 [거시 시황]\n"
+    report_msg += "🌐 [글로벌 & 국내 시황]\n"
     report_msg += f"🇺🇸 나스닥(전일): {n_change}%\n"
     report_msg += f"🇰🇷 코스피(당일): {k_change}%\n"
     report_msg += f"🇰🇷 코스닥(당일): {kq_change}%\n"
@@ -57,14 +63,15 @@ async def main():
         ratio = row[ratio_col]
         vol = int(row['Volume'])
         
+        # 단타용 타이트한 타점 공식
         estimated_atr = close_p * (ratio / 100) * 0.3
         buy_target = int(close_p * 0.985)        
         profit_target = int(close_p + estimated_atr) 
         loss_cut = int(close_p * 0.97)           
         
         star_rating = "★★★"
-        if ratio >= 15.0 and vol >= 3000000: star_rating = "★★★★★"
-        elif ratio >= 10.0 or vol >= 2000000: star_rating = "★★★★"
+        if ratio >= 15.0 and vol >= 3000000: star_rating = "★★★★★ (강력)"
+        elif ratio >= 10.0 or vol >= 2000000: star_rating = "★★★★ (우수)"
             
         report_msg += f"📈 [{row['Name']}] 매력도: {star_rating}\n"
         report_msg += f"   • 현재종가: {close_p:,}원 ({ratio}%)\n"
@@ -73,7 +80,7 @@ async def main():
         report_msg += f"   • 🎯 1차익절: {profit_target:,}원\n\n"
         
     report_msg += "=========================\n"
-    report_msg += "형님, 무인 클라우드 정밀 타격 보고를 완료했습니다. (주말 강제 발송 모드)"
+    report_msg += "형님, 금일장 타점 보고를 완료했습니다."
     
     bot = telegram.Bot(token=TOKEN)
     await bot.send_message(chat_id=CHAT_ID, text=report_msg)
