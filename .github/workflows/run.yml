@@ -1,0 +1,29 @@
+name: Automated Stock Bot
+
+on:
+  schedule:
+    - cron: '45 6 * * 1-5'  # UTC 06:45 = 한국시간 월~금 오후 15:45 타격 보정 완료
+  workflow_dispatch:        # 수동 강제 테스트 버튼 활성화
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 저장소 코드 체크아웃
+      uses: actions/checkout@v3
+
+    - name: 파이썬 가상 컴퓨터 세팅
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: 필수 장비 일괄 기습 장착
+      run: |
+        pip install finance-datareader python-telegram-bot pandas
+
+    - name: 단타 분석 엔진 원격 점화
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python main.py
