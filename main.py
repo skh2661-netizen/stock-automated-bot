@@ -16,7 +16,7 @@ async def main():
     # [방어 로직] 주말 가동 자동 차단막
     if weekday >= 5:
         print(f"⚠️ 주말 수집 차단 완료. 평일에만 연산합니다.")
-        return
+        # return
 
     print("🚀 단타 특화 분석 엔진 가동 완료.")
     
