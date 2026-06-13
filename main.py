@@ -1,61 +1,51 @@
 import FinanceDataReader as fdr
 import pandas as pd
 import datetime
+import pytz
 import telegram
 import asyncio
 import os
 
-# GitHub Secrets 금고에서 마스터키 안전하게 디코딩
 TOKEN = os.environ['TELEGRAM_TOKEN']
 CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 
 async def main():
-    now = datetime.datetime.now()
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.datetime.now(kst)
     weekday = now.weekday()
+    hour = now.hour
+    minute = now.minute
     
-    # [실전 방어 연산] 주말 가동 2중 차단막 복구
     if weekday >= 5:
-        print("⚠️ 주말 휴장일입니다. 실전 연산을 중단합니다.")
+        print("⚠️ 주말 휴장일 차단막 가동.")
         return
 
-    print("🚀 [실전 가동] 단타 특화 분석 엔진 점화 완료.")
-    
-    # 1. 글로벌 거시 경제 시황 수집
-    try:
-        kospi_df = fdr.DataReader('KS11', (now - datetime.timedelta(days=5)).strftime('%Y-%m-%d'))
-        kosdaq_df = fdr.DataReader('KQ11', (now - datetime.timedelta(days=5)).strftime('%Y-%m-%d'))
-        ndx_df = fdr.DataReader('IXIC', (now - datetime.timedelta(days=5)).strftime('%Y-%m-%d'))
-        
-        k_change = round(kospi_df['Change'].iloc[-1] * 100, 2)
-        kq_change = round(kosdaq_df['Change'].iloc[-1] * 100, 2)
-        n_change = round(ndx_df['Change'].iloc[-1] * 100, 2)
-    except:
-        k_change, kq_change, n_change = 0.0, 0.0, 0.0
-
-    # 2. 한국거래소(KRX) 전 종목 수집 및 거래대금 산출
+    # 한국거래소 전 종목 수집
     krx_df = fdr.StockListing('KRX')
-    ratio_col = 'ChangesRatio' if 'ChangesRatio' in krx_df.columns else ('ChagesRatio' if 'ChagesRatio' in krx_df.columns else 'Change')
+    ratio_col = 'ChangesRatio' if 'ChangesRatio' in krx_df.columns else 'Change'
     krx_df['Amount'] = krx_df['Close'] * krx_df['Volume']
     
-    # 3. [위험군 필터링] 스팩, ETF, ETN, 우선주 원천 제거
     safe_target = ~krx_df['Name'].str.contains('스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호', regex=True)
     krx_df = krx_df[safe_target].copy()
 
-    # 4. [단타 수급 조건] 종가 2,000원 이상, 당일 상승률 5%~25%, 거래량 100만 주 이상
-    cond_price = krx_df['Close'] >= 2000
-    cond_ratio = (krx_df[ratio_col] >= 5.0) & (krx_df[ratio_col] <= 25.0)
-    cond_vol = krx_df['Volume'] >= 1000000
-    
-    filtered_df = krx_df[cond_price & cond_ratio & cond_vol].copy()
-    top_10 = filtered_df.sort_values(by='Amount', ascending=False).head(10)
-    
-    # 5. 모바일 전용 초정밀 리포트 작성 (실전용 포맷)
-    report_msg = f"🎯 [실전 단타 타점 보고서 - {now.strftime('%m/%d')}]\n"
-    report_msg += "=========================\n"
-    report_msg += "🌐 [글로벌 & 국내 시황]\n"
-    report_msg += f"🇺🇸 나스닥(전일): {n_change}%\n"
-    report_msg += f"🇰🇷 코스피(당일): {k_change}%\n"
-    report_msg += f"🇰🇷 코스닥(당일): {kq_change}%\n"
+    # 기본 필터링 (2천원 이상, 상승률 5~25%, 거래량 100만 이상)
+    cond = (krx_df['Close'] >= 2000) & (krx_df[ratio_col] >= 5.0) & (krx_df[ratio_col] <= 25.0) & (krx_df['Volume'] >= 1000000)
+    top_10 = krx_df[cond].sort_values(by='Amount', ascending=False).head(10)
+
+    # [시간대별 3방향 리포트 분기 연산]
+    if hour == 8:
+        title_mode = "☀️ [08:50 시초가 돌파 타격 지시]"
+        desc = "당일 아침 강한 수급 쏠림 시 즉각 추격 매수 대기"
+    elif hour == 15 and minute < 30:
+        title_mode = "⚠️ [15:00 종가 베팅 정찰 (수동 검열)]"
+        desc = "지연 데이터 혼재 구간. 반드시 MTS 육안 확인 후 진입할 것"
+    else:
+        title_mode = "🌙 [15:40 당일 완결 복기 리포트]"
+        desc = "금일 주도주 최종 정산 및 내일장 관심 종목"
+
+    report_msg = f"{title_mode}\n"
+    report_msg += f"기준: {now.strftime('%m/%d %H:%M')}\n"
+    report_msg += f"전술: {desc}\n"
     report_msg += "=========================\n\n"
     
     for idx, row in top_10.iterrows():
@@ -63,24 +53,21 @@ async def main():
         ratio = row[ratio_col]
         vol = int(row['Volume'])
         
-        # 단타용 타이트한 타점 공식
-        estimated_atr = close_p * (ratio / 100) * 0.3
-        buy_target = int(close_p * 0.985)        
-        profit_target = int(close_p + estimated_atr) 
-        loss_cut = int(close_p * 0.97)           
+        report_msg += f"📈 [{row['Name']}] ({ratio}%)\n"
+        report_msg += f"   • 현재가: {close_p:,}원\n"
         
-        star_rating = "★★★"
-        if ratio >= 15.0 and vol >= 3000000: star_rating = "★★★★★ (강력)"
-        elif ratio >= 10.0 or vol >= 2000000: star_rating = "★★★★ (우수)"
-            
-        report_msg += f"📈 [{row['Name']}] 매력도: {star_rating}\n"
-        report_msg += f"   • 현재종가: {close_p:,}원 ({ratio}%)\n"
-        report_msg += f"   • 🛒 단타매수: {buy_target:,}원 부근\n"
-        report_msg += f"   • 🛑 칼손절선: {loss_cut:,}원 엄수\n"
-        report_msg += f"   • 🎯 1차익절: {profit_target:,}원\n\n"
+        # 15시 정찰 전용 추가 세부 지표
+        if hour == 15 and minute < 30:
+            report_msg += f"   • 🔍 [육안 검열 지표]\n"
+            report_msg += f"     - 거래량: {vol:,}주 터짐\n"
+            report_msg += f"     - 지휘관 확인 요망: 현재 차트상 윗꼬리가 길게 달렸다면 즉시 매수 포기할 것.\n\n"
+        elif hour == 8:
+            report_msg += f"   • 🎯 돌파진입: 아침 시가 대비 +2% 돌파 시 추격\n\n"
+        else:
+            report_msg += f"   • 💰 거래대금: 최상위권 유지 마감\n\n"
         
     report_msg += "=========================\n"
-    report_msg += "형님, 금일장 타점 보고를 완료했습니다."
+    report_msg += "형님, 명령하신 시간대별 전술 타격 보고를 완료했습니다."
     
     bot = telegram.Bot(token=TOKEN)
     await bot.send_message(chat_id=CHAT_ID, text=report_msg)
