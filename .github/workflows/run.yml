@@ -1,26 +1,28 @@
-name: Automated Stock Bot
-
+name: V8.4 Quant Stock Engine
+permissions: {contents: write}
 on:
   schedule:
-    - cron: '50 23 * * 0-4'  # KST 08:50 (전일 23:50 UTC) - 아침 돌파
-    - cron: '0 6 * * 1-5'    # KST 15:00 (06:00 UTC) - 종가 베팅 정찰
-    - cron: '40 6 * * 1-5'   # KST 15:40 (06:40 UTC) - 최종 복기
+    - cron: '45 23 * * 0-4' # 08:45 KST
+    - cron: '0 6 * * 1-5'   # 15:00 KST
+    - cron: '40 6 * * 1-5'  # 15:40 KST
   workflow_dispatch:
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  TZ: Asia/Seoul  # 한국 서버 시간 동기화 강제
-
 jobs:
-  run-bot:
+  run-stock-engine:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
-    - run: pip install finance-datareader python-telegram-bot pandas pytz
-    - env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: python main.py
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements.txt
+      - env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py
+      - name: Save database
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          mkdir -p data
+          git add data/candidates.db || true
+          git commit -m "Update quant database" || true
+          git push
