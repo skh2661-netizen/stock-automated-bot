@@ -5,14 +5,10 @@ import os
 
 DB_PATH = "candidates.db"
 
-def build_history():
-    print("=== [V8.4.2 데이터 적재 엔진: 테이블 강제 초기화 모드] ===")
-    
-    # 1. DB 파일이 있으면 삭제하고 새로 시작 (테이블 오류 원천 차단)
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
-        
+def init_db():
+    # 데이터베이스 연결 및 테이블 강제 생성
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("DROP TABLE IF EXISTS candidates") # 이전 꼬인 테이블 삭제
     conn.execute("""
         CREATE TABLE candidates (
             unique_key TEXT PRIMARY KEY,
@@ -20,7 +16,13 @@ def build_history():
             entry_success INTEGER, result_status TEXT
         )
     """)
-    
+    conn.commit()
+    conn.close()
+    print("=== [시스템] 테이블 초기화 완료 ===")
+
+def build_history():
+    init_db() # 테이블 먼저 만들고 시작
+    conn = sqlite3.connect(DB_PATH)
     krx = fdr.StockListing("KRX").head(100)
     total_signals = 0
 
@@ -52,7 +54,7 @@ def build_history():
                 
     conn.commit()
     conn.close()
-    print(f"=== [작전 종료] 적재된 신호 개수: {total_signals}개 ===")
+    print(f"=== [작전 종료] 총 {total_signals}개 신호 적재 완료 ===")
 
 if __name__ == "__main__":
     build_history()
