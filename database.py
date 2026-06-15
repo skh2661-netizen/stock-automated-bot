@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import datetime
 import os
+import pytz
 
 DB_PATH = "candidates.db"
 
@@ -8,6 +9,9 @@ def connect():
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row 
     return conn
+
+def get_now_kst():
+    return datetime.now(pytz.timezone("Asia/Seoul"))
 
 def init_db():
     conn = connect()
@@ -31,7 +35,7 @@ def init_db():
 
 def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
     conn = connect()
-    now = datetime.now()
+    now = get_now_kst()
     today = now.strftime("%Y-%m-%d")
     unique_key = f"{today}_{code}_{run_type}"
     try:
