@@ -4,10 +4,12 @@ import datetime
 import pytz
 
 async def send_message(text):
+    """텔레그램 메시지 안전 전송"""
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     
     if not token or not chat_id:
+        print("🚨 에러: GitHub Secrets에 토큰이 누락되었습니다.")
         return
 
     bot = telegram.Bot(token=token)
@@ -19,6 +21,7 @@ async def send_message(text):
             await asyncio.sleep(3)
 
 def format_scan_message(data):
+    """[V8.5.1] 무인 요새 정밀 타격 리포트 (운용 보정판)"""
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.datetime.now(kst)
     time_str = now.strftime("%Y-%m-%d %H:%M")
@@ -42,7 +45,6 @@ def format_scan_message(data):
     msg += f" • 1차 필터 통과: {stats['pass1']:,}개\n"
     msg += f" • 최종 검출 신호: {stats['final']}개\n"
     
-    # ⏰ 진입 시간 판단 로직
     msg += f"\n⏰ 진입 시간 판단\n"
     if now.hour >= 14:
         msg += f" ⚠️ 14:00 이후 신규 진입 주의\n"
@@ -57,10 +59,15 @@ def format_scan_message(data):
     for i, r in enumerate(candidates, 1):
         rank_icon = "🥇 1순위" if i == 1 else ("🥈 2순위" if i == 2 else f"🏅 {i}순위")
 
-        if r['score'] >= 90: sig_grade = "S급"
-        elif r['score'] >= 85: sig_grade = "A+급"
-        elif r['score'] >= 80: sig_grade = "A급"
-        else: sig_grade = "B급"
+        # 🚨 [보정 1] 과열 종목 등급 조정 로직 (이격도 15% 이상일 경우 A+에서 A급 공격형으로 제한)
+        if r['score'] >= 90: 
+            sig_grade = "S급"
+        elif r['score'] >= 85: 
+            sig_grade = "A급 (공격형/과열존재)" if r['ma_gap'] >= 15 else "A+급"
+        elif r['score'] >= 80: 
+            sig_grade = "A급"
+        else: 
+            sig_grade = "B급"
 
         if r['ma_gap'] >= 20: 
             heat_judge = "🚨 초과열"
@@ -78,15 +85,19 @@ def format_scan_message(data):
         reward = r['target_1'] - r['buy_p']
         risk = r['buy_p'] - r['stop_p']
         rr_ratio = round(reward / risk, 2) if risk > 0 else 0
+        rr_judge = "✅ 우수 (진입 유리)" if rr_ratio >= 1.5 else ("⚠️ 보통" if rr_ratio >= 1.0 else "🚨 보수적 접근")
 
         msg += f"{rank_icon} {r['name']} ({r['code']})\n"
         msg += f" 🎯 등급: {sig_grade} ({r['sig_type']})\n"
-        msg += f" 📊 점수: {r['score']} / 100\n\n"
+        msg += f" 📊 종합 점수: {r['score']} / 100\n\n"
 
+        # 🚨 [보정 2] 핵심 조건 5개 전수 시각화 표기
         msg += f"🛠 핵심 조건 충족: {r['cond_count']} / 5\n"
-        msg += f" [{'✅' if r['c_vol'] else '❌'}] 거래량 (2배 이상)\n"
-        msg += f" [{'✅' if r['c_rs'] else '❌'}] 상대강도 (RS 우위)\n"
-        msg += f" [{'✅' if r['c_heat'] else '⚠️'}] 이격도 (과열 방지)\n\n"
+        msg += f" [{'✅' if r['c_vol'] else '❌'}] 거래량 (평균 대비 2배 이상)\n"
+        msg += f" [{'✅' if r['c_rs'] else '❌'}] 상대강도 (시장 대비 RS 우위)\n"
+        msg += f" [{'✅' if r['c_heat'] else '⚠️'}] 이격도 (MA20 과열 방지)\n"
+        msg += f" [{'✅' if r['c_amt'] else '❌'}] 거래대금 (당일 500억 이상)\n"
+        msg += f" [{'✅' if r['c_shadow'] else '❌'}] 윗꼬리 리스크 (2% 미만 안정)\n\n"
         
         msg += f"📌 현재 상태 및 추격 위험도\n"
         msg += f" • 현재가: {r['price']:,}원 ({r['chg']}%)\n"
@@ -100,18 +111,25 @@ def format_scan_message(data):
 
         msg += f"🔥 과열도 및 손익비\n"
         msg += f" • MA20 이격: +{r['ma_gap']}% ({heat_judge})\n"
-        msg += f" • 1차 R:R: {rr_ratio}\n\n"
+        msg += f" • 1차 R:R: {rr_ratio} ({rr_judge})\n\n"
         
         msg += f"🎯 매매 전략\n"
         msg += f" • 매수: {r['buy_p']:,}원 부근\n"
         msg += f" • 익절: {r['target_1']:,}원 / {r['target_2']:,}원\n"
         msg += f" • 손절: {r['stop_p']:,}원 (-3% 엄수)\n\n"
 
-        # 🤖 백테스트 모듈 연동 준비용 더미 출력 (추후 실제 DB 연동)
-        win_rate = min(90, 60 + (r['score'] - 75))
-        msg += f"🤖 [시뮬레이션 예상 승률]\n"
-        msg += f" • 유사 패턴 표본: 데이터 적재 중\n"
-        msg += f" • 예상 승률: {win_rate}%\n"
+        # 🚨 [보정 3] 실전 사후 관리 규칙 레이어 추가
+        msg += f"📌 사후 관리 규칙\n"
+        msg += f" • +3% 도달: 손절선을 진입가로 이동 (본절 방어)\n"
+        msg += f" • +6% 도달: 물량 50% 기계적 익절\n"
+        msg += f" • 고점 대비 -3%: 잔량 전량 청산 (트레일링)\n\n"
+        
+        msg += f"⏱ 예상: 1~5일 모멘텀 스윙\n\n"
+
+        # 🚨 [보정 4] 백테스트 데이터 적재 상태 명시
+        msg += f"🤖 [백테스트 시스템]\n"
+        msg += f" • 표본 상태: 실시간 데이터 적재 중\n"
+        msg += f" • 신뢰도 판정: 검증 대기 (통계값 빌드 중)\n"
         msg += "=========================\n"
         
     return msg
