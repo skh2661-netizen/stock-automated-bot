@@ -66,8 +66,10 @@ async def scan_market():
     }
     
     krx = get_krx_retry()
+    total_count = len(krx)
     krx['Amount'] = krx['Close'] * krx['Volume']
     krx = remove_bad_targets(krx)
+    
     krx['Max_OC'] = krx[['Open','Close']].max(axis=1)
     krx['Upper_Shadow'] = (krx['High'] - krx['Max_OC']) / krx['Close'] * 100
     
@@ -75,6 +77,7 @@ async def scan_market():
                 (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18) & \
                 (krx['Upper_Shadow'] <= 5) & (krx['Volume'] >= 300000)
     
+    pass1_count = len(krx[condition])
     candidates = krx[condition].sort_values('Amount', ascending=False).head(30)
     results = []
 
@@ -122,15 +125,16 @@ async def scan_market():
                 "chg": round(row['ChangesRatio'], 2),
                 "vol_ratio": round(row['Volume'] / vol_ma, 1),
                 "ma_gap": round(ma_gap, 1),
-                # 🚨 [우선순위 2: 상대강도] 팩터 연동
                 "five_chg": round(five_change, 2),
                 "kospi_chg": round(market_change, 2),
                 "rs": round(rs, 2)
             })
         except Exception as e:
             continue
-        
+            
+    final_results = sorted(results, key=lambda x: x['score'], reverse=True)[:MAX_CANDIDATES]
     return {
         "market": market_info,
-        "candidates": sorted(results, key=lambda x: x['score'], reverse=True)[:MAX_CANDIDATES]
+        "stats": {"total": total_count, "pass1": pass1_count, "final": len(final_results)},
+        "candidates": final_results
     }
