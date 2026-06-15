@@ -1,8 +1,6 @@
 import FinanceDataReader as fdr
-import pandas as pd
 import asyncio, datetime, pytz, time
 from scoring import calculate_score
-from risk import get_market_risk
 from database import save_candidate
 
 MIN_PRICE, MIN_AMOUNT, MAX_CANDIDATES = 2000, 10_000_000_000, 10
@@ -16,31 +14,24 @@ def get_krx_retry():
         except: time.sleep(5)
     raise Exception("KRX 데이터 연결 실패")
 
+def remove_bad_targets(df):
+    pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
+    return df[~df['Name'].str.contains(pattern, regex=True, na=False)]
+
 async def scan_market(run_type="OPEN_SCAN"):
     kst = pytz.timezone("Asia/Seoul")
     now = datetime.datetime.now(kst)
     start_date = (now - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
 
-    risk = get_market_risk(start_date)
-    risk_level = risk["level"]
-    min_score = 75 if risk_level == 0 else (80 if risk_level == 1 else 85)
-
-    try:
-        market_hist = fdr.DataReader("KS11", start_date)
-        market_change = (market_hist['Close'].iloc[-1] / market_hist['Close'].iloc[-6] - 1) * 100
-    except: market_change = 0
-
+    # 1. 1차 필터링 (KRX 리스트 기준)
     krx = get_krx_retry()
     krx['Amount'] = krx['Close'] * krx['Volume']
-    # 윗꼬리 필터 계산
-    krx['Upper_Shadow'] = (krx['High'] - krx[['Open','Close']].max(axis=1)) / krx['Close'] * 100
-    
+    krx = remove_bad_targets(krx)
     condition = (krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & \
-                (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18) & (krx['Upper_Shadow'] <= 5)
+                (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)
+    candidates = krx[condition].sort_values("Amount", ascending=False).head(30)
     
-    candidates = krx[condition].sort_values("Amount", ascending=False).head(MAX_CANDIDATES)
     results = []
-
     for _, row in candidates.iterrows():
         code = str(row['Code']).zfill(6)
         await asyncio.sleep(0.15)
@@ -48,26 +39,29 @@ async def scan_market(run_type="OPEN_SCAN"):
             hist = fdr.DataReader(code, start_date)
             if len(hist) < 25: continue
             
+            # 2. 상세 지표 계산 (hist 데이터 기준)
+            curr = hist.iloc[-1]
             ma20 = hist['Close'].rolling(20).mean().iloc[-1]
-            ma_gap = (row['Close'] - ma20) / ma20 * 100
-            if ma_gap < 0: continue
+            ma_gap = (curr['Close'] - ma20) / ma20 * 100
             
             vol_ratio = row['Volume'] / hist['Volume'].rolling(20).mean().iloc[-1]
-            if vol_ratio < 1.3: continue # 거래량 필터 복구
+            upper_shadow = ((curr['High'] - max(curr['Open'], curr['Close'])) / curr['Close'] * 100)
+            candle_pos = ((curr['Close'] - curr['Low']) / (curr['High'] - curr['Low']) * 100) if (curr['High'] != curr['Low']) else 0
             
-            five_change = (hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) * 100
-            score = calculate_score(row['Amount'], vol_ratio, row['ChangesRatio'], row['Upper_Shadow'], 
-                                   ma_gap, 0, (five_change - market_change), five_change, risk_level)
+            # 필터 적용
+            if ma_gap < 0 or vol_ratio < 1.3 or upper_shadow > 5: continue
             
-            if score < min_score: continue
+            five_change = (curr['Close'] / hist['Close'].iloc[-6] - 1) * 100
+            score = calculate_score(row['Amount'], vol_ratio, row['ChangesRatio'], upper_shadow, 
+                                   ma_gap, candle_pos, (five_change - 0), five_change, 0)
             
-            buy_p, t1, t2, stop = int(row['Close'] * 0.985), int(row['Close'] * 1.023), int(row['Close'] * 1.063), int(row['Close'] * 0.970)
+            if score < 75: continue
+            
+            buy_p, t1, t2, stop = int(curr['Close'] * 0.985), int(curr['Close'] * 1.023), int(curr['Close'] * 1.063), int(curr['Close'] * 0.970)
             save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop)
-            results.append({"code": code, "name": row['Name'], "score": score, "price": int(row['Close'])})
-        except Exception as e: print(f"{code} 오류: {e}")
+            results.append({"code": code, "name": row['Name'], "score": score, "price": int(curr['Close'])})
             
-    return {
-        "market": {"kospi": round(market_change, 2)},
-        "stats": {"final": len(results)},
-        "candidates": results
-    }
+            if len(results) >= MAX_CANDIDATES: break
+        except: continue
+            
+    return {"stats": {"final": len(results)}, "candidates": results}
