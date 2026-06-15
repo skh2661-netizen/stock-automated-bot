@@ -1,6 +1,6 @@
-import sqlite3, os
+import sqlite3
 from datetime import datetime
-import pytz
+import os
 
 DB_PATH = "candidates.db"
 
@@ -9,15 +9,31 @@ def connect():
     conn.row_factory = sqlite3.Row 
     return conn
 
-def get_now_kst():
-    return datetime.now(pytz.timezone("Asia/Seoul"))
+def init_db():
+    conn = connect()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS candidates (
+            unique_key TEXT PRIMARY KEY,
+            date TEXT, timestamp TEXT, run_type TEXT,
+            strategy_version TEXT, score_version TEXT,
+            code TEXT, name TEXT, score INTEGER,
+            buy_p INTEGER, target1_p INTEGER, target2_p INTEGER, stop_p INTEGER,
+            entry_price INTEGER DEFAULT NULL, entry_success INTEGER DEFAULT NULL,
+            exit_type TEXT DEFAULT '대기',
+            d1_high INTEGER, d1_low INTEGER, d1_close INTEGER,
+            d3_high INTEGER, d3_low INTEGER, d3_close INTEGER,
+            d5_high INTEGER, d5_low INTEGER, d5_close INTEGER,
+            result_status TEXT DEFAULT '대기'
+        )
+    """)
+    conn.commit()
+    conn.close()
 
 def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
     conn = connect()
-    now = get_now_kst()
+    now = datetime.now()
     today = now.strftime("%Y-%m-%d")
     unique_key = f"{today}_{code}_{run_type}"
-    
     try:
         conn.execute("""
             INSERT OR IGNORE INTO candidates 
