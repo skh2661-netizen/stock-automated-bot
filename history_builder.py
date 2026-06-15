@@ -7,19 +7,15 @@ from scoring import calculate_score
 DB_PATH = "candidates.db"
 START_DATE = "2021-01-01"
 END_DATE = "2026-06-15"
-MIN_PRICE, MIN_AMOUNT = 2000, 10_000_000_000
+# [완화] 최소 거래대금 50억, 가격 1000원으로 조정
+MIN_PRICE, MIN_AMOUNT = 1000, 5_000_000_000
 
 def connect():
     return sqlite3.connect(DB_PATH, timeout=30)
 
 def build_history():
-    print(f"=== [V8.4.2 5년 타임머신 가동] ===")
-    market_df = fdr.DataReader("KS11", START_DATE, END_DATE)
-    market_df['M_Change'] = (market_df['Close'] / market_df['Close'].shift(5) - 1) * 100
-    
-    krx = fdr.StockListing("KRX")
-    pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
-    krx = krx[~krx['Name'].str.contains(pattern, regex=True, na=False)].head(100)
+    print(f"=== [V8.4.2 5년 타임머신 가동 (필터 완화)] ===")
+    krx = fdr.StockListing("KRX").head(100) # 상위 100종목
     
     conn = connect()
     total_signals = 0
@@ -34,7 +30,8 @@ def build_history():
             df['Vol_MA20'] = df['Volume'].rolling(20).mean()
             df['ChangesRatio'] = (df['Close'] / df['Close'].shift(1) - 1) * 100
             
-            signal_candidates = df[(df['Close'] >= MIN_PRICE) & (df['ChangesRatio'] >= 3) & (df['ChangesRatio'] <= 18)]
+            # [완화] 등락률 2%~20%로 확대
+            signal_candidates = df[(df['Close'] >= MIN_PRICE) & (df['ChangesRatio'] >= 2) & (df['ChangesRatio'] <= 20)]
             
             for i in range(len(signal_candidates)):
                 date_idx = signal_candidates.index[i]
@@ -42,10 +39,9 @@ def build_history():
                 if loc_idx + 1 >= len(df): continue
                 
                 curr = df.iloc[loc_idx]
-                ma_gap = (curr['Close'] - curr['MA20']) / curr['MA20'] * 100
+                # [완화] 거래량 비율 1.0배 이상만 돼도 통과
                 vol_ratio = curr['Volume'] / curr['Vol_MA20'] if curr['Vol_MA20'] > 0 else 0
-                
-                if ma_gap < 0 or vol_ratio < 1.3: continue
+                if vol_ratio < 1.0: continue
                 
                 buy_p, target1, stop = int(curr['Close'] * 0.985), int(curr['Close'] * 1.023), int(curr['Close'] * 0.970)
                 
@@ -66,10 +62,7 @@ def build_history():
                 conn.execute("INSERT OR IGNORE INTO candidates (unique_key, date, code, name, score, buy_p, target1_p, stop_p, entry_success, exit_type, result_status) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                              (f"{date_idx.strftime('%Y-%m-%d')}_{code}_HIST", date_idx.strftime("%Y-%m-%d"), code, name, 80, buy_p, target1, stop, entry_success, exit_type, result_status))
                 total_signals += 1
-        except Exception:
-            continue
-        finally:
-            pass
+        except Exception: continue
             
     conn.commit()
     conn.close()
