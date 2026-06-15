@@ -18,7 +18,6 @@ MIN_AMOUNT = 10_000_000_000
 MAX_CANDIDATES = 10
 
 def get_krx_retry(): 
-    """KRX 데이터 수집 및 외부 라이브러리 오타 방어 패치"""
     for i in range(3):
         try: 
             krx = fdr.StockListing("KRX")
@@ -32,7 +31,6 @@ def get_krx_retry():
     raise Exception("KRX 데이터 연결 3회 실패")
 
 def remove_bad_targets(df):
-    """스팩, ETF, 우선주 등 제외"""
     pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
     return df[~df['Name'].str.contains(pattern, regex=True, na=False)]
 
@@ -45,7 +43,6 @@ async def scan_market():
     now = datetime.datetime.now(kst)
     start_date = (now - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
     
-    # 1. [우선순위 1] 시장 위험 지수 및 지수 변동률 연산
     risk = get_market_risk(start_date)
     risk_level = risk["level"]
     
@@ -68,11 +65,9 @@ async def scan_market():
         "risk_pct": risk.get("score", 20)
     }
     
-    # 2. 데이터 수집 및 1차 필터링
     krx = get_krx_retry()
     krx['Amount'] = krx['Close'] * krx['Volume']
     krx = remove_bad_targets(krx)
-    
     krx['Max_OC'] = krx[['Open','Close']].max(axis=1)
     krx['Upper_Shadow'] = (krx['High'] - krx['Max_OC']) / krx['Close'] * 100
     
@@ -91,39 +86,31 @@ async def scan_market():
             hist = fdr.DataReader(code, start_date)
             if len(hist) < 25: continue
             
-            # MA20 위치 검증
             ma20 = hist['Close'].rolling(20).mean().iloc[-1]
             ma_gap = (row['Close'] - ma20) / ma20 * 100
             if ma_gap < 0: continue
             
-            # 모멘텀 검증
             five_change = (hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) * 100
             if five_change > 30: continue
             
-            # 눌림목 확인
             high20 = hist['High'].rolling(20).max().iloc[-2]
             if row['Close'] < high20 * 0.85: continue
             
-            # 거래량 증가율 검증
             vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
             if vol_ma <= 0 or (row['Volume'] / vol_ma) < 1.3: continue
             
             close_pos = calculate_candle_position(row)
             if close_pos is None: continue
             
-            # RS 지수 계산
             market = fdr.DataReader("KS11", start_date)
             market_change = (market['Close'].iloc[-1] / market['Close'].iloc[-6] - 1) * 100
             rs = five_change - market_change
             
-            # 스코어 계산
             score = calculate_score(row['Amount'], (row['Volume']/vol_ma), row['ChangesRatio'], row['Upper_Shadow'], ma_gap, close_pos, rs, five_change, risk_level)
             if score < 75: continue
             
-            # [우선순위 4] 백테스트 및 DB 축적 원천 데이터 저장
             save_candidate(code, row['Name'], score, int(row['Close']), risk_level)
             
-            # [우선순위 2] 리포트 고해상도 출력을 위한 세부 요소 패키징
             amount_100m = int(row['Amount'] / 100000000)
             results.append({
                 "code": code, 
@@ -134,10 +121,13 @@ async def scan_market():
                 "amount": amount_100m,
                 "chg": round(row['ChangesRatio'], 2),
                 "vol_ratio": round(row['Volume'] / vol_ma, 1),
-                "ma_gap": round(ma_gap, 1)
+                "ma_gap": round(ma_gap, 1),
+                # 🚨 [우선순위 2: 상대강도] 팩터 연동
+                "five_chg": round(five_change, 2),
+                "kospi_chg": round(market_change, 2),
+                "rs": round(rs, 2)
             })
         except Exception as e:
-            print(f"Error scanning {row['Name']}: {e}")
             continue
         
     return {
