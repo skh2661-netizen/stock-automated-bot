@@ -14,7 +14,7 @@ def connect():
     return sqlite3.connect(DB_PATH, timeout=30)
 
 def build_history():
-    print(f"=== [V8.4.2 5년 타임머신 가동] {START_DATE} ~ {END_DATE} ===")
+    print(f"=== [V8.4.2 5년 타임머신 가동 (미니 테스트)] {START_DATE} ~ {END_DATE} ===")
     
     # 1. 시장 데이터 사전 로드 (벤치마크용)
     print("[1/3] KOSPI 지수 사전 로드 중...")
@@ -27,10 +27,13 @@ def build_history():
     pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
     krx = krx[~krx['Name'].str.contains(pattern, regex=True, na=False)]
     
+    # [수정] 상위 100개 종목만 테스트
+    krx = krx.head(100)
+    
     conn = connect()
     total_symbols = len(krx)
     
-    print(f"[3/3] 총 {total_symbols}개 종목 5년치 딥스캔 시작 (약 30분~1시간 소요)")
+    print(f"[3/3] 총 {total_symbols}개 종목 5년치 딥스캔 시작 (약 3~5분 소요)")
     
     # 프로그레스 트래킹 변수
     processed = 0
@@ -41,7 +44,7 @@ def build_history():
         name = row['Name']
         processed += 1
         
-        if processed % 100 == 0:
+        if processed % 10 == 0:
             print(f"... 진행률: {processed}/{total_symbols} | 현재 누적 신호: {total_signals}개")
 
         try:
@@ -91,7 +94,7 @@ def build_history():
                 score = calculate_score(curr['Amount'], vol_ratio, curr['ChangesRatio'], 
                                         upper_shadow, ma_gap, candle_pos, (five_change - m_change), five_change, 1)
                 
-                if score < 75: continue # 75점 이상만 적재 (나중에 backtest에서 구간별 분석)
+                if score < 75: continue # 75점 이상만 적재
                 
                 # === [미래 성과(D+1~D+5) 즉시 추적] ===
                 buy_p, target1, stop = int(curr['Close'] * 0.985), int(curr['Close'] * 1.023), int(curr['Close'] * 0.970)
@@ -144,7 +147,7 @@ def build_history():
 
     conn.commit()
     conn.close()
-    print(f"=== [작전 종료] 총 {total_signals}개의 과거 백데이터가 DB에 완벽히 적재되었습니다. ===")
+    print(f"=== [작전 종료] 상위 100종목 미니 테스트 완료. 총 {total_signals}개 신호 적재 ===")
 
 if __name__ == "__main__":
     build_history()
