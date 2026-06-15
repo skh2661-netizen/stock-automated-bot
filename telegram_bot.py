@@ -4,7 +4,6 @@ import datetime
 import pytz
 
 async def send_message(text):
-    """텔레그램 메시지 안전 전송"""
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     
@@ -20,13 +19,13 @@ async def send_message(text):
             await asyncio.sleep(3)
 
 def format_scan_message(data):
-    """[V8.5.2] 무인 요새 정밀 타격 리포트 (UI/등급 완결판)"""
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.datetime.now(kst)
     time_str = now.strftime("%Y-%m-%d %H:%M")
     
     market = data["market"]
     stats = data["stats"]
+    fail_stats = data.get("fail_stats", {"ma20":0, "vol":0, "score":0, "etc":0})
     candidates = data["candidates"]
     
     mode_icon = "🟢" if "정상" in market["mode"] else "🚨"
@@ -41,32 +40,40 @@ def format_scan_message(data):
     
     msg += f"📊 스캔 결과 통계\n"
     msg += f" • 전체 종목: {stats['total']:,}개\n"
-    msg += f" • 1차 필터 통과: {stats['pass1']:,}개\n"
-    msg += f" • 최종 검출 신호: {stats['final']}개\n"
+    msg += f" • 1차 통과: {stats['pass1']:,}개\n"
+    msg += f" • 최종 신호: {stats['final']}개\n\n"
     
-    msg += f"\n⏰ 진입 시간 판단\n"
-    if now.hour >= 14:
-        msg += f" ⚠️ 14:00 이후 신규 진입 주의\n"
-        msg += f" 👉 종가 배팅 또는 익일 시초/눌림 대기 권장\n"
+    # 🚨 [시간대별 작전 라우터]
+    hour = now.hour
+    if 8 <= hour < 10:
+        time_msg = "☀️ 시초가 돌파 주도주 탐색"
+    elif 10 <= hour < 14:
+        time_msg = "🔥 장중 모멘텀 및 수급 탐색"
+    elif 14 <= hour < 15:
+        time_msg = "🎯 종가 베팅 후보 정밀 탐색"
     else:
-        msg += f" ✅ 당일 장중 눌림목 진입 유효\n"
+        time_msg = "🌙 장 마감 결과 복기 모드 (신규 진입 주의)"
+
+    msg += f"⏰ 현재 작전 모드\n"
+    msg += f" 👉 {time_msg}\n\n"
+
+    # 🚨 [탈락 원인 통계 로직]
+    msg += f"📉 1차 필터 통과자 정밀 탈락 원인\n"
+    msg += f" • MA20 이탈 (역배열): {fail_stats['ma20']}개\n"
+    msg += f" • 거래량 유입 부족: {fail_stats['vol']}개\n"
+    msg += f" • 종합 점수(RS 등) 미달: {fail_stats['score']}개\n"
     msg += "=========================\n\n"
     
     if not candidates:
-        return msg + "⚙️ 필터 통과 종목 없음 (시드 보호 모드 가동)"
+        return msg + "⚙️ 필터 통과 종목 없음 (시드 보호 모드 정상 가동)"
         
     for i, r in enumerate(candidates, 1):
         rank_icon = "🥇 1순위" if i == 1 else ("🥈 2순위" if i == 2 else f"🏅 {i}순위")
 
-        # 🚨 [신호 등급 기준 문서화 적용]
-        if r['score'] >= 85 and r['ma_gap'] < 15: 
-            sig_grade = "A+급 (정석/안정형)"
-        elif r['score'] >= 85 and r['ma_gap'] >= 15: 
-            sig_grade = "A급 (공격/과열존재)"
-        elif r['score'] >= 80: 
-            sig_grade = "B+급 (모멘텀 양호)"
-        else: 
-            sig_grade = "B급 (관찰 대상)"
+        if r['score'] >= 85 and r['ma_gap'] < 15: sig_grade = "A+급 (정석/안정형)"
+        elif r['score'] >= 85 and r['ma_gap'] >= 15: sig_grade = "A급 (공격/과열존재)"
+        elif r['score'] >= 80: sig_grade = "B+급 (모멘텀 양호)"
+        else: sig_grade = "B급 (관찰 대상)"
 
         if r['ma_gap'] >= 20: 
             heat_judge = "🚨 초과열"
@@ -89,7 +96,6 @@ def format_scan_message(data):
         msg += f" 🎯 등급: {sig_grade}\n"
         msg += f" 📊 점수: {r['score']} / 100\n\n"
 
-        # 🚨 [UI 직관성 버그 수정: 윗꼬리 안정성]
         msg += f"🛠 핵심 조건 충족: {r['cond_count']} / 5\n"
         msg += f" [{'✅' if r['c_vol'] else '❌'}] 거래량 (평균 대비 2배 이상)\n"
         msg += f" [{'✅' if r['c_rs'] else '❌'}] 상대강도 (시장 대비 RS 우위)\n"
