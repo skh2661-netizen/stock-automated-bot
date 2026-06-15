@@ -10,9 +10,6 @@ def connect():
     conn.row_factory = sqlite3.Row 
     return conn
 
-def get_now_kst():
-    return datetime.now(pytz.timezone("Asia/Seoul"))
-
 def init_db():
     conn = connect()
     conn.execute("""
@@ -35,15 +32,27 @@ def init_db():
 
 def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
     conn = connect()
-    now = get_now_kst()
+    now = datetime.now(pytz.timezone("Asia/Seoul"))
     today = now.strftime("%Y-%m-%d")
     unique_key = f"{today}_{code}_{run_type}"
     try:
-        conn.execute("""
+        cursor = conn.execute("""
             INSERT OR IGNORE INTO candidates 
             (unique_key, date, timestamp, run_type, strategy_version, score_version, code, name, score, buy_p, target1_p, target2_p, stop_p) 
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (unique_key, today, now.strftime("%H:%M:%S"), run_type, "V8.4.2", "SCORE_A", code, name, score, buy_p, target1_p, target2_p, stop_p))
         conn.commit()
-    except Exception as e: print(f"DB 오류: {e}")
-    finally: conn.close()
+        return cursor.rowcount > 0
+    except Exception as e:
+        print(f"DB 오류: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_today_candidates():
+    if not os.path.exists(DB_PATH): return []
+    conn = connect()
+    today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
+    rows = conn.execute("SELECT * FROM candidates WHERE date=?", (today,)).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
