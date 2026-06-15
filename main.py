@@ -1,52 +1,38 @@
-import asyncio
-import datetime
-import pytz
-import traceback
-import sys
-
+import asyncio, datetime, pytz, traceback, sys, subprocess, os
 from scanner import scan_market
 from validator import validate_candidates
 from database import init_db
 from telegram_bot import send_message, format_scan_message, format_validate_message
 
-async def run():
+def git_push_db():
     try:
-        print("1. V8.5 최상위 퀀트 시스템 가동 준비...")
-        init_db()
-        print("✅ DB 안전 연결 확인 완료")
+        subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
+        subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
+        subprocess.run(["git", "add", "candidates.db"], check=True)
+        subprocess.run(["git", "commit", "-m", "Auto-update DB: daily performance record"], check=True)
+        subprocess.run(["git", "push"], check=True)
+    except Exception as e:
+        print(f"Git Push 실패: {e}")
 
-        kst = pytz.timezone('Asia/Seoul')
-        n = datetime.datetime.now(kst)
-        print(f"✅ 현재 KST 시스템 시각: {n.strftime('%Y-%m-%d %H:%M:%S')}")
-
-        if 8 <= n.hour < 9:
-            print("2. [오전 08:45] 주도주 스캔 가동...")
+async def run():
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.datetime.now(kst)
+    init_db()
+    
+    try:
+        if 8 <= now.hour < 10:
             data = await scan_market()
             await send_message(format_scan_message(data))
-            print("✅ 정밀 리포트 타전 완료")
-            
-        elif n.hour == 15 and n.minute <= 20:
-            print("2. [오후 15:00] 생존 검사 가동...")
+        elif now.hour == 15 and now.minute <= 20:
             results = validate_candidates()
             await send_message(format_validate_message(results))
-            print("✅ 생존 검사 보고 완료")
-            
-        elif n.hour == 15 and n.minute >= 35:
-            print("2. [오후 15:40] 일일 마감 연산...")
-            await send_message("🌙 V8.4 DAILY REPORT: 오늘분 데이터 적재 및 기계적 백업 완료")
-            print("✅ 마감 완료")
-            
-        else:
-            print("⚠️ 수동 가동 감지: 임의 시그널 리포트 출력 테스트 수행")
-            data = await scan_market()
-            await send_message(format_scan_message(data))
-            print("✅ 수동 테스트 스캔 완료")
-
+        elif now.hour >= 15:
+            await send_message("🌙 일일 데이터 적재 완료")
+        
+        # 🚨 작업 완료 후 DB 변경사항 클라우드에 영구 저장
+        git_push_db()
     except Exception as e:
-        print("\n" + "="*50)
-        print("🚨 치명적 에러 발생 - 연산 긴급 정지 🚨")
         traceback.print_exc()
-        print("="*50 + "\n")
         sys.exit(1)
 
 if __name__ == "__main__":
