@@ -42,9 +42,17 @@ def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, sto
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (unique_key, today, now.strftime("%H:%M:%S"), run_type, "V8.4.2", "SCORE_A", code, name, score, buy_p, target1_p, target2_p, stop_p))
         conn.commit()
-        return cursor.rowcount > 0 # 성공 시 True, 중복 시 False
+        return cursor.rowcount > 0
     except Exception as e:
         print(f"DB 오류: {e}")
         return False
     finally:
         conn.close()
+
+def get_today_candidates():
+    if not os.path.exists(DB_PATH): return []
+    conn = connect()
+    today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
+    rows = conn.execute("SELECT * FROM candidates WHERE date=?", (today,)).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
