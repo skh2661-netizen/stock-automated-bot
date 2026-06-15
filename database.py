@@ -36,10 +36,14 @@ def init_db():
     conn.close()
 
 def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
+    """
+    scanner.py와 완벽히 호환되는 8개 인자 수신부
+    """
     conn = connect()
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M:%S")
+    # run_type(OPEN/CLOSE)을 키에 포함하여 데이터 충돌 방지
     unique_key = f"{today}_{code}_{run_type}"
     
     try:
@@ -51,10 +55,10 @@ def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, sto
         conn.commit()
     except sqlite3.Error as e:
         print(f"DB 저장 오류: {e}")
-    conn.close()
+    finally:
+        conn.close()
 
 def get_today_candidates():
-    """validator.py가 호출하는 핵심 함수 복구"""
     if not os.path.exists(DB_PATH): 
         return []
     conn = connect()
