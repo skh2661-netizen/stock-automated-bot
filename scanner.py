@@ -79,7 +79,10 @@ async def scan_market():
     
     pass1_count = len(krx[condition])
     candidates = krx[condition].sort_values('Amount', ascending=False).head(30)
+    
     results = []
+    # 🚨 탈락 원인 집계용 딕셔너리
+    fail_stats = {"ma20": 0, "vol": 0, "score": 0, "etc": 0}
 
     for _, row in candidates.iterrows():
         code = str(row['Code']).zfill(6)
@@ -87,30 +90,37 @@ async def scan_market():
         
         try:
             hist = fdr.DataReader(code, start_date)
-            if len(hist) < 25: continue
+            if len(hist) < 25: 
+                fail_stats["etc"] += 1; continue
             
             ma20 = hist['Close'].rolling(20).mean().iloc[-1]
             ma_gap = (row['Close'] - ma20) / ma20 * 100
-            if ma_gap < 0: continue
+            if ma_gap < 0: 
+                fail_stats["ma20"] += 1; continue
             
             five_change = (hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) * 100
-            if five_change > 30: continue
+            if five_change > 30: 
+                fail_stats["etc"] += 1; continue
             
             high20 = hist['High'].rolling(20).max().iloc[-2]
-            if row['Close'] < high20 * 0.85: continue
+            if row['Close'] < high20 * 0.85: 
+                fail_stats["etc"] += 1; continue
             
             vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
-            if vol_ma <= 0 or (row['Volume'] / vol_ma) < 1.3: continue
+            if vol_ma <= 0 or (row['Volume'] / vol_ma) < 1.3: 
+                fail_stats["vol"] += 1; continue
             
             close_pos = calculate_candle_position(row)
-            if close_pos is None: continue
+            if close_pos is None: 
+                fail_stats["etc"] += 1; continue
             
             market = fdr.DataReader("KS11", start_date)
             market_change = (market['Close'].iloc[-1] / market['Close'].iloc[-6] - 1) * 100
             rs = five_change - market_change
             
             score = calculate_score(row['Amount'], (row['Volume']/vol_ma), row['ChangesRatio'], row['Upper_Shadow'], ma_gap, close_pos, rs, five_change, risk_level)
-            if score < 75: continue
+            if score < 75: 
+                fail_stats["score"] += 1; continue
             
             amount_100m = int(row['Amount'] / 100000000)
             buy_p = int(row['Close'] * 0.985)
@@ -129,7 +139,6 @@ async def scan_market():
             
             save_candidate(code, row['Name'], score, int(row['Close']), risk_level, round(rs, 2), round(ma_gap, 1), buy_p, target_1, stop_p)
             
-            # 🚨 오류 해결: c_amt, c_shadow 파라미터 패키징 추가
             results.append({
                 "code": code, "name": row['Name'], "score": score, "price": int(row['Close']),
                 "amount": amount_100m, "chg": round(row['ChangesRatio'], 2),
@@ -146,5 +155,6 @@ async def scan_market():
     return {
         "market": market_info,
         "stats": {"total": total_count, "pass1": pass1_count, "final": len(final_results)},
+        "fail_stats": fail_stats,
         "candidates": final_results
     }
