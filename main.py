@@ -21,7 +21,7 @@ async def run():
     init_db()
 
     if not is_market_open():
-        await send_message("🌙 V8.4.2 휴장일 감지 - 시스템 보호 모드 종료")
+        await send_message("🌙 V8.4.5 자율주행 엔진 - 휴장일 보호 모드 종료")
         return
 
     try:
@@ -38,7 +38,7 @@ async def run():
             await send_message(format_validate_message(results))
             save_log("REVIEW", "SUCCESS")
     except Exception as e:
-        await send_message(f"🚨 장애: {str(e)}")
+        await send_message(f"🚨 V8.4.5 장애 발생: {str(e)}")
         save_log("ERROR", str(e))
         traceback.print_exc()
         sys.exit(1)
