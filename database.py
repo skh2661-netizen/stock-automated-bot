@@ -31,6 +31,7 @@ def init_db():
     conn.close()
 
 def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
+    init_db()  # 최초 가동 및 데이터 백업 시 테이블 누락 리스크 차단
     conn = connect()
     now = datetime.now(pytz.timezone("Asia/Seoul"))
     today = now.strftime("%Y-%m-%d")
