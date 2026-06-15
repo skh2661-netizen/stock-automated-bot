@@ -11,8 +11,16 @@ def get_krx_retry():
     for i in range(3):
         try:
             krx = fdr.StockListing("KRX")
-            if "ChagesRatio" in krx.columns: krx.rename(columns={"ChagesRatio": "ChangesRatio"}, inplace=True)
-            elif "ChgRate" in krx.columns: krx.rename(columns={"ChgRate": "ChangesRatio"}, inplace=True)
+            # 컬럼명 파편화 맵핑 방어 강화
+            rename_map = {
+                "ChagesRatio": "ChangesRatio",
+                "ChgRate": "ChangesRatio",
+                "ChangeRate": "ChangesRatio"
+            }
+            for old, new in rename_map.items():
+                if old in krx.columns:
+                    krx.rename(columns={old: new}, inplace=True)
+                    
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
             return krx
         except Exception as e:
@@ -37,11 +45,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         risk_level = 1
         
     if risk_level >= 2 and run_type == "CLOSE_SCAN":
-        return {
-            "market": {"kospi": 0}, 
-            "stats": {"final": 0}, 
-            "candidates": []
-        }
+        return {"market": {"kospi": 0}, "stats": {"final": 0}, "candidates": []}
     
     min_score = 75 if risk_level == 0 else (80 if risk_level == 1 else 85)
 
@@ -72,7 +76,7 @@ async def scan_market(run_type="OPEN_SCAN"):
             if pd.isna(ma20) or ma20 <= 0: continue
             
             ma_gap = (curr['Close'] - ma20) / ma20 * 100
-            vol_ratio = row['Volume'] / vol_ma
+            vol_ratio = curr['Volume'] / vol_ma  # 실시간 OHLCV 데이터 거래량 기준으로 정합성 통일
             upper_shadow = ((curr['High'] - max(curr['Open'], curr['Close'])) / curr['High'] * 100)
             candle_pos = ((curr['Close'] - curr['Low']) / (curr['High'] - curr['Low']) * 100) if (curr['High'] > curr['Low']) else 0
             
