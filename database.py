@@ -12,6 +12,7 @@ def connect():
 
 def init_db():
     conn = connect()
+    # 1. 후보 적재용 테이블
     conn.execute("""
         CREATE TABLE IF NOT EXISTS candidates (
             unique_key TEXT PRIMARY KEY,
@@ -27,11 +28,19 @@ def init_db():
             result_status TEXT DEFAULT '대기'
         )
     """)
+    # 2. 시스템 운영 로그 테이블 추가
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            run_type TEXT,
+            message TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
 def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
-    # [수정 1] 불필요한 init_db() 호출 제거 (SQLite Lock 리스크 원천 차단)
     conn = connect()
     now = datetime.now(pytz.timezone("Asia/Seoul"))
     today = now.strftime("%Y-%m-%d")
@@ -57,3 +66,24 @@ def get_today_candidates():
     rows = conn.execute("SELECT * FROM candidates WHERE date=?", (today,)).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+# [추가] main.py 에러 해결을 위한 가변형 시스템 로그 저장 함수
+def save_log(*args):
+    conn = connect()
+    now = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+    
+    # main.py에서 넘기는 인자 수에 상관없이 유연하게 대처 (에러 원천 방어)
+    try:
+        if len(args) == 1:
+            run_type, message = "SYSTEM", str(args[0])
+        elif len(args) >= 2:
+            run_type, message = str(args[0]), str(args[1])
+        else:
+            return
+
+        conn.execute("INSERT INTO logs (timestamp, run_type, message) VALUES (?,?,?)", (now, run_type, message))
+        conn.commit()
+    except Exception as e:
+        print(f"로그 저장 오류: {e}")
+    finally:
+        conn.close()
