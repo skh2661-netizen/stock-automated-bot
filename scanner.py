@@ -2,8 +2,8 @@ import FinanceDataReader as fdr
 import pandas as pd
 import datetime, asyncio, time
 import sys
+import pytz
 
-# [V8.4.2 안전 임포트]
 try:
     import FinanceDataReader as fdr
 except ImportError:
@@ -22,7 +22,6 @@ def get_krx_retry():
     for i in range(3):
         try: 
             krx = fdr.StockListing("KRX")
-            # 🚨 FDR 라이브러리 개발자의 치명적 오타(ChagesRatio) 자동 교정
             if 'ChagesRatio' in krx.columns:
                 krx.rename(columns={'ChagesRatio': 'ChangesRatio'}, inplace=True)
             elif 'ChgRate' in krx.columns:
@@ -42,14 +41,34 @@ def calculate_candle_position(row):
     return ((row['Close'] - row['Low']) / high_low * 100) if high_low > 0 else None
 
 async def scan_market():
-    now = datetime.datetime.now()
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.datetime.now(kst)
     start_date = (now - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
     
-    # 시장 위험 지수 연산
+    # 1. [우선순위 1] 시장 위험 지수 및 지수 변동률 연산
     risk = get_market_risk(start_date)
     risk_level = risk["level"]
     
-    # 데이터 수집
+    try:
+        kospi_df = fdr.DataReader("KS11", (now - datetime.timedelta(days=5)).strftime("%Y-%m-%d"))
+        kospi_chg = (kospi_df['Close'].iloc[-1] / kospi_df['Close'].iloc[-2] - 1) * 100
+    except:
+        kospi_chg = 0.0
+
+    try:
+        kosdaq_df = fdr.DataReader("KQ11", (now - datetime.timedelta(days=5)).strftime("%Y-%m-%d"))
+        kosdaq_chg = (kosdaq_df['Close'].iloc[-1] / kosdaq_df['Close'].iloc[-2] - 1) * 100
+    except:
+        kosdaq_chg = 0.0
+
+    market_info = {
+        "mode": "정상" if risk_level == 0 else "🚨 위험 제한 모드",
+        "kospi": round(kospi_chg, 2),
+        "kosdaq": round(kosdaq_chg, 2),
+        "risk_pct": risk.get("score", 20)
+    }
+    
+    # 2. 데이터 수집 및 1차 필터링
     krx = get_krx_retry()
     krx['Amount'] = krx['Close'] * krx['Volume']
     krx = remove_bad_targets(krx)
@@ -57,7 +76,6 @@ async def scan_market():
     krx['Max_OC'] = krx[['Open','Close']].max(axis=1)
     krx['Upper_Shadow'] = (krx['High'] - krx['Max_OC']) / krx['Close'] * 100
     
-    # 1차 필터
     condition = (krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & \
                 (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18) & \
                 (krx['Upper_Shadow'] <= 5) & (krx['Volume'] >= 300000)
@@ -82,7 +100,7 @@ async def scan_market():
             five_change = (hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) * 100
             if five_change > 30: continue
             
-            # 20일 고점 기준 눌림목 확인
+            # 눌림목 확인
             high20 = hist['High'].rolling(20).max().iloc[-2]
             if row['Close'] < high20 * 0.85: continue
             
@@ -90,7 +108,6 @@ async def scan_market():
             vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
             if vol_ma <= 0 or (row['Volume'] / vol_ma) < 1.3: continue
             
-            # 종가 위치 확인
             close_pos = calculate_candle_position(row)
             if close_pos is None: continue
             
@@ -103,11 +120,11 @@ async def scan_market():
             score = calculate_score(row['Amount'], (row['Volume']/vol_ma), row['ChangesRatio'], row['Upper_Shadow'], ma_gap, close_pos, rs, five_change, risk_level)
             if score < 75: continue
             
-            # 데이터베이스 적재
+            # [우선순위 4] 백테스트 및 DB 축적 원천 데이터 저장
             save_candidate(code, row['Name'], score, int(row['Close']), risk_level)
             
-            # 🚨 [텔레그램 심층 보고서용 데이터 패키징] 🚨
-            amount_100m = int(row['Amount'] / 100000000) # 억 단위 변환
+            # [우선순위 2] 리포트 고해상도 출력을 위한 세부 요소 패키징
+            amount_100m = int(row['Amount'] / 100000000)
             results.append({
                 "code": code, 
                 "name": row['Name'], 
@@ -115,10 +132,15 @@ async def scan_market():
                 "grade": grade(score), 
                 "price": int(row['Close']),
                 "amount": amount_100m,
-                "chg": round(row['ChangesRatio'], 2)
+                "chg": round(row['ChangesRatio'], 2),
+                "vol_ratio": round(row['Volume'] / vol_ma, 1),
+                "ma_gap": round(ma_gap, 1)
             })
         except Exception as e:
             print(f"Error scanning {row['Name']}: {e}")
             continue
         
-    return sorted(results, key=lambda x: x['score'], reverse=True)[:MAX_CANDIDATES]
+    return {
+        "market": market_info,
+        "candidates": sorted(results, key=lambda x: x['score'], reverse=True)[:MAX_CANDIDATES]
+    }
