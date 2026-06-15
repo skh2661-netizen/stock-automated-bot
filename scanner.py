@@ -33,6 +33,12 @@ def remove_bad_targets(df):
     pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
     return df[~df['Name'].str.contains(pattern, regex=True, na=False)]
 
+# [신규 추가: V8.4.2 노트 기반 시장 폭락 감지 로직]
+def is_market_crash(market_change):
+    if market_change <= -1.5:
+        return True
+    return False
+
 async def scan_market(run_type="OPEN_SCAN"):
     kst = pytz.timezone("Asia/Seoul")
     now = datetime.datetime.now(kst)
@@ -45,7 +51,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         risk_level = 1
         
     if risk_level >= 2 and run_type == "CLOSE_SCAN":
-        return {"market": {"kospi": 0}, "stats": {"final": 0}, "candidates": []}
+        return {"market": {"kospi": 0, "kosdaq": 0, "risk_pct": 100, "mode": "🚨 하락장 종가베팅 차단"}, "stats": {"total": 0, "pass1": 0, "final": 0}, "candidates": []}
     
     min_score = 75 if risk_level == 0 else (80 if risk_level == 1 else 85)
 
@@ -55,8 +61,21 @@ async def scan_market(run_type="OPEN_SCAN"):
     except: 
         market_change = 0
 
+    # [방어벽 발동: 시장 폭락 시 스캐너 전면 강제 정지]
+    if is_market_crash(market_change):
+        return {
+            "market": {"kospi": round(market_change, 2), "kosdaq": 0, "risk_pct": 100, "mode": "🚨 코스피 -1.5% 급락 (스캔 강제 정지)"},
+            "stats": {"total": 0, "pass1": 0, "final": 0},
+            "candidates": []
+        }
+
     krx = remove_bad_targets(get_krx_retry())
     krx['Amount'] = krx['Close'] * krx['Volume']
+    
+    # 통계용: 1차 필터 통과 개수 산출
+    pass1_count = len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
+                     (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])
+
     candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
                      (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
     
@@ -98,19 +117,41 @@ async def scan_market(run_type="OPEN_SCAN"):
             stop = int(curr['Close'] * 0.970)
             
             if save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop):
+                # telegram_bot.py 포맷터가 요구하는 모든 변수를 포함하여 KeyError 원천 차단
                 results.append({
                     "code": code, 
                     "name": row['Name'], 
                     "score": score, 
-                    "price": int(curr['Close'])
+                    "price": int(curr['Close']),
+                    "buy_p": buy_p,
+                    "target_1": t1,
+                    "target_2": t2,
+                    "stop_p": stop,
+                    "chg": round(row['ChangesRatio'], 2),
+                    "rs": round((five_change - market_change), 2),
+                    "five_chg": round(five_change, 2),
+                    "kospi_chg": round(market_change, 2),
+                    "ma_gap": round(ma_gap, 2),
+                    "c_vol": vol_ratio >= 2.0,
+                    "c_rs": (five_change - market_change) > 0,
+                    "c_heat": ma_gap < 15,
+                    "c_amt": row['Amount'] >= 50_000_000_000,
+                    "c_shadow": upper_shadow <= 3,
+                    "cond_count": sum([vol_ratio >= 2.0, (five_change - market_change) > 0, ma_gap < 15, row['Amount'] >= 50_000_000_000, upper_shadow <= 3])
                 })
             
             if len(results) >= MAX_CANDIDATES: break
         except Exception as e:
             print(f"[{code} {row['Name']}] 처리 오류: {type(e).__name__} / {e}")
             
+    mode_str = "🟢 정상 작동" if risk_level < 2 else "🚨 위험장 (보수적 접근)"
     return {
-        "market": {"kospi": round(market_change, 2)},
-        "stats": {"final": len(results)},
+        "market": {
+            "kospi": round(market_change, 2),
+            "kosdaq": 0, 
+            "risk_pct": risk_level * 50,
+            "mode": mode_str
+        },
+        "stats": {"total": len(krx), "pass1": pass1_count, "final": len(results)},
         "candidates": results
     }
