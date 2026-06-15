@@ -3,6 +3,7 @@ import pandas as pd
 import datetime, asyncio, time
 import pytz
 
+# FinanceDataReader 임포트 보완
 try:
     import FinanceDataReader as fdr
 except ImportError:
@@ -27,7 +28,7 @@ def get_krx_retry():
             return krx
         except: 
             time.sleep(5)
-    raise Exception("KRX API 연결 3회 실패")
+    raise Exception("KRX API 데이터 연결 3회 실패")
 
 def remove_bad_targets(df):
     pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
@@ -37,19 +38,17 @@ def calculate_candle_position(row):
     high_low = row['High'] - row['Low']
     return ((row['Close'] - row['Low']) / high_low * 100) if high_low > 0 else None
 
-async def scan_market():
+async def scan_market(run_type="OPEN_SCAN"):
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.datetime.now(kst)
     start_date = (now - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
     
-    # 런타임 타입 자동 판별 (08:50=OPEN, 15:00=CLOSE)
-    run_type = "OPEN" if now.hour < 12 else "CLOSE"
-    
     risk = get_market_risk(start_date)
     risk_level = risk["level"]
+    # 시장 위험도에 따른 유동적 점수 커트라인
     min_score = 75 if risk_level == 0 else (80 if risk_level == 1 else 85)
     
-    # [최적화] 시장 데이터는 루프 밖에서 1회 호출
+    # [최적화] 시장(KS11) 호출을 루프 밖으로 분리
     try:
         market_hist = fdr.DataReader("KS11", start_date)
         market_change = (market_hist['Close'].iloc[-1] / market_hist['Close'].iloc[-6] - 1) * 100
@@ -70,7 +69,7 @@ async def scan_market():
     krx['Max_OC'] = krx[['Open','Close']].max(axis=1)
     krx['Upper_Shadow'] = (krx['High'] - krx['Max_OC']) / krx['Close'] * 100
     
-    # [최적화] 거래대금 중심 필터링
+    # 핵심 필터링 (거래대금 Amount 중심)
     condition = (krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & \
                 (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18) & \
                 (krx['Upper_Shadow'] <= 5)
@@ -96,14 +95,12 @@ async def scan_market():
                 fail_stats["ma20"] += 1; continue
             
             five_change = (hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) * 100
-            
             vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
             if vol_ma <= 0 or (row['Volume'] / vol_ma) < 1.3: 
                 fail_stats["vol"] += 1; continue
             
             close_pos = calculate_candle_position(row)
             rs = five_change - market_change
-            
             score = calculate_score(row['Amount'], (row['Volume']/vol_ma), row['ChangesRatio'], row['Upper_Shadow'], ma_gap, close_pos, rs, five_change, risk_level)
             
             if score < min_score: 
@@ -114,7 +111,7 @@ async def scan_market():
             target_2 = int(row['Close'] * 1.063)
             stop_p = int(row['Close'] * 0.970)
             
-            # DB 저장 (신규 스키마 준수)
+            # DB 저장 (최종 수정된 런타임 타입 및 스키마 준수)
             save_candidate(run_type, code, row['Name'], score, buy_p, target_1, target_2, stop_p)
             
             results.append({
@@ -128,7 +125,7 @@ async def scan_market():
             })
         except Exception as e:
             fail_stats["etc"] += 1
-            print(f"🚨 [{code}] 연산 실패: {e}")
+            print(f"🚨 [{code}] 연산 실패 로그: {e}")
             continue
             
     return {
