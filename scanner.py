@@ -30,8 +30,12 @@ async def scan_market(run_type="OPEN_SCAN"):
     now = datetime.datetime.now(kst)
     start_date = (now - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
 
-    risk = get_market_risk(start_date)
-    risk_level = risk["level"]
+    # [1] 시장 위험도 예외 처리
+    try:
+        risk = get_market_risk(start_date)
+        risk_level = risk["level"]
+    except: risk_level = 1
+    
     if risk_level >= 2 and run_type == "CLOSE_SCAN":
         return {"market": {"kospi": 0}, "stats": {"final": 0}, "candidates": []}
     
@@ -69,10 +73,7 @@ async def scan_market(run_type="OPEN_SCAN"):
             
             if ma_gap < 0 or vol_ratio < 1.3 or upper_shadow > 5: continue
             
-            p6 = hist['Close'].iloc[-6]
-            if p6 <= 0: continue
-            five_change = (curr['Close'] / p6 - 1) * 100
-            
+            five_change = (curr['Close'] / hist['Close'].iloc[-6] - 1) * 100
             score = calculate_score(row['Amount'], vol_ratio, row['ChangesRatio'], upper_shadow, 
                                    ma_gap, candle_pos, (five_change - market_change), five_change, risk_level)
             
@@ -87,8 +88,4 @@ async def scan_market(run_type="OPEN_SCAN"):
         except Exception as e:
             print(f"[{code} {row['Name']}] 처리 오류: {type(e).__name__} / {e}")
             
-    return {
-        "market": {"kospi": round(market_change, 2)},
-        "stats": {"final": len(results)},
-        "candidates": results
-    }
+    return {"market": {"kospi": round(market_change, 2)}, "stats": {"final": len(results)}, "candidates": results}
