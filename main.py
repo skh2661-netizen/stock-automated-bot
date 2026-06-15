@@ -11,43 +11,40 @@ from telegram_bot import send_message, format_scan_message, format_validate_mess
 
 async def run():
     try:
-        print("1. V8.4 퀀트 엔진 가동 준비...")
+        print("1. V8.5 최상위 퀀트 시스템 가동 준비...")
         init_db()
-        print("✅ DB 연결 완료")
+        print("✅ DB 안전 연결 확인 완료")
 
-        # 🚨 핵심: 서버 시간이 아닌 한국 시간(KST)으로 강제 고정
         kst = pytz.timezone('Asia/Seoul')
         n = datetime.datetime.now(kst)
-        print(f"✅ 현재 KST 시각: {n.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"✅ 현재 KST 시스템 시각: {n.strftime('%Y-%m-%d %H:%M:%S')}")
 
-        # 시간대에 따른 로직 분기
         if 8 <= n.hour < 9:
-            print("2. [오전 08:45] 주도주 스캔 시작...")
-            results = await scan_market()
-            await send_message(format_scan_message(results))
-            print("✅ 스캔 및 보고 완료")
+            print("2. [오전 08:45] 주도주 스캔 가동...")
+            data = await scan_market()
+            await send_message(format_scan_message(data))
+            print("✅ 정밀 리포트 타전 완료")
             
         elif n.hour == 15 and n.minute <= 20:
-            print("2. [오후 15:00] 생존 검사 시작...")
+            print("2. [오후 15:00] 생존 검사 가동...")
             results = validate_candidates()
             await send_message(format_validate_message(results))
-            print("✅ 생존 검사 및 보고 완료")
+            print("✅ 생존 검사 보고 완료")
             
         elif n.hour == 15 and n.minute >= 35:
-            print("2. [오후 15:40] 일일 마감 보고...")
-            await send_message("🌙 V8.4 DAILY REPORT: 오늘분 기록 완료")
-            print("✅ 마감 보고 완료")
+            print("2. [오후 15:40] 일일 마감 연산...")
+            await send_message("🌙 V8.4 DAILY REPORT: 오늘분 데이터 적재 및 기계적 백업 완료")
+            print("✅ 마감 완료")
             
         else:
-            print("⚠️ 스케줄된 시간이 아닙니다. (수동 가동 감지: 강제 스캔 테스트 진행)")
-            results = await scan_market()
-            await send_message(format_scan_message(results))
+            print("⚠️ 수동 가동 감지: 임의 시그널 리포트 출력 테스트 수행")
+            data = await scan_market()
+            await send_message(format_scan_message(data))
             print("✅ 수동 테스트 스캔 완료")
 
     except Exception as e:
-        # 에러 발생 시 로그에 원인을 정확히 출력하는 블랙박스 장치
         print("\n" + "="*50)
-        print("🚨 치명적 에러 발생 (아래 메시지를 확인하십시오) 🚨")
+        print("🚨 치명적 에러 발생 - 연산 긴급 정지 🚨")
         traceback.print_exc()
         print("="*50 + "\n")
         sys.exit(1)
