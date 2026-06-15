@@ -1,3 +1,4 @@
+Python
 import sqlite3
 from datetime import datetime
 import os
@@ -31,7 +32,7 @@ def init_db():
     conn.close()
 
 def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
-    init_db()  # 최초 가동 및 데이터 백업 시 테이블 누락 리스크 차단
+    # [수정 1] 불필요한 init_db() 호출 제거 (SQLite Lock 리스크 원천 차단)
     conn = connect()
     now = datetime.now(pytz.timezone("Asia/Seoul"))
     today = now.strftime("%Y-%m-%d")
