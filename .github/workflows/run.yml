@@ -1,9 +1,10 @@
 name: V8.4.2 Quant Stock Engine
+
 on:
   schedule:
-    - cron: '45 23 * * 0-4'
-    - cron: '0 6 * * 1-5'
-    - cron: '40 6 * * 1-5'
+    - cron: '45 23 * * 0-4' # 08:45 KST
+    - cron: '0 6 * * 1-5'   # 15:00 KST
+    - cron: '40 6 * * 1-5'  # 15:40 KST
   workflow_dispatch:
 
 permissions:
@@ -15,22 +16,30 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install finance-datareader pandas numpy pytz python-telegram-bot
-      - env:
+
+      - name: Run Quant Engine
+        env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py
+
       - name: Save database
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add data/candidates.db || true
+          # 루트 디렉토리에 생성된 candidates.db를 저장
+          git add candidates.db || true
           git commit -m "Update quant database" || true
           git push
