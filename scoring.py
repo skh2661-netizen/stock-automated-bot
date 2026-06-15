@@ -65,3 +65,17 @@ def grade(s):
     elif s >= 85: return "A"
     elif s >= 75: return "B"
     return "C"
+
+# [V8.4.5 신규 방어 로직: 2회 연속 손절 시 익일 비중 50% 축소]
+loss_count = 0 
+
+def adjust_position(results, current_loss_flag):
+    global loss_count
+    if current_loss_flag:
+        loss_count += 1
+    else:
+        loss_count = 0
+    
+    if loss_count >= 2:
+        return "⚠️ 경고: 최근 2회 연속 손절로 인해 익일 진입 비중 50%로 자동 제한"
+    return "✅ 정상 비중 진입"
