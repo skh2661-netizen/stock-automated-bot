@@ -6,13 +6,14 @@ from telegram_bot import send_message, format_scan_message, format_validate_mess
 
 def git_push_db():
     try:
+        # DB 저장 및 강제 Push
         subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
         subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
         subprocess.run(["git", "add", "candidates.db"], check=True)
-        subprocess.run(["git", "commit", "-m", "Auto-update DB: daily performance record"], check=True)
+        subprocess.run(["git", "commit", "-m", "Auto-update DB"], check=True)
         subprocess.run(["git", "push"], check=True)
     except Exception as e:
-        print(f"Git Push 실패: {e}")
+        print(f"Git Push 생략: {e}")
 
 async def run():
     kst = pytz.timezone('Asia/Seoul')
@@ -26,12 +27,12 @@ async def run():
         elif now.hour == 15 and now.minute <= 20:
             results = validate_candidates()
             await send_message(format_validate_message(results))
-        elif now.hour >= 15:
-            await send_message("🌙 일일 데이터 적재 완료")
+        else:
+            await send_message(f"🌙 V8.4 정기 점검 모드 ({now.strftime('%H:%M')})")
         
-        # 🚨 작업 완료 후 DB 변경사항 클라우드에 영구 저장
         git_push_db()
     except Exception as e:
+        # 에러 발생 시 즉시 상세 스택트레이스 출력
         traceback.print_exc()
         sys.exit(1)
 
