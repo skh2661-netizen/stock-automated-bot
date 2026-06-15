@@ -1,5 +1,6 @@
 import sqlite3
 from datetime import datetime
+import os
 
 DB_PATH = "candidates.db"
 
@@ -10,7 +11,6 @@ def connect():
 
 def init_db():
     conn = connect()
-    # 4대 추가 수정사항 반영: entry_price, OHLC 필드 추가, entry_success NULL화
     conn.execute("""
         CREATE TABLE IF NOT EXISTS candidates (
             unique_key TEXT PRIMARY KEY,
@@ -22,7 +22,6 @@ def init_db():
             name TEXT,
             score INTEGER,
             buy_p INTEGER,
-            entry_price INTEGER DEFAULT NULL,
             target1_p INTEGER,
             target2_p INTEGER,
             stop_p INTEGER,
@@ -38,18 +37,28 @@ def init_db():
 
 def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
     conn = connect()
-    today = datetime.now().strftime("%Y-%m-%d")
-    # unique_key: 시간 제거 (중복 방지)
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M:%S")
     unique_key = f"{today}_{code}_{run_type}"
-    timestamp = datetime.now().strftime("%H:%M:%S")
     
     try:
         conn.execute("""
             INSERT OR IGNORE INTO candidates 
             (unique_key, date, timestamp, run_type, strategy_version, code, name, score, buy_p, target1_p, target2_p, stop_p) 
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (unique_key, today, timestamp, run_type, "V8.4.2", code, name, score, buy_p, target1_p, target2_p, stop_p))
+        """, (unique_key, today, time_str, run_type, "V8.4.2", code, name, score, buy_p, target1_p, target2_p, stop_p))
         conn.commit()
     except sqlite3.Error as e:
         print(f"DB 저장 오류: {e}")
     conn.close()
+
+def get_today_candidates():
+    """validator.py가 호출하는 핵심 함수 복구"""
+    if not os.path.exists(DB_PATH): 
+        return []
+    conn = connect()
+    today = datetime.now().strftime("%Y-%m-%d")
+    rows = conn.execute("SELECT * FROM candidates WHERE date=?", (today,)).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
