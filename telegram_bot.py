@@ -43,7 +43,6 @@ def format_scan_message(data):
     msg += f" • 1차 통과: {stats['pass1']:,}개\n"
     msg += f" • 최종 신호: {stats['final']}개\n\n"
     
-    # 🚨 [시간대별 작전 라우터]
     hour = now.hour
     if 8 <= hour < 10:
         time_msg = "☀️ 시초가 돌파 주도주 탐색"
@@ -57,7 +56,6 @@ def format_scan_message(data):
     msg += f"⏰ 현재 작전 모드\n"
     msg += f" 👉 {time_msg}\n\n"
 
-    # 🚨 [탈락 원인 통계 로직]
     msg += f"📉 1차 필터 통과자 정밀 탈락 원인\n"
     msg += f" • MA20 이탈 (역배열): {fail_stats['ma20']}개\n"
     msg += f" • 거래량 유입 부족: {fail_stats['vol']}개\n"
@@ -70,57 +68,57 @@ def format_scan_message(data):
     for i, r in enumerate(candidates, 1):
         rank_icon = "🥇 1순위" if i == 1 else ("🥈 2순위" if i == 2 else f"🏅 {i}순위")
 
-        if r['score'] >= 85 and r['ma_gap'] < 15: sig_grade = "A+급 (정석/안정형)"
-        elif r['score'] >= 85 and r['ma_gap'] >= 15: sig_grade = "A급 (공격/과열존재)"
+        if r['score'] >= 85 and r.get('ma_gap', 0) < 15: sig_grade = "A+급 (정석/안정형)"
+        elif r['score'] >= 85 and r.get('ma_gap', 0) >= 15: sig_grade = "A급 (공질/과열존재)"
         elif r['score'] >= 80: sig_grade = "B+급 (모멘텀 양호)"
         else: sig_grade = "B급 (관찰 대상)"
 
-        if r['ma_gap'] >= 20: 
+        if r.get('ma_gap', 0) >= 20: 
             heat_judge = "🚨 초과열"
             chase_warn = "❌ 추격 매수 절대 금지 (깊은 눌림 대기)"
-        elif r['ma_gap'] >= 15: 
+        elif r.get('ma_gap', 0) >= 15: 
             heat_judge = "⚠️ 과열"
             chase_warn = "⚠️ 추격 매수 주의 (비중 축소)"
         else: 
             heat_judge = "🟢 안정"
             chase_warn = "✅ 진입선 도달 시 매수 유효"
 
-        if r['price'] <= r['buy_p']: signal_status = "🟢 매수 가능 구간"
+        if r['price'] <= r.get('buy_p', 0): signal_status = "🟢 매수 가능 구간"
         else: signal_status = "🟡 눌림 대기"
 
-        reward = r['target_1'] - r['buy_p']
-        risk = r['buy_p'] - r['stop_p']
+        reward = r.get('target_1', 0) - r.get('buy_p', 0)
+        risk = r.get('buy_p', 0) - r.get('stop_p', 0)
         rr_ratio = round(reward / risk, 2) if risk > 0 else 0
 
         msg += f"{rank_icon} {r['name']} ({r['code']})\n"
         msg += f" 🎯 등급: {sig_grade}\n"
         msg += f" 📊 점수: {r['score']} / 100\n\n"
 
-        msg += f"🛠 핵심 조건 충족: {r['cond_count']} / 5\n"
-        msg += f" [{'✅' if r['c_vol'] else '❌'}] 거래량 (평균 대비 2배 이상)\n"
-        msg += f" [{'✅' if r['c_rs'] else '❌'}] 상대강도 (시장 대비 RS 우위)\n"
-        msg += f" [{'✅' if r['c_heat'] else '⚠️'}] 이격도 (MA20 단기 과열 방지)\n"
-        msg += f" [{'✅' if r['c_amt'] else '❌'}] 거래대금 (당일 500억 이상 유입)\n"
-        msg += f" [{'✅' if r['c_shadow'] else '❌'}] 윗꼬리 안정성 (매물대 출회 위험 낮음)\n\n"
+        msg += f"🛠 핵심 조건 충족: {r.get('cond_count', 5)} / 5\n"
+        msg += f" [{'✅' if r.get('c_vol', True) else '❌'}] 거래량 (평균 대비 2배 이상)\n"
+        msg += f" [{'✅' if r.get('c_rs', True) else '❌'}] 상대강도 (시장 대비 RS 우위)\n"
+        msg += f" [{'✅' if r.get('c_heat', True) else '⚠️'}] 이격도 (MA20 단기 과열 방지)\n"
+        msg += f" [{'✅' if r.get('c_amt', True) else '❌'}] 거래대금 (당일 500억 이상 유입)\n"
+        msg += f" [{'✅' if r.get('c_shadow', True) else '❌'}] 윗꼬리 안정성 (매물대 출회 위험 낮음)\n\n"
         
         msg += f"📌 현재 상태 및 추격 위험도\n"
-        msg += f" • 현재가: {r['price']:,}원 ({r['chg']}%)\n"
-        msg += f" • 진입선: {r['buy_p']:,}원 이하\n"
+        msg += f" • 현재가: {r['price']:,}원 ({r.get('chg', 0)}%)\n"
+        msg += f" • 진입선: {r.get('buy_p', 0):,}원 이하\n"
         msg += f" • 상태: {signal_status}\n"
         msg += f" • 판정: {chase_warn}\n\n"
         
         msg += f"📈 시장 상대강도 (RS - 5일 기준)\n"
-        msg += f" • 종목(+{r['five_chg']}%) vs 코스피({r['kospi_chg']}%)\n"
-        msg += f" • 시장 대비: +{r['rs']}% (상대 우위)\n\n"
+        msg += f" • 종목(+{r.get('five_chg', 0)}%) vs 코스피({r.get('kospi_chg', 0)}%)\n"
+        msg += f" • 시장 대비: +{r.get('rs', 0)}% (상대 우위)\n\n"
 
         msg += f"🔥 과열도 및 손익비\n"
-        msg += f" • MA20 이격: +{r['ma_gap']}% ({heat_judge})\n"
+        msg += f" • MA20 이격: +{r.get('ma_gap', 0)}% ({heat_judge})\n"
         msg += f" • 1차 R:R: {rr_ratio}\n\n"
         
         msg += f"🎯 매매 전략\n"
-        msg += f" • 매수: {r['buy_p']:,}원 부근\n"
-        msg += f" • 익절: {r['target_1']:,}원 / {r['target_2']:,}원\n"
-        msg += f" • 손절: {r['stop_p']:,}원 (-3% 엄수)\n\n"
+        msg += f" • 매수: {r.get('buy_p', 0):,}원 부근\n"
+        msg += f" • 익절: {r.get('target_1', 0):,}원 / {r.get('target_2', 0):,}원\n"
+        msg += f" • 손절: {r.get('stop_p', 0):,}원 (-3% 엄수)\n\n"
 
         msg += f"📌 사후 관리 규칙\n"
         msg += f" • +3% 도달: 손절선을 진입가로 이동 (본절 방어)\n"
@@ -141,4 +139,16 @@ def format_validate_message(results):
         status = "🔥 유지" if r["survive"] else "❌ 탈락"
         reason_str = ', '.join(r['reason']) if r['reason'] else "특이사항 없음"
         msg += f"{status} {r['name']} | 수익:{r['change']}% | 사유:{reason_str}\n"
+    return msg
+
+# [보완] 원격지 ImportError 해결을 위한 신규 포맷터 강제 이식
+def format_d3_profit_message(results):
+    msg = "🚨 [수익 실현 알림] D+3 스윙 타겟 기계적 청산\n=========================\n"
+    if not results: return msg + "오늘(D+3) 청산 대상 종목 없음."
+    
+    for r in results:
+        msg += f"💰 {r['name']} ({r['code']})\n"
+        msg += f" • 진입가: {r['buy_p']:,}원\n"
+        msg += f" • 현재가: {r['current']:,}원 ({r['change']}%)\n"
+        msg += f" 👉 액션: 전량 익절 (통계상 최대 수익 구간 도달)\n\n"
     return msg
