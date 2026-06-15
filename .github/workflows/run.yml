@@ -3,6 +3,9 @@ concurrency:
   group: v84-quant-engine-${{ github.ref }}
   cancel-in-progress: false
 
+permissions:
+  contents: write
+
 on:
   schedule:
     - cron: '50 23 * * 0-4'
@@ -30,5 +33,4 @@ jobs:
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: |
-        python main.py
+      run: python main.py
