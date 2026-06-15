@@ -11,7 +11,6 @@ def get_krx_retry():
     for i in range(3):
         try:
             krx = fdr.StockListing("KRX")
-            # [수정 2] 컬럼명 파편화 맵핑 방어 최고 수준 강화
             rename_map = {
                 "ChagesRatio": "ChangesRatio",
                 "ChgRate": "ChangesRatio",
@@ -77,7 +76,7 @@ async def scan_market(run_type="OPEN_SCAN"):
             if pd.isna(ma20) or ma20 <= 0: continue
             
             ma_gap = (curr['Close'] - ma20) / ma20 * 100
-            vol_ratio = curr['Volume'] / vol_ma  # 실시간 OHLCV 데이터 거래량 기준
+            vol_ratio = curr['Volume'] / vol_ma  
             upper_shadow = ((curr['High'] - max(curr['Open'], curr['Close'])) / curr['High'] * 100)
             candle_pos = ((curr['Close'] - curr['Low']) / (curr['High'] - curr['Low']) * 100) if (curr['High'] > curr['Low']) else 0
             
@@ -87,6 +86,7 @@ async def scan_market(run_type="OPEN_SCAN"):
             if p6 <= 0: continue
             five_change = (curr['Close'] / p6 - 1) * 100
             
+            # scoring.py의 9개 인자와 완벽 매칭됨
             score = calculate_score(row['Amount'], vol_ratio, row['ChangesRatio'], upper_shadow, 
                                    ma_gap, candle_pos, (five_change - market_change), five_change, risk_level)
             
