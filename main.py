@@ -1,9 +1,9 @@
 import asyncio, datetime, pytz, traceback, sys, subprocess
 from scanner import scan_market
-from validator import validate_candidates
+from validator import validate_candidates, validate_d3_targets  # D+3 추출 모듈 추가
 from database import init_db, save_log
 from market_check import is_market_open
-from telegram_bot import send_message, format_scan_message, format_validate_message
+from telegram_bot import send_message, format_scan_message, format_validate_message, format_d3_profit_message  # 익절 알림 포맷 추가
 
 def git_push_db():
     try:
@@ -29,14 +29,24 @@ async def run():
             data = await scan_market("OPEN_SCAN")
             await send_message(format_scan_message(data))
             save_log("OPEN_SCAN", "SUCCESS")
+            
         elif now.hour == 15 and now.minute < 25:
             data = await scan_market("CLOSE_SCAN")
             await send_message(format_scan_message(data))
             save_log("CLOSE_SCAN", "SUCCESS")
+            
         elif now.hour == 15 and 30 <= now.minute <= 59:
+            # 1. 기존 장 마감 생존 검사
             results = validate_candidates()
             await send_message(format_validate_message(results))
             save_log("REVIEW", "SUCCESS")
+            
+            # 2. [신규 추가] D+3 스윙 타겟 기계적 익절 알림
+            d3_results = validate_d3_targets()
+            if d3_results:
+                await send_message(format_d3_profit_message(d3_results))
+                save_log("D3_PROFIT_ALERT", "SUCCESS")
+                
     except Exception as e:
         await send_message(f"🚨 V8.4.5 장애 발생: {str(e)}")
         save_log("ERROR", str(e))
