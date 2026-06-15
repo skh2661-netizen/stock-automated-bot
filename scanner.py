@@ -112,22 +112,33 @@ async def scan_market():
             score = calculate_score(row['Amount'], (row['Volume']/vol_ma), row['ChangesRatio'], row['Upper_Shadow'], ma_gap, close_pos, rs, five_change, risk_level)
             if score < 75: continue
             
-            save_candidate(code, row['Name'], score, int(row['Close']), risk_level)
-            
+            # 타점 연산 및 로직 분류
             amount_100m = int(row['Amount'] / 100000000)
+            buy_p = int(row['Close'] * 0.985)
+            target_1 = int(row['Close'] * 1.023)
+            target_2 = int(row['Close'] * 1.063)
+            stop_p = int(row['Close'] * 0.970)
+
+            # 신호 성향 및 조건 검증기
+            c_vol = (row['Volume'] / vol_ma) >= 2.0
+            c_rs = rs > 5.0
+            c_heat = ma_gap < 15.0
+            c_amt = amount_100m >= 500
+            c_shadow = row['Upper_Shadow'] < 2.0
+            
+            cond_count = sum([c_vol, c_rs, c_heat, c_amt, c_shadow])
+            sig_type = "🔥 공격형 (모멘텀 극대화)" if ma_gap >= 15 else "🛡️ 정석형 (안정적 밸런스)"
+            
+            # DB 백테스트 기록 보존
+            save_candidate(code, row['Name'], score, int(row['Close']), risk_level, round(rs, 2), round(ma_gap, 1), buy_p, target_1, stop_p)
+            
             results.append({
-                "code": code, 
-                "name": row['Name'], 
-                "score": score, 
-                "grade": grade(score), 
-                "price": int(row['Close']),
-                "amount": amount_100m,
-                "chg": round(row['ChangesRatio'], 2),
-                "vol_ratio": round(row['Volume'] / vol_ma, 1),
-                "ma_gap": round(ma_gap, 1),
-                "five_chg": round(five_change, 2),
-                "kospi_chg": round(market_change, 2),
-                "rs": round(rs, 2)
+                "code": code, "name": row['Name'], "score": score, "price": int(row['Close']),
+                "amount": amount_100m, "chg": round(row['ChangesRatio'], 2),
+                "vol_ratio": round(row['Volume'] / vol_ma, 1), "ma_gap": round(ma_gap, 1),
+                "five_chg": round(five_change, 2), "kospi_chg": round(market_change, 2), "rs": round(rs, 2),
+                "buy_p": buy_p, "target_1": target_1, "target_2": target_2, "stop_p": stop_p,
+                "sig_type": sig_type, "cond_count": cond_count, "c_vol": c_vol, "c_rs": c_rs, "c_heat": c_heat
             })
         except Exception as e:
             continue
