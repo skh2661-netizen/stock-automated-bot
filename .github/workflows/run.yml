@@ -1,34 +1,31 @@
 name: V8.4 Momentum Swing Quant Engine
+concurrency:
+  group: v84-quant-engine-${{ github.ref }}
+  cancel-in-progress: false
 
 on:
   schedule:
-    # 08:45 KST (UTC 23:45)
-    - cron: '45 23 * * 0-4'
-    # 15:00 KST (UTC 06:00)
+    - cron: '50 23 * * 0-4'
     - cron: '0 6 * * 1-5'
-    # 15:40 KST (UTC 06:40)
     - cron: '40 6 * * 1-5'
-
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
+    timeout-minutes: 15
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-
     - name: Setup Python
       uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-
+      with: {python-version: '3.11'}
     - name: Install packages
       run: |
+        pip install --upgrade pip
         pip install -r requirements.txt
-
     - name: Run Engine
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
