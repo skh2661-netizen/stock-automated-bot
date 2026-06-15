@@ -18,10 +18,18 @@ MIN_AMOUNT = 10_000_000_000
 MAX_CANDIDATES = 10
 
 def get_krx_retry(): 
-    """KRX 데이터 수집 실패 시 3회 재시도"""
+    """KRX 데이터 수집 및 외부 라이브러리 오타 방어 패치"""
     for i in range(3):
-        try: return fdr.StockListing("KRX")
-        except: time.sleep(5)
+        try: 
+            krx = fdr.StockListing("KRX")
+            # 🚨 FDR 라이브러리 개발자의 치명적 오타(ChagesRatio) 자동 교정
+            if 'ChagesRatio' in krx.columns:
+                krx.rename(columns={'ChagesRatio': 'ChangesRatio'}, inplace=True)
+            elif 'ChgRate' in krx.columns:
+                krx.rename(columns={'ChgRate': 'ChangesRatio'}, inplace=True)
+            return krx
+        except: 
+            time.sleep(5)
     raise Exception("KRX 데이터 연결 3회 실패")
 
 def remove_bad_targets(df):
