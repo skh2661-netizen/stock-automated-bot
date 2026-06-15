@@ -29,7 +29,7 @@ def format_scan_message(data):
     candidates = data["candidates"]
     
     mode_icon = "🟢" if "정상" in market["mode"] else "🚨"
-    msg = f"🎯 [V8.4 퀀트 시그널 터미널]\n\n"
+    msg = f"🎯 [V8.4.5 퀀트 시그널 터미널]\n\n"
     msg += f"기준: {time_str}\n\n"
     
     msg += f"🌎 시장 상태\n"
@@ -67,9 +67,15 @@ def format_scan_message(data):
         
     for i, r in enumerate(candidates, 1):
         rank_icon = "🥇 1순위" if i == 1 else ("🥈 2순위" if i == 2 else f"🏅 {i}순위")
+        
+        strong_buy_alert = ""
 
-        if r['score'] >= 85 and r.get('ma_gap', 0) < 15: sig_grade = "A+급 (정석/안정형)"
-        elif r['score'] >= 85 and r.get('ma_gap', 0) >= 15: sig_grade = "A급 (공질/과열존재)"
+        # [신규 추가: 90점 이상 & 단기 과열 없을 시 초강력 매수 추천 시각화]
+        if r['score'] >= 90 and r.get('ma_gap', 0) < 15: 
+            sig_grade = "👑 S급 (초강력 매수 / 승률 극대화 구간)"
+            strong_buy_alert = "🔥🔥🔥 [무조건 매수: 최우선 진입 타겟] 🔥🔥🔥\n"
+        elif r['score'] >= 85 and r.get('ma_gap', 0) < 15: sig_grade = "A+급 (정석/안정형)"
+        elif r['score'] >= 85 and r.get('ma_gap', 0) >= 15: sig_grade = "A급 (공격/과열존재)"
         elif r['score'] >= 80: sig_grade = "B+급 (모멘텀 양호)"
         else: sig_grade = "B급 (관찰 대상)"
 
@@ -90,6 +96,8 @@ def format_scan_message(data):
         risk = r.get('buy_p', 0) - r.get('stop_p', 0)
         rr_ratio = round(reward / risk, 2) if risk > 0 else 0
 
+        # 초강력 매수 추천 시각화 적용
+        msg += f"{strong_buy_alert}"
         msg += f"{rank_icon} {r['name']} ({r['code']})\n"
         msg += f" 🎯 등급: {sig_grade}\n"
         msg += f" 📊 점수: {r['score']} / 100\n\n"
@@ -118,7 +126,8 @@ def format_scan_message(data):
         msg += f"🎯 매매 전략\n"
         msg += f" • 매수: {r.get('buy_p', 0):,}원 부근\n"
         msg += f" • 익절: {r.get('target_1', 0):,}원 / {r.get('target_2', 0):,}원\n"
-        msg += f" • 손절: {r.get('stop_p', 0):,}원 (-3% 엄수)\n\n"
+        # [수정: 변동성 대응형 손절 포맷 적용]
+        msg += f" • 손절: {r.get('stop_p', 0):,}원 (변동성 대응: 당일 시가 대비 -3% 또는 5일 최저가 이탈 시)\n\n"
 
         msg += f"📌 사후 관리 규칙\n"
         msg += f" • +3% 도달: 손절선을 진입가로 이동 (본절 방어)\n"
@@ -133,7 +142,7 @@ def format_scan_message(data):
     return msg
 
 def format_validate_message(results):
-    msg = "⚠️ V8.4 15:00 생존 검사\n=========================\n"
+    msg = "⚠️ V8.4.5 15:00 생존 검사\n=========================\n"
     if not results: return msg + "검사 대상 종목 없음"
     for r in results:
         status = "🔥 유지" if r["survive"] else "❌ 탈락"
@@ -141,7 +150,7 @@ def format_validate_message(results):
         msg += f"{status} {r['name']} | 수익:{r['change']}% | 사유:{reason_str}\n"
     return msg
 
-# [보완] 원격지 ImportError 해결을 위한 신규 포맷터 강제 이식
+# [보완] 원격지 ImportError 해결 및 D+3 기계적 익절 알림
 def format_d3_profit_message(results):
     msg = "🚨 [수익 실현 알림] D+3 스윙 타겟 기계적 청산\n=========================\n"
     if not results: return msg + "오늘(D+3) 청산 대상 종목 없음."
