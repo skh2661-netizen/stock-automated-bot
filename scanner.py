@@ -3,7 +3,6 @@ import pandas as pd
 import datetime, asyncio, time
 import pytz
 
-# FinanceDataReader 임포트 보완
 try:
     import FinanceDataReader as fdr
 except ImportError:
@@ -28,7 +27,7 @@ def get_krx_retry():
             return krx
         except: 
             time.sleep(5)
-    raise Exception("KRX API 데이터 연결 3회 실패")
+    raise Exception("KRX API 연결 3회 실패")
 
 def remove_bad_targets(df):
     pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
@@ -45,21 +44,15 @@ async def scan_market(run_type="OPEN_SCAN"):
     
     risk = get_market_risk(start_date)
     risk_level = risk["level"]
-    # 시장 위험도에 따른 유동적 점수 커트라인
     min_score = 75 if risk_level == 0 else (80 if risk_level == 1 else 85)
     
-    # [최적화] 시장(KS11) 호출을 루프 밖으로 분리
     try:
         market_hist = fdr.DataReader("KS11", start_date)
         market_change = (market_hist['Close'].iloc[-1] / market_hist['Close'].iloc[-6] - 1) * 100
     except:
         market_change = 0.0
 
-    market_info = {
-        "mode": "정상" if risk_level == 0 else "🚨 위험 제한 모드",
-        "kospi": round(market_change, 2),
-        "risk_pct": risk.get("score", 20)
-    }
+    market_info = {"mode": "정상" if risk_level == 0 else "🚨 위험 제한 모드", "kospi": round(market_change, 2)}
     
     krx = get_krx_retry()
     total_count = len(krx)
@@ -69,16 +62,12 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx['Max_OC'] = krx[['Open','Close']].max(axis=1)
     krx['Upper_Shadow'] = (krx['High'] - krx['Max_OC']) / krx['Close'] * 100
     
-    # 핵심 필터링 (거래대금 Amount 중심)
     condition = (krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & \
                 (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18) & \
                 (krx['Upper_Shadow'] <= 5)
     
-    pass1_count = len(krx[condition])
     candidates = krx[condition].sort_values('Amount', ascending=False).head(30)
-    
     results = []
-    fail_stats = {"ma20": 0, "vol": 0, "score": 0, "etc": 0}
 
     for _, row in candidates.iterrows():
         code = str(row['Code']).zfill(6)
@@ -86,51 +75,24 @@ async def scan_market(run_type="OPEN_SCAN"):
         
         try:
             hist = fdr.DataReader(code, start_date)
-            if len(hist) < 25: 
-                fail_stats["etc"] += 1; continue
+            if len(hist) < 25: continue
             
             ma20 = hist['Close'].rolling(20).mean().iloc[-1]
             ma_gap = (row['Close'] - ma20) / ma20 * 100
-            if ma_gap < 0: 
-                fail_stats["ma20"] += 1; continue
+            if ma_gap < 0: continue
             
-            five_change = (hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) * 100
             vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
-            if vol_ma <= 0 or (row['Volume'] / vol_ma) < 1.3: 
-                fail_stats["vol"] += 1; continue
+            if vol_ma <= 0 or (row['Volume'] / vol_ma) < 1.3: continue
             
-            close_pos = calculate_candle_position(row)
-            rs = five_change - market_change
-            score = calculate_score(row['Amount'], (row['Volume']/vol_ma), row['ChangesRatio'], row['Upper_Shadow'], ma_gap, close_pos, rs, five_change, risk_level)
+            rs = ((hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) * 100) - market_change
+            score = calculate_score(row['Amount'], (row['Volume']/vol_ma), row['ChangesRatio'], row['Upper_Shadow'], ma_gap, calculate_candle_position(row), rs, 0, risk_level)
             
-            if score < min_score: 
-                fail_stats["score"] += 1; continue
+            if score < min_score: continue
             
-            buy_p = int(row['Close'] * 0.985)
-            target_1 = int(row['Close'] * 1.023)
-            target_2 = int(row['Close'] * 1.063)
-            stop_p = int(row['Close'] * 0.970)
+            buy_p, target_1, target_2, stop_p = int(row['Close'] * 0.985), int(row['Close'] * 1.023), int(row['Close'] * 1.063), int(row['Close'] * 0.970)
             
-            # DB 저장 (최종 수정된 런타임 타입 및 스키마 준수)
             save_candidate(run_type, code, row['Name'], score, buy_p, target_1, target_2, stop_p)
+            results.append({"code": code, "name": row['Name'], "score": score, "price": int(row['Close'])})
+        except: continue
             
-            results.append({
-                "code": code, "name": row['Name'], "score": score, "price": int(row['Close']),
-                "chg": round(row['ChangesRatio'], 2), "ma_gap": round(ma_gap, 1),
-                "buy_p": buy_p, "target_1": target_1, "target_2": target_2, "stop_p": stop_p,
-                "c_vol": (row['Volume'] / vol_ma) >= 2.0, "c_rs": rs > 5.0, 
-                "c_heat": ma_gap < 15.0, "c_amt": row['Amount'] >= 50_000_000_000, 
-                "c_shadow": row['Upper_Shadow'] < 2.0, "cond_count": 0, "five_chg": round(five_change, 2),
-                "kospi_chg": round(market_change, 2), "rs": round(rs, 2)
-            })
-        except Exception as e:
-            fail_stats["etc"] += 1
-            print(f"🚨 [{code}] 연산 실패 로그: {e}")
-            continue
-            
-    return {
-        "market": market_info,
-        "stats": {"total": total_count, "pass1": pass1_count, "final": len(results)},
-        "fail_stats": fail_stats,
-        "candidates": sorted(results, key=lambda x: x['score'], reverse=True)[:MAX_CANDIDATES]
-    }
+    return {"market": market_info, "stats": {"total": total_count, "final": len(results)}, "candidates": results}
