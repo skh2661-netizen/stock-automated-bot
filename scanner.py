@@ -23,8 +23,13 @@ def get_krx_retry():
                 krx = krx.drop_duplicates(subset=["Code"], keep="first")
             krx = krx.reset_index(drop=True)
             
-            # [형님 지침] 원시 데이터 타입 강제 변환
+            # [형님 지침] ChangesRatio 정밀 단위 보정 및 상한가(±30%) 기준 정제
             krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0)
+            krx["ChangesRatio"] = krx["ChangesRatio"] / 1000
+            
+            # [형님 지침] ±30% 초과 이상치 정제
+            krx.loc[(krx["ChangesRatio"] > 30) | (krx["ChangesRatio"] < -30), "ChangesRatio"] = 0
+            krx["ChangesRatio"] = krx["ChangesRatio"].fillna(0)
                 
             return krx
         except Exception as e:
@@ -65,19 +70,17 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx = krx.loc[:, ~krx.columns.duplicated()]
     krx = krx.reset_index(drop=True)
     
-    # [형님 지침] Close, Volume 수치형 강제 변환 후 Amount 산출
+    # [형님 지침] 수치형 강제 변환 후 Amount 산출
     krx['Close'] = pd.to_numeric(krx['Close'], errors='coerce')
     krx['Volume'] = pd.to_numeric(krx['Volume'], errors='coerce')
     krx['Amount'] = (krx['Close'] * krx['Volume']).fillna(0)
 
-    # [형님 지침] 원시 데이터 판독 디버깅 로그
-    print("==============================")
-    print("ChangesRatio RAW CHECK")
-    print(krx["ChangesRatio"].head(30).tolist())
-    print(krx["ChangesRatio"].describe())
-    print("==============================")
-    print(krx[['Name','Close','Volume','Amount']].head(20))
-    print(krx['Amount'].describe())
+    # [형님 지침] 필터 진입 전 정밀 추적 로그
+    filtered_df = krx[(krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)]
+    print("=== 정규화 확인 (ChangesRatio 3~18% 통과 종목 샘플) ===")
+    print(filtered_df[['Name','Close','Amount','ChangesRatio']].head(50))
+    print(f"등락률 3~18 통과: {len(filtered_df)}")
+    print(f"가격+거래대금 통과: {len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT)])}")
     
     candidates = krx[
         (krx['Close'] >= MIN_PRICE) & 
@@ -86,10 +89,11 @@ async def scan_market(run_type="OPEN_SCAN"):
         (krx['ChangesRatio'] <= 18)
     ].sort_values("Amount", ascending=False).head(100)
     
+    print("🔥 최종 후보 개수:", len(candidates))
+    
     results = []
     fail_stats = {"ma20": 0, "vol": 0, "score": 0, "etc": 0}
     
-    # [중략: 나머지 엔진 로직은 동일]
     for _, row in candidates.iterrows():
         code = str(row['Code']).zfill(6)
         await asyncio.sleep(0.15)
