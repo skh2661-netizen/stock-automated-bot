@@ -3,7 +3,7 @@ from datetime import datetime
 import os
 import pytz
 
-# [핵심 수정] 깃허브 Actions(quant.yml)의 영구 보존 백업 경로와 100% 일치시킴
+# 깃허브 Actions(quant.yml)의 영구 보존 백업 경로와 일치
 DB_PATH = "data/candidates.db"
 
 def connect(): 
@@ -12,7 +12,7 @@ def connect():
     return conn
 
 def init_db():
-    # 깃허브 가상 환경에서 data 폴더가 없을 경우 자동 생성하여 에러 원천 차단
+    # 깃허브 가상 환경에서 data 폴더가 없을 경우 자동 생성
     os.makedirs("data", exist_ok=True)
     
     conn = connect()
@@ -43,6 +43,9 @@ def init_db():
     conn.close()
 
 def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
+    # 단독 모듈 테스트 시 DB 증발을 막기 위한 초기화 로직 복구
+    init_db()
+    
     conn = connect()
     now = datetime.now(pytz.timezone("Asia/Seoul"))
     today = now.strftime("%Y-%m-%d")
