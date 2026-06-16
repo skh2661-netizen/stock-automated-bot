@@ -3,6 +3,7 @@ import datetime
 import pytz
 import sqlite3
 import pandas as pd
+from pandas.tseries.offsets import BDay
 from database import get_today_candidates, DB_PATH
 
 def validate_candidates():
@@ -11,11 +12,10 @@ def validate_candidates():
     
     for row in candidates:
         try:
-            # DB 변경사항 반영: 딕셔너리 키로 직접 접근
             code = str(row['code']).zfill(6)
             name = row['name']
             score = row['score']
-            entry_price = row['buy_p'] # 실제 매수체결가 API 연동 전까지 진입선(buy_p)을 기준으로 평가
+            entry_price = row['buy_p'] 
             
             hist = fdr.DataReader(code, (datetime.datetime.now() - datetime.timedelta(days=40)).strftime("%Y-%m-%d"))
             if len(hist) < 20: continue
@@ -49,7 +49,8 @@ def validate_candidates():
 
 def validate_d3_targets():
     kst = pytz.timezone('Asia/Seoul')
-    target_date = (datetime.datetime.now(kst) - datetime.timedelta(days=3)).strftime("%Y-%m-%d")
+    # [수정] 단순 3일 차감이 아닌 Pandas BDay를 활용한 순수 영업일 3일전 계산
+    target_date = (datetime.datetime.now(kst) - BDay(3)).strftime("%Y-%m-%d")
     results = []
     
     try:
@@ -71,11 +72,8 @@ def validate_d3_targets():
                 if buy_p > 0:
                     change = round((current / buy_p - 1) * 100, 2)
                     results.append({
-                        "name": row['name'],
-                        "code": code,
-                        "buy_p": buy_p,
-                        "current": current,
-                        "change": change
+                        "name": row['name'], "code": code,
+                        "buy_p": buy_p, "current": current, "change": change
                     })
             except: continue
     except Exception as e:
