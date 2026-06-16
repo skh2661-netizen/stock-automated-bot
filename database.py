@@ -3,7 +3,8 @@ from datetime import datetime
 import os
 import pytz
 
-DB_PATH = "candidates.db"
+# [수정] GitHub Actions 환경의 영구 보존을 위해 data 폴더로 경로 변경
+DB_PATH = "data/candidates.db"
 
 def connect(): 
     conn = sqlite3.connect(DB_PATH, timeout=30)
@@ -11,6 +12,8 @@ def connect():
     return conn
 
 def init_db():
+    # [추가] data 디렉토리 자동 생성
+    os.makedirs("data", exist_ok=True)
     conn = connect()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS candidates (
