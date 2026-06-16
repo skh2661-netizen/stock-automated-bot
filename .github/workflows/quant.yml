@@ -2,10 +2,12 @@ name: V8.4 Momentum Swing Quant Engine
 
 on:
   schedule:
-    # 깃허브 트래픽 지연 방어 선제 타격 (UTC 기준)
-    - cron: '35 23 * * 0-4'  # KST 08:35 장 시작 스캔
-    - cron: '55 04 * * 1-5'  # KST 14:55 장 마감 스캔
-    - cron: '35 05 * * 1-5'  # KST 15:35 장 마감 리뷰
+    # KST 08:35 (UTC 기준 전날 23:35) -> 장 시작 스캔
+    - cron: '35 23 * * 0-4'
+    # KST 14:55 (UTC 기준 당일 05:55) -> 장 마감 스캔
+    - cron: '55 5 * * 1-5'
+    # KST 15:35 (UTC 기준 당일 06:35) -> 장 마감 리뷰
+    - cron: '35 6 * * 1-5'
   workflow_dispatch:
     inputs:
       mode:
@@ -36,13 +38,15 @@ jobs:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
+        # 수동 실행 시 입력받은 인자값 최우선 처리
         if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
           python main.py ${{ github.event.inputs.mode }}
         else
-          HOUR=$(date +%H)
-          if [ $HOUR -lt 2 ]; then
+          # 자동 실행 시 UTC 기준 분 단위 정밀 매칭
+          TIME=$(date -u +%H:%M)
+          if [ "$TIME" == "23:35" ]; then
              python main.py OPEN_SCAN
-          elif [ $HOUR -lt 5 ]; then
+          elif [ "$TIME" == "05:55" ]; then
              python main.py CLOSE_SCAN
           else
              python main.py REVIEW
