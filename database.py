@@ -1,20 +1,5 @@
-import sqlite3
-from datetime import datetime
-import os
-import pytz
-
-# 깃허브 Actions(quant.yml)의 영구 보존 백업 경로와 일치
-DB_PATH = "data/candidates.db"
-
-def connect(): 
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row 
-    return conn
-
 def init_db():
-    # 깃허브 가상 환경에서 data 폴더가 없을 경우 자동 생성
     os.makedirs("data", exist_ok=True)
-    
     conn = connect()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS candidates (
@@ -31,54 +16,25 @@ def init_db():
             result_status TEXT DEFAULT '대기'
         )
     """)
+    # [형님 지침] 중복 발송 방지용 컬럼 추가 (이미 있다면 무시)
+    try:
+        conn.execute("ALTER TABLE candidates ADD COLUMN telegram_sent INTEGER DEFAULT 0")
+    except:
+        pass
+    
     conn.execute("""
         CREATE TABLE IF NOT EXISTS logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            run_type TEXT,
-            message TEXT
+            timestamp TEXT, run_type TEXT, message TEXT
         )
     """)
     conn.commit()
     conn.close()
 
-def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
-    init_db()
+# [형님 지침] 발송 상태 업데이트 함수
+def mark_telegram_sent(codes):
+    if not codes: return
     conn = connect()
-    now = datetime.now(pytz.timezone("Asia/Seoul"))
-    today = now.strftime("%Y-%m-%d")
-    unique_key = f"{today}_{code}_{run_type}"
-    try:
-        cursor = conn.execute("""
-            INSERT OR IGNORE INTO candidates 
-            (unique_key, date, timestamp, run_type, strategy_version, score_version, code, name, score, buy_p, target1_p, target2_p, stop_p) 
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (unique_key, today, now.strftime("%H:%M:%S"), run_type, "V8.4.5", "SCORE_A", code, name, score, buy_p, target1_p, target2_p, stop_p))
-        conn.commit()
-        return cursor.rowcount > 0
-    except Exception as e:
-        print(f"DB 오류: {e}")
-        return False
-    finally:
-        conn.close()
-
-def get_today_candidates():
-    if not os.path.exists(DB_PATH): return []
-    conn = connect()
-    today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
-    rows = conn.execute("SELECT * FROM candidates WHERE date=?", (today,)).fetchall()
+    conn.executemany("UPDATE candidates SET telegram_sent=1 WHERE code=?", [(c,) for c in codes])
+    conn.commit()
     conn.close()
-    return [dict(row) for row in rows]
-
-def save_log(run_type, message):
-    # 첫 실행 시 DB 부재로 인한 크래시 방어
-    init_db()
-    conn = connect()
-    now = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        conn.execute("INSERT INTO logs (timestamp, run_type, message) VALUES (?,?,?)", (now, str(run_type), str(message)))
-        conn.commit()
-    except Exception as e:
-        print(f"로그 저장 오류: {e}")
-    finally:
-        conn.close()
