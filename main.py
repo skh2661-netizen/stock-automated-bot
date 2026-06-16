@@ -4,7 +4,7 @@ from validator import validate_candidates, validate_d3_targets
 from database import init_db, save_log
 from market_check import is_market_open
 from telegram_bot import send_message, format_scan_message, format_validate_message, format_d3_profit_message
-from custom_checker import analyze_single_stock  # 와이씨 감시용 모듈
+from custom_checker import analyze_single_stock
 
 def git_push_db():
     try:
@@ -21,12 +21,12 @@ async def run():
     now = datetime.datetime.now(kst)
     init_db()
 
+    # [핵심 수정] 휴장일이면 에러를 뿜는 대신 조용히 종료 (exit code 1 방지)
     if not is_market_open():
-        await send_message("🌙 V8.4.5 자율주행 엔진 - 휴장일 보호 모드 종료")
-        return
+        print("🌙 휴장일: 엔진은 대기합니다.")
+        return 
 
     try:
-        # [기존 로직 100% 보존]
         if 8 <= now.hour < 10:
             data = await scan_market("OPEN_SCAN")
             await send_message(format_scan_message(data))
@@ -38,19 +38,14 @@ async def run():
             save_log("CLOSE_SCAN", "SUCCESS")
             
         elif now.hour == 15 and 30 <= now.minute <= 59:
-            # 1. 기존 장 마감 생존 검사
             results = validate_candidates()
             await send_message(format_validate_message(results))
             save_log("REVIEW", "SUCCESS")
-            
-            # 2. D+3 스윙 타겟 기계적 익절 알림
             d3_results = validate_d3_targets()
             if d3_results:
                 await send_message(format_d3_profit_message(d3_results))
                 save_log("D3_PROFIT_ALERT", "SUCCESS")
 
-        # [V8.4.5 핵심 추가: 와이씨(232140) 보유 종목 특별 감시]
-        # 위 스케줄 작업이 모두 끝난 후, 와이씨 현황을 정밀 분석하여 보고
         try:
             yc_report = analyze_single_stock("232140", "와이씨")
             await send_message("🚨 [보유 종목 특별 감시]\n" + yc_report)
