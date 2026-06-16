@@ -4,7 +4,12 @@ import datetime, asyncio, time
 import sys
 import pytz
 
-from scoring import calculate_score
+try:
+    import FinanceDataReader as fdr
+except ImportError:
+    import finance_datareader as fdr
+
+from scoring import calculate_score, grade
 from risk import get_market_risk
 from database import save_candidate
 
@@ -22,10 +27,11 @@ def get_krx_retry():
                 "ChangeRate": "ChangesRatio",
                 "Changes": "ChangesRatio"
             }
-            # [오류 원천 차단] 컬럼명 중복 및 파편화 강제 정리
+            # [추가] 컬럼명 파편화 및 중복 강제 정리
             for old, new in rename_map.items():
                 if old in krx.columns and new not in krx.columns:
                     krx.rename(columns={old: new}, inplace=True)
+            
             krx = krx.loc[:, ~krx.columns.duplicated()]
             
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
@@ -54,24 +60,24 @@ async def scan_market(run_type="OPEN_SCAN"):
     except:
         risk_level = 1
         
-    # [수정] 정확한 당일 1일 지수 변화율 계산
+    # [보완] 과거 5일 기준이 아닌, 당일 장중 실시간 지수 반영
     try:
-        kospi_df = fdr.DataReader("KS11", (now - datetime.timedelta(days=5)).strftime("%Y-%m-%d"))
-        kospi_chg = (kospi_df['Close'].iloc[-1] / kospi_df['Close'].iloc[-2] - 1) * 100
+        kospi_df = fdr.DataReader("KS11", now.strftime("%Y-%m-%d"))
+        kospi_chg = (kospi_df['Close'].iloc[-1] / kospi_df['Open'].iloc[0] - 1) * 100
     except:
         kospi_chg = 0.0
 
     try:
-        kosdaq_df = fdr.DataReader("KQ11", (now - datetime.timedelta(days=5)).strftime("%Y-%m-%d"))
-        kosdaq_chg = (kosdaq_df['Close'].iloc[-1] / kosdaq_df['Close'].iloc[-2] - 1) * 100
+        kosdaq_df = fdr.DataReader("KQ11", now.strftime("%Y-%m-%d"))
+        kosdaq_chg = (kosdaq_df['Close'].iloc[-1] / kosdaq_df['Open'].iloc[0] - 1) * 100
     except:
         kosdaq_chg = 0.0
 
     market_info = {
-        "mode": "정상 작동" if risk_level < 2 else "🚨 위험 제한 모드",
+        "mode": "🟢 정상 작동" if risk_level < 2 else "🚨 위험 제한 모드",
         "kospi": round(kospi_chg, 2),
         "kosdaq": round(kosdaq_chg, 2),
-        "risk_pct": risk_level * 50
+        "risk_pct": risk.get("score", 20) if isinstance(risk, dict) else 20
     }
     
     krx = get_krx_retry()
@@ -79,21 +85,23 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx['Amount'] = krx['Close'] * krx['Volume']
     krx = remove_bad_targets(krx)
     
-    # [오류 원천 차단] 행 중복 데이터 강제 제거
+    # [추가] 중복 행 100% 제거 방어막
     krx = krx.loc[~krx.index.duplicated(keep='first')]
     
     krx['Max_OC'] = krx[['Open','Close']].max(axis=1)
     krx['Upper_Shadow'] = (krx['High'] - krx['Max_OC']) / krx['Close'] * 100
     
+    # [유지] 형님의 오리지널 1차 필터링 조건
     condition = (krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & \
-                (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)
+                (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18) & \
+                (krx['Upper_Shadow'] <= 5) & (krx['Volume'] >= 300000)
     
     pass1_count = len(krx[condition])
-    candidates = krx[condition].sort_values('Amount', ascending=False).head(100)
+    candidates = krx[condition].sort_values('Amount', ascending=False).head(30)
     
     results = []
     
-    # [수정] 1차 필터 통과자 정밀 탈락 원인 추적 카운터
+    # [추가] 텔레그램 통계를 위한 탈락 원인 카운터 신설
     drop_ma20 = drop_vol = drop_score = drop_etc = 0
 
     for _, row in candidates.iterrows():
@@ -116,8 +124,15 @@ async def scan_market(run_type="OPEN_SCAN"):
                 drop_ma20 += 1
                 continue
             
+            # [유지] 오리지널 필터: 5일간 30% 이상 급등 방지
             five_change = (hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) * 100
             if five_change > 30: 
+                drop_score += 1
+                continue
+            
+            # [유지] 오리지널 필터: 20일 고점 대비 -15% 이하 방지
+            high20 = hist['High'].rolling(20).max().iloc[-2]
+            if row['Close'] < high20 * 0.85: 
                 drop_score += 1
                 continue
             
@@ -131,6 +146,7 @@ async def scan_market(run_type="OPEN_SCAN"):
                 drop_etc += 1
                 continue
             
+            # 과거 5일 코스피 대신, 스크린샷과 맞춘 당일 지수로 RS 계산
             rs = five_change - kospi_chg
             
             score = calculate_score(row['Amount'], (row['Volume']/vol_ma), row['ChangesRatio'], row['Upper_Shadow'], ma_gap, close_pos, rs, five_change, risk_level)
@@ -153,6 +169,7 @@ async def scan_market(run_type="OPEN_SCAN"):
             cond_count = sum([c_vol, c_rs, c_heat, c_amt, c_shadow])
             sig_type = "🔥 공격형 (모멘텀 극대화)" if ma_gap >= 15 else "🛡️ 정석형 (안정적 밸런스)"
             
+            # [유지] 오리지널 DB 저장 파라미터 구조
             save_candidate(code, row['Name'], score, int(row['Close']), risk_level, round(rs, 2), round(ma_gap, 1), buy_p, target_1, stop_p)
             
             results.append({
@@ -168,9 +185,12 @@ async def scan_market(run_type="OPEN_SCAN"):
             if len(results) >= MAX_CANDIDATES: break
         except Exception as e:
             drop_etc += 1
+            print(f"[{code} {row['Name']}] 처리 오류: {type(e).__name__} / {e}")
             continue
             
     final_results = sorted(results, key=lambda x: x['score'], reverse=True)[:MAX_CANDIDATES]
+    
+    # 1차 필터 통과자(pass1) 중 연산에서 제외된 나머지 수치를 기타(etc)로 흡수 처리
     drop_etc += max(0, pass1_count - (drop_ma20 + drop_vol + drop_score + drop_etc + len(results)))
 
     return {
