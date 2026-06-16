@@ -121,4 +121,31 @@ def format_scan_message(data):
         msg += f" • 손절: {r['stop_p']:,}원 (-3% 엄수)\n\n"
 
         msg += f"📌 사후 관리 규칙\n"
-        msg += f" • +3% 도달: 손절선을 진입
+        msg += f" • +3% 도달: 손절선을 진입가로 이동 (본절 방어)\n"
+        msg += f" • +6% 도달: 물량 50% 기계적 익절\n"
+        msg += f" • 고점 대비 -3%: 잔량 전량 청산 (트레일링)\n\n"
+
+        msg += f"⏱ 예상: 1~5일 모멘텀 스윙\n\n"
+
+        msg += f"🤖 [백테스트 시스템]\n"
+        msg += f" • 표본 상태: 실시간 데이터 적재 중\n"
+        msg += f" • 신뢰도 판정: 검증 대기 (통계값 빌드 중)\n"
+        msg += "=========================\n\n"
+        
+    return msg
+
+def format_validate_message(results):
+    msg = "⚠️ V9.0 장 마감 생존 검사\n=========================\n"
+    if not results: return msg + "검사 대상 종목 없음"
+    for r in results:
+        status = "🔥 유지" if r["survive"] else "❌ 탈락"
+        reason_str = ', '.join(r['reason']) if r['reason'] else "특이사항 없음"
+        msg += f"{status} {r['name']} | 수익:{r['change']}% | 사유:{reason_str}\n"
+    return msg
+
+def format_d3_profit_message(results):
+    if not results: return ""
+    msg = "💰 [V9.0 D+3 청산 대상 알림]\n=========================\n"
+    for r in results:
+        msg += f"• {r.get('name')}: 수익률 {r.get('profit', 0)}%\n"
+    return msg
