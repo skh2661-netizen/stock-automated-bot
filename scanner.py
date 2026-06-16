@@ -17,21 +17,19 @@ def get_krx_retry():
                     krx.rename(columns={old: new}, inplace=True)
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
             
-            # [필수 방어] 중복 제거 및 인덱스 리셋
             krx = krx.loc[:, ~krx.columns.duplicated()]
             if "Code" in krx.columns:
-                krx = krx.drop_duplicates(subset=['Code'], keep='first')
+                krx = krx.drop_duplicates(subset=["Code"], keep="first")
             krx = krx.reset_index(drop=True)
-            
-            # [형님 지침] FDR 데이터 스케일 보정 (10000 단위 보정)
-            krx['ChangesRatio'] = pd.to_numeric(krx['ChangesRatio'], errors='coerce')
-            if krx['ChangesRatio'].abs().median() > 100:
-                krx['ChangesRatio'] = krx['ChangesRatio'] / 10000
-            
-            krx['ChangesRatio'] = krx['ChangesRatio'].fillna(0)
-                
+
+            # [형님 지침] FDR 등락률 데이터 검증 및 보정
+            krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce")
+            krx.loc[(krx["ChangesRatio"] > 30) | (krx["ChangesRatio"] < -30), "ChangesRatio"] = 0
+            krx["ChangesRatio"] = krx["ChangesRatio"].fillna(0)
+
             return krx
         except Exception as e:
+            print("KRX 재시도:", e)
             time.sleep(5)
     raise Exception("KRX 데이터 연결 실패")
 
@@ -65,21 +63,21 @@ async def scan_market(run_type="OPEN_SCAN"):
         market_change = 0
 
     krx = remove_bad_targets(get_krx_retry())
-    krx = krx.loc[:, ~krx.columns.duplicated()]
-    krx = krx.reset_index(drop=True)
     krx['Amount'] = krx['Close'] * krx['Volume']
 
-    # [형님 지침] 보정된 데이터 검증 로그
-    print("=== 정규화된 등락률 샘플 ===")
-    print(krx[['Name','Close','Volume','Amount','ChangesRatio']].sort_values('ChangesRatio', ascending=False).head(20))
-    
-    print(f"가격조건 통과: {len(krx[krx['Close'] >= MIN_PRICE])}")
-    print(f"거래대금 통과: {len(krx[krx['Amount'] >= MIN_AMOUNT])}")
-    print(f"등락률 통과: {len(krx[(krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])}")
-    print(f"최종 조합 통과: {len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])}")
-    
-    candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
-                     (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
+    # [형님 지침] 최종 후보 선정 로직 및 추적 로그
+    candidates = krx[
+        (krx['Close'] >= MIN_PRICE) &
+        (krx['Amount'] >= MIN_AMOUNT) &
+        (krx['ChangesRatio'] >= 3) &
+        (krx['ChangesRatio'] <= 18)
+    ].copy()
+
+    print("🔥 최종 후보 개수:", len(candidates))
+    if len(candidates) > 0:
+        print(candidates[['Name', 'Close', 'Amount', 'ChangesRatio']].head(20))
+
+    candidates = candidates.sort_values("Amount", ascending=False).head(100)
     
     results = []
     fail_stats = {"ma20": 0, "vol": 0, "score": 0, "etc": 0}
@@ -160,6 +158,14 @@ async def scan_market(run_type="OPEN_SCAN"):
             if len(results) >= MAX_CANDIDATES: break
         except Exception:
             fail_stats["etc"] += 1
+            
+    # [형님 지침] 최종 반환 전 상태 정밀 추적 로그
+    print("====================")
+    print("RETURN STATS")
+    print("TOTAL:", len(krx))
+    print("PASS1:", len(candidates))
+    print("FINAL:", len(results))
+    print("====================")
             
     mode_str = "🟢 정상" if risk_level < 2 else "🚨 위험"
     
