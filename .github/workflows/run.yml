@@ -17,19 +17,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
     - name: Checkout
       uses: actions/checkout@v4
     - name: Setup Python
       uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      with: {python-version: '3.11'}
     - name: Install packages
       run: |
-        python -m pip install --upgrade pip
-        # 파일이 없을 경우를 대비해 직접 설치 명령 병행
-        pip install finance-datareader pandas python-telegram-bot pytz
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install --upgrade pip
+        pip install -r requirements.txt
     - name: Run Engine
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
