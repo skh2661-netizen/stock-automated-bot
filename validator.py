@@ -3,7 +3,6 @@ import datetime
 import pytz
 import sqlite3
 import pandas as pd
-from pandas.tseries.offsets import BDay
 from database import get_today_candidates, DB_PATH
 
 def validate_candidates():
@@ -49,34 +48,47 @@ def validate_candidates():
 
 def validate_d3_targets():
     kst = pytz.timezone('Asia/Seoul')
-    # [수정] 단순 3일 차감이 아닌 Pandas BDay를 활용한 순수 영업일 3일전 계산
-    target_date = (datetime.datetime.now(kst) - BDay(3)).strftime("%Y-%m-%d")
+    today_str = datetime.datetime.now(kst).strftime("%Y-%m-%d")
     results = []
     
     try:
         conn = sqlite3.connect(DB_PATH)
-        df = pd.read_sql(f"SELECT * FROM candidates WHERE date LIKE '{target_date}%'", conn)
+        # 대기 상태인 모든 후보군을 가져와 차트 데이터를 기반으로 경과 영업일을 정밀 계산
+        df = pd.read_sql("SELECT * FROM candidates WHERE exit_type = '대기'", conn)
         conn.close()
         
         if df.empty: return []
         
         for _, row in df.iterrows():
             code = str(row['code']).zfill(6)
+            db_date = row['date'] # 종목이 DB에 들어간 날짜 (YYYY-MM-DD)
+            
             try:
-                hist = fdr.DataReader(code, target_date)
+                # 안전하게 적재일 5일 전부터 오늘까지의 일봉 데이터 로드
+                start_fetch = (datetime.datetime.strptime(db_date, "%Y-%m-%d") - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
+                hist = fdr.DataReader(code, start_fetch, today_str)
                 if hist.empty: continue
                 
-                current = int(hist['Close'].iloc[-1])
-                buy_p = int(row.get('buy_p', 0))
+                # 차트 데이터의 날짜 인덱스를 문자열 리스트로 변환
+                trading_days = [d.strftime("%Y-%m-%d") for d in hist.index]
                 
-                if buy_p > 0:
-                    change = round((current / buy_p - 1) * 100, 2)
-                    results.append({
-                        "name": row['name'], "code": code,
-                        "buy_p": buy_p, "current": current, "change": change
-                    })
+                if db_date not in trading_days: continue
+                db_idx = trading_days.index(db_date)
+                
+                # [정밀 타격] DB 적재일 인덱스로부터 '정확히 실제 거래일 3영업일'이 지났는지 판별
+                # 차트의 가장 마지막 로우(오늘 캔들)가 적재일로부터 정확히 3번째 뒤에 위치해야 타겟팅됨
+                if len(trading_days) - 1 == db_idx + 3:
+                    current = int(hist['Close'].iloc[-1])
+                    buy_p = int(row.get('buy_p', 0))
+                    
+                    if buy_p > 0:
+                        change = round((current / buy_p - 1) * 100, 2)
+                        results.append({
+                            "name": row['name'], "code": code,
+                            "buy_p": buy_p, "current": current, "change": change
+                        })
             except: continue
     except Exception as e:
-        print(f"D+3 타겟 추출 오류: {e}")
+        print(f"D+3 실 거래일 정밀 추출 오류: {e}")
         
     return results
