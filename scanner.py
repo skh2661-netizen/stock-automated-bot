@@ -59,17 +59,17 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx = remove_bad_targets(get_krx_retry())
     krx = krx.loc[:, ~krx.columns.duplicated()]
     krx = krx.reset_index(drop=True)
-
     krx['Amount'] = krx['Close'] * krx['Volume']
 
-    # [디버깅] 병목 구간 추적 및 데이터 타입 확인
+    # [형님 지침 이식] 병목 구간 정밀 추적 디버깅 로그
     print(f"KRX 컬럼 리스트: {krx.columns.tolist()}")
-    print(f"Close 타입: {type(krx['Close'])}")
-    print(f"Volume 타입: {type(krx['Volume'])}")
-    print(f"ChangesRatio 타입: {type(krx['ChangesRatio'])}")
-    print(f"가격조건(>=2000) 통과: {len(krx[krx['Close'] >= MIN_PRICE])}")
-    print(f"거래대금(>=100억) 통과: {len(krx[krx['Amount'] >= MIN_AMOUNT])}")
-    print(f"등락률(3~18%) 통과: {len(krx[(krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])}")
+    print(krx.head())
+    print(krx['ChangesRatio'].describe())
+    print(f"ChangesRatio 타입: {krx['ChangesRatio'].dtype}")
+    print(f"가격조건 통과: {len(krx[krx['Close'] >= MIN_PRICE])}")
+    print(f"거래대금 통과: {len(krx[krx['Amount'] >= MIN_AMOUNT])}")
+    print(f"등락률 통과: {len(krx[(krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])}")
+    print(f"최종 조합 통과: {len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])}")
     
     candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
                      (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
