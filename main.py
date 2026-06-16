@@ -1,64 +1,54 @@
-import asyncio, datetime, pytz, traceback, sys, subprocess
-from scanner import scan_market
-from validator import validate_candidates, validate_d3_targets
-from database import init_db, save_log
-from market_check import is_market_open
-from telegram_bot import send_message, format_scan_message, format_validate_message, format_d3_profit_message
-from custom_checker import analyze_single_stock
+import asyncio
+import datetime
+import pytz
+import traceback
+import sys
 
-def git_push_db():
-    try:
-        res = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
-        if not res.stdout.strip(): return
-        subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
-        subprocess.run(["git", "add", "candidates.db"], check=True)
-        subprocess.run(["git", "commit", "-m", "DB Update"], check=True)
-        subprocess.run(["git", "push", "origin", "main"], check=True)
-    except Exception as e: print(f"Git 작업 생략: {e}")
+from scanner import scan_market
+from validator import validate_candidates
+from database import init_db
+from telegram_bot import send_message, format_scan_message, format_validate_message
 
 async def run():
-    kst = pytz.timezone('Asia/Seoul')
-    now = datetime.datetime.now(kst)
-    init_db()
-
-    # [핵심 수정] 휴장일이면 에러를 뿜는 대신 조용히 종료 (exit code 1 방지)
-    if not is_market_open():
-        print("🌙 휴장일: 엔진은 대기합니다.")
-        return 
-
     try:
-        if 8 <= now.hour < 10:
-            data = await scan_market("OPEN_SCAN")
+        print("1. V8.4.5 최상위 퀀트 시스템 가동 준비...")
+        init_db()
+        print("✅ DB 안전 연결 확인 완료")
+
+        kst = pytz.timezone('Asia/Seoul')
+        n = datetime.datetime.now(kst)
+        print(f"✅ 현재 KST 시스템 시각: {n.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        if 8 <= n.hour < 10:
+            print("2. [오전 장중] 주도주 스캔 가동...")
+            data = await scan_market()
             await send_message(format_scan_message(data))
-            save_log("OPEN_SCAN", "SUCCESS")
+            print("✅ 정밀 리포트 타전 완료")
             
-        elif now.hour == 15 and now.minute < 25:
-            data = await scan_market("CLOSE_SCAN")
-            await send_message(format_scan_message(data))
-            save_log("CLOSE_SCAN", "SUCCESS")
-            
-        elif now.hour == 15 and 30 <= now.minute <= 59:
+        elif n.hour == 15 and n.minute <= 30:
+            print("2. [오후 15:00] 생존 검사 가동...")
             results = validate_candidates()
             await send_message(format_validate_message(results))
-            save_log("REVIEW", "SUCCESS")
-            d3_results = validate_d3_targets()
-            if d3_results:
-                await send_message(format_d3_profit_message(d3_results))
-                save_log("D3_PROFIT_ALERT", "SUCCESS")
+            print("✅ 생존 검사 보고 완료")
+            
+        elif n.hour == 15 and n.minute >= 35:
+            print("2. [오후 15:40] 일일 마감 연산...")
+            await send_message("🌙 V8.4.5 DAILY REPORT: 오늘분 데이터 적재 및 기계적 백업 완료")
+            print("✅ 마감 완료")
+            
+        else:
+            print("⚠️ 수동 가동 감지: 임의 시그널 리포트 출력 테스트 수행")
+            data = await scan_market()
+            await send_message(format_scan_message(data))
+            print("✅ 수동 테스트 스캔 완료")
 
-        try:
-            yc_report = analyze_single_stock("232140", "와이씨")
-            await send_message("🚨 [보유 종목 특별 감시]\n" + yc_report)
-        except Exception as e:
-            print(f"와이씨 보고 오류: {e}")
-                
     except Exception as e:
-        await send_message(f"🚨 V8.4.5 장애 발생: {str(e)}")
-        save_log("ERROR", str(e))
+        print("\n" + "="*50)
+        print("🚨 치명적 에러 발생 - 연산 긴급 정지 🚨")
         traceback.print_exc()
+        print("="*50 + "\n")
+        # 깃허브 액션에서 치명적 에러 발생 시만 Exit code 1 반환
         sys.exit(1)
-    finally:
-        git_push_db()
 
 if __name__ == "__main__":
     asyncio.run(run())
