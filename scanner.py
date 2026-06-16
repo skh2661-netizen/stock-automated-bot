@@ -17,12 +17,10 @@ def get_krx_retry():
                 "ChangeRate": "ChangesRatio",
                 "Changes": "ChangesRatio"
             }
-            # [긴급 수정 1] 타겟 컬럼이 이미 존재하면 변경을 건너뛰어 '쌍둥이 컬럼' 생성 원천 차단
             for old, new in rename_map.items():
                 if old in krx.columns and new not in krx.columns:
                     krx.rename(columns={old: new}, inplace=True)
             
-            # [긴급 수정 2] 만약 중복 컬럼이 생겼더라도 첫 번째만 남기고 즉각 파기
             krx = krx.loc[:, ~krx.columns.duplicated()]
                     
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
@@ -58,23 +56,28 @@ async def scan_market(run_type="OPEN_SCAN"):
     
     min_score = 75 if risk_level == 0 else (80 if risk_level == 1 else 85)
 
+    # [수정: 당일 코스피/코스닥 지수 정확도 동기화]
     try:
         market_hist = fdr.DataReader("KS11", start_date)
-        market_change = (market_hist['Close'].iloc[-1] / market_hist['Close'].iloc[-6] - 1) * 100 if len(market_hist) >= 6 else 0
+        market_change = (market_hist['Close'].iloc[-1] / market_hist['Close'].iloc[-2] - 1) * 100 if len(market_hist) >= 2 else 0
     except: 
         market_change = 0
 
+    try:
+        kq_hist = fdr.DataReader("KQ11", start_date)
+        kosdaq_change = (kq_hist['Close'].iloc[-1] / kq_hist['Close'].iloc[-2] - 1) * 100 if len(kq_hist) >= 2 else 0
+    except:
+        kosdaq_change = 0
+
     if is_market_crash(market_change):
         return {
-            "market": {"kospi": round(market_change, 2), "kosdaq": 0, "risk_pct": 100, "mode": "🚨 코스피 -1.5% 급락 (스캔 강제 정지)"},
+            "market": {"kospi": round(market_change, 2), "kosdaq": round(kosdaq_change, 2), "risk_pct": 100, "mode": "🚨 코스피 -1.5% 급락 (스캔 강제 정지)"},
             "stats": {"total": 0, "pass1": 0, "final": 0},
             "candidates": []
         }
 
     krx = remove_bad_targets(get_krx_retry())
     krx['Amount'] = krx['Close'] * krx['Volume']
-    
-    # 이전 조치 유지 (행 단위 중복 제거)
     krx = krx.loc[~krx.index.duplicated(keep='first')]
     
     pass1_count = len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
@@ -84,6 +87,12 @@ async def scan_market(run_type="OPEN_SCAN"):
                      (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
     
     results = []
+    
+    # [수정: 탈락 사유 통계 카운터 복원]
+    drop_ma20 = 0
+    drop_vol = 0
+    drop_score = 0
+
     for _, row in candidates.iterrows():
         code = str(row['Code']).zfill(6)
         await asyncio.sleep(0.15)
@@ -92,18 +101,34 @@ async def scan_market(run_type="OPEN_SCAN"):
             if len(hist) < 25: continue
             
             curr = hist.iloc[-1]
-            vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
-            if pd.isna(vol_ma) or vol_ma <= 0 or curr['High'] <= 0: continue
             
+            # MA20 검증
             ma20 = hist['Close'].rolling(20).mean().iloc[-1]
-            if pd.isna(ma20) or ma20 <= 0: continue
-            
+            if pd.isna(ma20) or ma20 <= 0:
+                drop_ma20 += 1
+                continue
             ma_gap = (curr['Close'] - ma20) / ma20 * 100
+            if ma_gap < 0:
+                drop_ma20 += 1
+                continue
+
+            # 거래량 검증
+            vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
+            if pd.isna(vol_ma) or vol_ma <= 0 or curr['High'] <= 0:
+                drop_vol += 1
+                continue
             vol_ratio = curr['Volume'] / vol_ma  
+            if vol_ratio < 1.3:
+                drop_vol += 1
+                continue
+            
+            # 종합 점수 및 꼬리 리스크 검증
             upper_shadow = ((curr['High'] - max(curr['Open'], curr['Close'])) / curr['High'] * 100)
             candle_pos = ((curr['Close'] - curr['Low']) / (curr['High'] - curr['Low']) * 100) if (curr['High'] > curr['Low']) else 0
             
-            if ma_gap < 0 or vol_ratio < 1.3 or upper_shadow > 5: continue
+            if upper_shadow > 5:
+                drop_score += 1
+                continue
             
             p6 = hist['Close'].iloc[-6]
             if p6 <= 0: continue
@@ -112,7 +137,9 @@ async def scan_market(run_type="OPEN_SCAN"):
             score = calculate_score(row['Amount'], vol_ratio, row['ChangesRatio'], upper_shadow, 
                                    ma_gap, candle_pos, (five_change - market_change), five_change, risk_level)
             
-            if score < min_score: continue
+            if score < min_score:
+                drop_score += 1
+                continue
             
             buy_p = int(curr['Close'] * 0.985)
             t1 = int(curr['Close'] * 1.023)
@@ -121,24 +148,13 @@ async def scan_market(run_type="OPEN_SCAN"):
             
             if save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop):
                 results.append({
-                    "code": code, 
-                    "name": row['Name'], 
-                    "score": score, 
-                    "price": int(curr['Close']),
-                    "buy_p": buy_p,
-                    "target_1": t1,
-                    "target_2": t2,
-                    "stop_p": stop,
-                    "chg": round(row['ChangesRatio'], 2),
-                    "rs": round((five_change - market_change), 2),
-                    "five_chg": round(five_change, 2),
-                    "kospi_chg": round(market_change, 2),
-                    "ma_gap": round(ma_gap, 2),
-                    "c_vol": vol_ratio >= 2.0,
-                    "c_rs": (five_change - market_change) > 0,
-                    "c_heat": ma_gap < 15,
-                    "c_amt": row['Amount'] >= 50_000_000_000,
-                    "c_shadow": upper_shadow <= 3,
+                    "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
+                    "buy_p": buy_p, "target_1": t1, "target_2": t2, "stop_p": stop,
+                    "chg": round(row['ChangesRatio'], 2), "rs": round((five_change - market_change), 2),
+                    "five_chg": round(five_change, 2), "kospi_chg": round(market_change, 2),
+                    "ma_gap": round(ma_gap, 2), "c_vol": vol_ratio >= 2.0,
+                    "c_rs": (five_change - market_change) > 0, "c_heat": ma_gap < 15,
+                    "c_amt": row['Amount'] >= 50_000_000_000, "c_shadow": upper_shadow <= 3,
                     "cond_count": sum([vol_ratio >= 2.0, (five_change - market_change) > 0, ma_gap < 15, row['Amount'] >= 50_000_000_000, upper_shadow <= 3])
                 })
             
@@ -150,10 +166,17 @@ async def scan_market(run_type="OPEN_SCAN"):
     return {
         "market": {
             "kospi": round(market_change, 2),
-            "kosdaq": 0, 
+            "kosdaq": round(kosdaq_change, 2), 
             "risk_pct": risk_level * 50,
             "mode": mode_str
         },
-        "stats": {"total": len(krx), "pass1": pass1_count, "final": len(results)},
+        "stats": {
+            "total": len(krx), 
+            "pass1": pass1_count, 
+            "final": len(results),
+            "drop_ma20": drop_ma20,
+            "drop_vol": drop_vol,
+            "drop_score": drop_score
+        },
         "candidates": results
     }
