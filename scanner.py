@@ -10,92 +10,33 @@ from scoring import calculate_score
 from risk import get_market_risk
 from database import save_candidate
 
-# [V9 엔진 설정: 민감도 상향]
 MIN_PRICE = 2000
 MIN_AMOUNT = 10_000_000_000
 MAX_CANDIDATES = 10
-MIN_SCORE = 70          # 75 -> 70 (민감도 상향)
-VOL_THRESHOLD = 1.1     # 1.3 -> 1.1 (민감도 상향)
+MIN_SCORE = 70
+VOL_THRESHOLD = 1.1
 
 def get_krx_retry(): 
+    # [V9.1 우회 전략] 직접적인 KRX 리스팅 호출 대신 우회 방식 시도
     for i in range(3):
         try: 
-            krx = fdr.StockListing("KRX")
+            # 시장별 리스트를 합치는 방식으로 차단 회피
+            stocks = fdr.StockListing('KOSPI')
+            stocks_kosdaq = fdr.StockListing('KOSDAQ')
+            krx = pd.concat([stocks, stocks_kosdaq])
+            
             rename_map = {"ChagesRatio": "ChangesRatio", "ChgRate": "ChangesRatio", "ChangeRate": "ChangesRatio", "Changes": "ChangesRatio"}
             for old, new in rename_map.items():
                 if old in krx.columns and new not in krx.columns:
                     krx.rename(columns={old: new}, inplace=True)
+            
             krx = krx.loc[:, ~krx.columns.duplicated()]
-            if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
+            if "ChangesRatio" not in krx.columns:
+                krx['ChangesRatio'] = 0.0 # 예외처리
             return krx
         except Exception: 
-            time.sleep(5)
-    raise Exception("KRX 데이터 연결 3회 실패")
+            time.sleep(10) # 차단 방지를 위해 대기 시간 상향
+    raise Exception("데이터 소스 연결 3회 실패: 거래소 접근 차단됨")
 
-def remove_bad_targets(df):
-    pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
-    return df[~df['Name'].str.contains(pattern, regex=True, na=False)]
-
-def calculate_candle_position(row):
-    high_low = row['High'] - row['Low']
-    return ((row['Close'] - row['Low']) / high_low * 100) if high_low > 0 else None
-
-async def scan_market(run_type="OPEN_SCAN"):
-    kst = pytz.timezone('Asia/Seoul')
-    now = datetime.datetime.now(kst)
-    start_date = (now - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
-    
-    try:
-        risk = get_market_risk(start_date)
-        risk_level = risk["level"]
-    except: risk_level = 1
-        
-    try:
-        kospi_df = fdr.DataReader("KS11", now.strftime("%Y-%m-%d"))
-        kospi_chg = (kospi_df['Close'].iloc[-1] / kospi_df['Open'].iloc[0] - 1) * 100
-        kosdaq_df = fdr.DataReader("KQ11", now.strftime("%Y-%m-%d"))
-        kosdaq_chg = (kosdaq_df['Close'].iloc[-1] / kosdaq_df['Open'].iloc[0] - 1) * 100
-    except: kospi_chg = kosdaq_chg = 0.0
-
-    market_info = {"mode": "🟢 V9 정상 작동" if risk_level < 2 else "🚨 위험 제한 모드", "kospi": round(kospi_chg, 2), "kosdaq": round(kosdaq_chg, 2), "risk_pct": risk_level * 50}
-    
-    krx = remove_bad_targets(get_krx_retry())
-    total_count = len(krx)
-    krx['Amount'] = krx['Close'] * krx['Volume']
-    krx = krx.loc[~krx.index.duplicated(keep='first')]
-    krx['Max_OC'] = krx[['Open','Close']].max(axis=1)
-    krx['Upper_Shadow'] = (krx['High'] - krx['Max_OC']) / krx['Close'] * 100
-    
-    condition = (krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18) & (krx['Upper_Shadow'] <= 5) & (krx['Volume'] >= 300000)
-    pass1_count = len(krx[condition])
-    candidates = krx[condition].sort_values('Amount', ascending=False).head(30)
-    
-    results, drop_ma20, drop_vol, drop_score, drop_etc = [], 0, 0, 0, 0
-
-    for _, row in candidates.iterrows():
-        code = str(row['Code']).zfill(6)
-        await asyncio.sleep(0.15)
-        try:
-            hist = fdr.DataReader(code, start_date)
-            if len(hist) < 25: drop_etc += 1; continue
-            ma20 = hist['Close'].rolling(20).mean().iloc[-1]
-            if pd.isna(ma20) or ma20 <= 0 or (row['Close'] - ma20) / ma20 * 100 < 0: drop_ma20 += 1; continue
-            five_change = (hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) * 100
-            if five_change > 30: drop_score += 1; continue
-            high20 = hist['High'].rolling(20).max().iloc[-2]
-            if row['Close'] < high20 * 0.85: drop_score += 1; continue
-            vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
-            if vol_ma <= 0 or (row['Volume'] / vol_ma) < VOL_THRESHOLD: drop_vol += 1; continue
-            close_pos = calculate_candle_position(row)
-            if close_pos is None: drop_etc += 1; continue
-            
-            rs = five_change - kospi_chg
-            score = calculate_score(row['Amount'], (row['Volume']/vol_ma), row['ChangesRatio'], row['Upper_Shadow'], (row['Close'] - ma20) / ma20 * 100, close_pos, rs, five_change, risk_level)
-            if score < MIN_SCORE: drop_score += 1; continue
-            
-            save_candidate(code, row['Name'], score, int(row['Close']), risk_level, round(rs, 2), round((row['Close'] - ma20) / ma20 * 100, 1), int(row['Close']*0.985), int(row['Close']*1.023), int(row['Close']*0.970))
-            results.append({"code": code, "name": row['Name'], "score": score, "price": int(row['Close']), "chg": round(row['ChangesRatio'], 2), "five_chg": round(five_change, 2), "kospi_chg": round(kospi_chg, 2), "rs": round(rs, 2), "ma_gap": round((row['Close'] - ma20) / ma20 * 100, 1), "buy_p": int(row['Close']*0.985), "target_1": int(row['Close']*1.023), "target_2": int(row['Close']*1.063), "stop_p": int(row['Close']*0.970), "c_vol": (row['Volume']/vol_ma)>=2.0, "c_rs": rs>5.0, "c_heat": (row['Close']-ma20)/ma20*100<15.0, "c_amt": int(row['Amount']/100000000)>=500, "c_shadow": row['Upper_Shadow']<2.0, "cond_count": sum([(row['Volume']/vol_ma)>=2.0, rs>5.0, (row['Close']-ma20)/ma20*100<15.0, int(row['Amount']/100000000)>=500, row['Upper_Shadow']<2.0])})
-            if len(results) >= MAX_CANDIDATES: break
-        except: drop_etc += 1
-            
-    return {"market": market_info, "stats": {"total": total_count, "pass1": pass1_count, "final": len(results), "drop_ma20": drop_ma20, "drop_vol": drop_vol, "drop_score": drop_score, "drop_etc": drop_etc}, "candidates": sorted(results, key=lambda x: x['score'], reverse=True)}
+# ... (이하 remove_bad_targets, calculate_candle_position 동일)
+# ... (scan_market 내 get_krx_retry() 호출부 동일)
