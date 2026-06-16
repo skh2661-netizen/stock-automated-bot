@@ -1,0 +1,58 @@
+name: V8.4 Momentum Swing Quant Engine
+
+on:
+  schedule:
+    # 깃허브 트래픽 지연 방어 선제 타격 (UTC 기준)
+    - cron: '35 23 * * 0-4'  # KST 08:35 장 시작 스캔
+    - cron: '55 04 * * 1-5'  # KST 14:55 장 마감 스캔
+    - cron: '35 05 * * 1-5'  # KST 15:35 장 마감 리뷰
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "실행 모드 (OPEN_SCAN / CLOSE_SCAN / REVIEW)"
+        required: true
+        default: "REVIEW"
+
+jobs:
+  run-engine:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Python Setup
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install Dependencies
+      run: pip install -r requirements.txt
+
+    - name: Run Engine
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          python main.py ${{ github.event.inputs.mode }}
+        else
+          HOUR=$(date +%H)
+          if [ $HOUR -lt 2 ]; then
+             python main.py OPEN_SCAN
+          elif [ $HOUR -lt 5 ]; then
+             python main.py CLOSE_SCAN
+          else
+             python main.py REVIEW
+          fi
+        fi
+
+    - name: Save Database (Persistent DB)
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add data/candidates.db
+        git commit -m "[Auto] Update candidate database" || true
+        git push || true
