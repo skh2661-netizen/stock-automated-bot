@@ -1,12 +1,17 @@
 name: V8.4 Momentum Swing Quant Engine
 
+# [핵심 보완] 동일 자원(SQLite)에 대한 동시 쓰기 충돌을 원천 차단하는 단일 점유 체계 구축
+concurrency:
+  group: quant-engine
+  cancel-in-progress: false
+
 on:
   schedule:
-    # KST 08:35 (UTC 기준 일~목 23:35) -> 월~금 아침 시초가 스캔
+    # KST 08:35 (UTC 일~목 23:35) -> 월~금 아침 시초가 스캔
     - cron: '35 23 * * 0-4'
-    # KST 14:55 (UTC 기준 월~금 05:55) -> 월~금 오후 종가 베팅 스캔
+    # KST 14:55 (UTC 월~금 05:55) -> 월~금 오후 종가 베팅 스캔
     - cron: '55 5 * * 1-5'
-    # KST 15:35 (UTC 기준 월~금 06:35) -> 월~금 장마감 사후 검증 및 D+3 익절 복기
+    # KST 15:35 (UTC 월~금 06:35) -> 월~금 장마감 사후 검증 및 D+3 익절 복기
     - cron: '35 6 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -60,9 +65,8 @@ jobs:
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         
         git add data/candidates.db
-        # [안정화] git pull --rebase 추가로 원격지 커밋 충돌 원천 해결
+        # 중복 push 에러 방지용 안전장치 유지
         git diff --cached --quiet || (
-          git pull --rebase
           git commit -m "[Auto] Update candidate database"
           git push
         )
