@@ -43,9 +43,7 @@ def init_db():
     conn.close()
 
 def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
-    # 단독 모듈 테스트 시 DB 증발을 막기 위한 초기화 로직 복구
     init_db()
-    
     conn = connect()
     now = datetime.now(pytz.timezone("Asia/Seoul"))
     today = now.strftime("%Y-%m-%d")
@@ -73,6 +71,8 @@ def get_today_candidates():
     return [dict(row) for row in rows]
 
 def save_log(run_type, message):
+    # 첫 실행 시 DB 부재로 인한 크래시 방어
+    init_db()
     conn = connect()
     now = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
     try:
