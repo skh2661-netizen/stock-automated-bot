@@ -20,7 +20,7 @@ async def send_message(text):
             await asyncio.sleep(3)
 
 def format_scan_message(data):
-    """[V9.0] 오리지널 UI + 탈락자 정밀 통계 완결판"""
+    """형님의 V8.4.2 상세 리포트 UI 원본 전체"""
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.datetime.now(kst)
     time_str = now.strftime("%Y-%m-%d %H:%M")
@@ -30,7 +30,7 @@ def format_scan_message(data):
     candidates = data["candidates"]
     
     mode_icon = "🟢" if "정상" in market["mode"] else "🚨"
-    msg = f"🎯 [V9.0 퀀트 시그널 터미널]\n\n"
+    msg = f"🎯 [V8.4.2 퀀트 시그널 터미널]\n\n"
     msg += f"기준: {time_str}\n\n"
     
     msg += f"🌎 시장 상태\n"
@@ -135,7 +135,7 @@ def format_scan_message(data):
     return msg
 
 def format_validate_message(results):
-    msg = "⚠️ V9.0 장 마감 생존 검사\n=========================\n"
+    msg = "⚠️ V8.4.2 장 마감 생존 검사\n=========================\n"
     if not results: return msg + "검사 대상 종목 없음"
     for r in results:
         status = "🔥 유지" if r["survive"] else "❌ 탈락"
@@ -145,7 +145,7 @@ def format_validate_message(results):
 
 def format_d3_profit_message(results):
     if not results: return ""
-    msg = "💰 [V9.0 D+3 청산 대상 알림]\n=========================\n"
+    msg = "💰 [V8.4.2 D+3 청산 대상 알림]\n=========================\n"
     for r in results:
         msg += f"• {r.get('name')}: 수익률 {r.get('profit', 0)}%\n"
     return msg
