@@ -2,11 +2,11 @@ name: V8.4 Momentum Swing Quant Engine
 
 on:
   schedule:
-    # KST 08:35 (UTC 기준 전날 23:35 일~목) -> KST 월~금 장 시작 스캔
+    # KST 08:35 (UTC 기준 일~목 23:35) -> 월~금 아침 시초가 스캔
     - cron: '35 23 * * 0-4'
-    # KST 14:55 (UTC 기준 당일 05:55 월~금) -> KST 월~금 장 마감 스캔
+    # KST 14:55 (UTC 기준 월~금 05:55) -> 월~금 오후 종가 베팅 스캔
     - cron: '55 5 * * 1-5'
-    # KST 15:35 (UTC 기준 당일 06:35 월~금) -> KST 월~금 장 마감 리뷰
+    # KST 15:35 (UTC 기준 월~금 06:35) -> 월~금 장마감 사후 검증 및 D+3 익절 복기
     - cron: '35 6 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -59,9 +59,10 @@ jobs:
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         
-        # nothing to commit 강제 종료 방어 로직 이식 완료
         git add data/candidates.db
+        # [안정화] git pull --rebase 추가로 원격지 커밋 충돌 원천 해결
         git diff --cached --quiet || (
+          git pull --rebase
           git commit -m "[Auto] Update candidate database"
           git push
         )
