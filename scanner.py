@@ -16,6 +16,13 @@ def get_krx_retry():
                 if old in krx.columns:
                     krx.rename(columns={old: new}, inplace=True)
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
+            
+            # [STEP 1 조치] 판다스 reindex 크래시 방지를 위한 중복 라벨/코드 선제 타격 소거
+            if krx.index.has_duplicates:
+                krx = krx[~krx.index.duplicated(keep='first')]
+            if "Code" in krx.columns:
+                krx = krx.drop_duplicates(subset=['Code'], keep='first')
+                
             return krx
         except Exception as e:
             time.sleep(5)
@@ -52,6 +59,8 @@ async def scan_market(run_type="OPEN_SCAN"):
 
     krx = remove_bad_targets(get_krx_retry())
     krx['Amount'] = krx['Close'] * krx['Volume']
+    
+    # 중복 로우가 완전 청소되었으므로 다중 조건 필터링(&)이 에러 없이 고속으로 연산됩니다.
     candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
                      (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
     
@@ -115,7 +124,6 @@ async def scan_market(run_type="OPEN_SCAN"):
             t2 = int(curr['Close'] * 1.063)
             stop = int(curr['Close'] * 0.970)
             
-            # [핵심 수정] DB 저장 성공 여부와 무관하게(재실행 대비) 텔레그램 신호 리스트에 적재
             save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop)
             
             c_vol = vol_ratio >= 2
