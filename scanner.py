@@ -87,7 +87,6 @@ async def scan_market(run_type="OPEN_SCAN"):
                 fail_stats["vol"] += 1
                 continue
             
-            # V8.4.2 윗꼬리 정밀 계산 복구
             upper_shadow = ((curr['High'] - max(curr['Open'], curr['Close'])) / curr['High'] * 100)
             candle_pos = ((curr['Close'] - curr['Low']) / (curr['High'] - curr['Low']) * 100) if (curr['High'] > curr['Low']) else 0
             
@@ -100,11 +99,9 @@ async def scan_market(run_type="OPEN_SCAN"):
                 fail_stats["etc"] += 1
                 continue
             
-            # RS 및 5일 수익률 복구
             five_change = (curr['Close'] / p6 - 1) * 100
             rs = five_change - market_change
             
-            # 스코어링 인자 9개 완벽 매칭
             score = calculate_score(row['Amount'], vol_ratio, row['ChangesRatio'], upper_shadow, 
                                    ma_gap, candle_pos, rs, five_change, risk_level)
             
@@ -117,9 +114,7 @@ async def scan_market(run_type="OPEN_SCAN"):
             t2 = int(curr['Close'] * 1.063)
             stop = int(curr['Close'] * 0.970)
             
-            # save_candidate 8개 인자 완벽 동기화 (순서 주의)
             if save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop):
-                # 텔레그램 렌더링용 변수 생성
                 c_vol = vol_ratio >= 2
                 c_rs = rs >= 5
                 c_heat = ma_gap < 15
@@ -139,9 +134,14 @@ async def scan_market(run_type="OPEN_SCAN"):
             fail_stats["etc"] += 1
             
     mode_str = "🟢 정상" if risk_level < 2 else "🚨 위험"
+    
+    # 텔레그램 봇 하위 호환성을 위해 fail_stats 이중 맵핑
     return {
         "market": {"kospi": round(market_change, 2), "kosdaq": 0.0, "mode": mode_str, "risk_pct": risk_level*10},
         "stats": {"total": len(krx), "pass1": len(candidates), "final": len(results)},
-        "fail_stats": fail_stats,
+        "fail_stats": {
+            "ma20": fail_stats["ma20"], "vol": fail_stats["vol"], "score": fail_stats["score"], "etc": fail_stats["etc"],
+            "drop_ma20": fail_stats["ma20"], "drop_vol": fail_stats["vol"], "drop_score": fail_stats["score"], "drop_etc": fail_stats["etc"]
+        },
         "candidates": results
     }
