@@ -1,6 +1,25 @@
-import datetime, pytz
+import os
+import datetime
+import pytz
+import telegram
+
+async def send_message(text):
+    """텔레그램 메시지 발송 핵심 엔진"""
+    token = os.environ.get("TELEGRAM_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    
+    if not token or not chat_id:
+        print("🚨 환경변수 누락: TELEGRAM_TOKEN 또는 TELEGRAM_CHAT_ID가 없습니다.")
+        return
+        
+    bot = telegram.Bot(token=token)
+    try:
+        await bot.send_message(chat_id=chat_id, text=text)
+    except Exception as e:
+        print(f"텔레그램 발송 실패: {e}")
 
 def format_scan_message(data):
+    """V8.4.5 압도적 정보량 스캔 보고서 포맷"""
     kst = pytz.timezone("Asia/Seoul")
     now_str = datetime.datetime.now(kst).strftime("%Y-%m-%d %H:%M")
     
@@ -69,3 +88,18 @@ def format_scan_message(data):
         msg += f"=========================\n\n"
         
     return msg
+
+def format_validate_message(results):
+    """장 마감 후 정밀 검증 보고 포맷"""
+    if not results:
+        return "🔍 [V8.4.5 장 마감 정밀 검증]\n⚙️ 검증 완료: 특이사항 없음"
+    
+    msg = "🔍 [V8.4.5 장 마감 정밀 검증]\n=========================\n"
+    for r in results:
+        msg += f"• {r.get('name', '알 수 없음')} ({r.get('code', '000000')}): {r.get('status', '상태 확인 필요')}\n"
+    return msg
+
+def format_d3_profit_message(results):
+    """D+3 익절/손절 청산 대상 보고 포맷"""
+    if not results:
+        return ""
