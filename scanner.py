@@ -23,8 +23,9 @@ def get_krx_retry():
             krx = krx.reset_index(drop=True)
             
             krx['ChangesRatio'] = pd.to_numeric(krx['ChangesRatio'], errors='coerce')
-            krx.loc[(krx['ChangesRatio'] > 30) | (krx['ChangesRatio'] < -30), 'ChangesRatio'] = None
-            krx['ChangesRatio'] = krx['ChangesRatio'].fillna(-999) # [형님 지침] 비정상 데이터 식별용
+            # [형님 지침] 보수적 범위 확장: ±1000%까지 수용하여 데이터 분포 확인
+            krx.loc[(krx['ChangesRatio'] > 1000) | (krx['ChangesRatio'] < -1000), 'ChangesRatio'] = None
+            krx['ChangesRatio'] = krx['ChangesRatio'].fillna(0)
                 
             return krx
         except Exception as e:
@@ -65,13 +66,13 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx = krx.reset_index(drop=True)
     krx['Amount'] = krx['Close'] * krx['Volume']
 
-    # [형님 지침] 필터 교집합 병목 정밀 추적 디버깅 로그
+    # [형님 지침] 필터 교집합 및 원인 추적 정밀 로그
     test = krx[(krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)]
-    print("=== 상승 종목 샘플 (ChangesRatio 3~18%) ===")
-    print(test[['Name','Close','Volume','Amount','ChangesRatio']].sort_values('Amount', ascending=False).head(20))
-    print(f"상승+거래대금100억 통과: {len(test[test['Amount'] >= MIN_AMOUNT])}")
-    
-    print(f"최종 조합 통과: {len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])}")
+    print("=== 가격+거래대금 통과 샘플 ===")
+    t_test = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT)]
+    print(t_test[['Name','Close','Amount','ChangesRatio']].sort_values('Amount', ascending=False).head(30))
+    print(f"가격+거래대금 통과 개수: {len(t_test)}")
+    print(f"가격+거래대금 중 상승률 3~18% 통과: {len(t_test[(t_test['ChangesRatio'] >= 3) & (t_test['ChangesRatio'] <= 18)])}")
     
     candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
                      (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
