@@ -11,7 +11,7 @@ from telegram_bot import send_message, format_scan_message, format_validate_mess
 
 async def run():
     try:
-        print("1. V9.0 최상위 퀀트 시스템 가동 준비...")
+        print("1. V8.4.2 최상위 퀀트 시스템 가동 준비...")
         init_db()
         print("✅ DB 안전 연결 확인 완료")
 
@@ -33,7 +33,7 @@ async def run():
             
         elif n.hour == 15 and n.minute >= 35:
             print("2. [오후 15:40] 일일 마감 연산...")
-            await send_message("🌙 V9.0 DAILY REPORT: 오늘분 데이터 적재 및 기계적 백업 완료")
+            await send_message("🌙 V8.4.2 DAILY REPORT: 오늘분 데이터 적재 및 기계적 백업 완료")
             print("✅ 마감 완료")
             
         else:
