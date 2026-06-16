@@ -3,7 +3,7 @@ import datetime
 import pytz
 import sqlite3
 import pandas as pd
-from database import get_today_candidates
+from database import get_today_candidates, DB_PATH
 
 def validate_candidates():
     candidates = get_today_candidates()
@@ -11,7 +11,12 @@ def validate_candidates():
     
     for row in candidates:
         try:
-            db_id, date, code, name, score, entry_price, market_mode, *extra = row
+            # DB 변경사항 반영: 딕셔너리 키로 직접 접근
+            code = str(row['code']).zfill(6)
+            name = row['name']
+            score = row['score']
+            entry_price = row['buy_p'] # 실제 매수체결가 API 연동 전까지 진입선(buy_p)을 기준으로 평가
+            
             hist = fdr.DataReader(code, (datetime.datetime.now() - datetime.timedelta(days=40)).strftime("%Y-%m-%d"))
             if len(hist) < 20: continue
             
@@ -27,7 +32,7 @@ def validate_candidates():
             if (volume_now / volume_avg) < 0.8:
                 reason.append("거래량 감소")
             
-            change = (current / entry_price - 1) * 100
+            change = (current / entry_price - 1) * 100 if entry_price > 0 else 0
             if change < -3:
                 survive = False
                 reason.append("손절권 진입")
@@ -37,19 +42,18 @@ def validate_candidates():
                 "entry": entry_price, "current": int(current), 
                 "change": round(change, 2), "survive": survive, "reason": reason
             })
-        except: continue
+        except Exception: 
+            continue
+            
     return results
 
-# [신규 추가] D+3 보유 종목 추출 및 익절 수익률 계산기
 def validate_d3_targets():
     kst = pytz.timezone('Asia/Seoul')
-    # 현재일 기준 정확히 3일 전 날짜 역산
     target_date = (datetime.datetime.now(kst) - datetime.timedelta(days=3)).strftime("%Y-%m-%d")
     results = []
     
     try:
-        conn = sqlite3.connect("candidates.db")
-        # 컬럼 인덱스 오류 방지를 위해 pandas 데이터프레임으로 로드
+        conn = sqlite3.connect(DB_PATH)
         df = pd.read_sql(f"SELECT * FROM candidates WHERE date LIKE '{target_date}%'", conn)
         conn.close()
         
