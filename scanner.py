@@ -17,9 +17,13 @@ def get_krx_retry():
                 "ChangeRate": "ChangesRatio",
                 "Changes": "ChangesRatio"
             }
+            # [긴급 수정 1] 타겟 컬럼이 이미 존재하면 변경을 건너뛰어 '쌍둥이 컬럼' 생성 원천 차단
             for old, new in rename_map.items():
-                if old in krx.columns:
+                if old in krx.columns and new not in krx.columns:
                     krx.rename(columns={old: new}, inplace=True)
+            
+            # [긴급 수정 2] 만약 중복 컬럼이 생겼더라도 첫 번째만 남기고 즉각 파기
+            krx = krx.loc[:, ~krx.columns.duplicated()]
                     
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
             return krx
@@ -33,7 +37,6 @@ def remove_bad_targets(df):
     pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
     return df[~df['Name'].str.contains(pattern, regex=True, na=False)]
 
-# [신규 추가: V8.4.2 노트 기반 시장 폭락 감지 로직]
 def is_market_crash(market_change):
     if market_change <= -1.5:
         return True
@@ -61,7 +64,6 @@ async def scan_market(run_type="OPEN_SCAN"):
     except: 
         market_change = 0
 
-    # [방어벽 발동: 시장 폭락 시 스캐너 전면 강제 정지]
     if is_market_crash(market_change):
         return {
             "market": {"kospi": round(market_change, 2), "kosdaq": 0, "risk_pct": 100, "mode": "🚨 코스피 -1.5% 급락 (스캔 강제 정지)"},
@@ -72,12 +74,9 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx = remove_bad_targets(get_krx_retry())
     krx['Amount'] = krx['Close'] * krx['Volume']
     
-    # ==========================================
-    # [긴급 수정] 다중 필터링 충돌 방지를 위한 중복 인덱스 강제 제거
+    # 이전 조치 유지 (행 단위 중복 제거)
     krx = krx.loc[~krx.index.duplicated(keep='first')]
-    # ==========================================
     
-    # 통계용: 1차 필터 통과 개수 산출
     pass1_count = len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
                          (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])
 
@@ -110,7 +109,6 @@ async def scan_market(run_type="OPEN_SCAN"):
             if p6 <= 0: continue
             five_change = (curr['Close'] / p6 - 1) * 100
             
-            # scoring.py의 9개 인자와 완벽 매칭됨
             score = calculate_score(row['Amount'], vol_ratio, row['ChangesRatio'], upper_shadow, 
                                    ma_gap, candle_pos, (five_change - market_change), five_change, risk_level)
             
@@ -122,7 +120,6 @@ async def scan_market(run_type="OPEN_SCAN"):
             stop = int(curr['Close'] * 0.970)
             
             if save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop):
-                # telegram_bot.py 포맷터가 요구하는 모든 변수를 포함하여 KeyError 원천 차단
                 results.append({
                     "code": code, 
                     "name": row['Name'], 
