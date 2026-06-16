@@ -38,11 +38,9 @@ jobs:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
-        # 1. 수동 실행(workflow_dispatch) 시 입력받은 모드 최우선 타격
         if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
           python main.py ${{ github.event.inputs.mode }}
         else
-          # 2. 자동 스케줄 실행 시 (트래픽 지연으로 인한 1~10분 오차 완벽 무시)
           SCHEDULE="${{ github.event.schedule }}"
           
           if [ "$SCHEDULE" == "35 23 * * 0-4" ]; then
@@ -52,7 +50,6 @@ jobs:
           elif [ "$SCHEDULE" == "35 6 * * 1-5" ]; then
              python main.py REVIEW
           else
-             # 예외 상황 발생 시 안전장치로 REVIEW 모드 가동
              python main.py REVIEW
           fi
         fi
@@ -61,6 +58,10 @@ jobs:
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # nothing to commit 강제 종료 방어 로직 이식 완료
         git add data/candidates.db
-        # DB 내용에 변동이 있을 때만 안전하게 커밋 수행, 오류 시 무시(|| true)하여 워크플로우 크래시 방어
-        git diff --quiet && git diff --staged --quiet || (git commit -m "[Auto] Update candidate database" && git push)
+        git diff --cached --quiet || (
+          git commit -m "[Auto] Update candidate database"
+          git push
+        )
