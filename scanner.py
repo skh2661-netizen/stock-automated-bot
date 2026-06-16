@@ -17,10 +17,16 @@ def get_krx_retry():
                     krx.rename(columns={old: new}, inplace=True)
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
             
+            # [기본 방어] 컬럼 및 인덱스 정제
             krx = krx.loc[:, ~krx.columns.duplicated()]
             if "Code" in krx.columns:
                 krx = krx.drop_duplicates(subset=['Code'], keep='first')
             krx = krx.reset_index(drop=True)
+            
+            # [형님 지침] 등락률 데이터 검증 및 강제 정규화
+            krx['ChangesRatio'] = pd.to_numeric(krx['ChangesRatio'], errors='coerce')
+            krx.loc[(krx['ChangesRatio'] > 30) | (krx['ChangesRatio'] < -30), 'ChangesRatio'] = None
+            krx['ChangesRatio'] = krx['ChangesRatio'].fillna(0)
                 
             return krx
         except Exception as e:
@@ -61,11 +67,11 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx = krx.reset_index(drop=True)
     krx['Amount'] = krx['Close'] * krx['Volume']
 
-    # [형님 지침 이식] 병목 구간 정밀 추적 디버깅 로그
+    # [디버깅] 보정 후 데이터 정합성 검증 로그
     print(f"KRX 컬럼 리스트: {krx.columns.tolist()}")
-    print(krx.head())
     print(krx['ChangesRatio'].describe())
-    print(f"ChangesRatio 타입: {krx['ChangesRatio'].dtype}")
+    print(krx[((krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18))][['Name', 'ChangesRatio']].head(20))
+    
     print(f"가격조건 통과: {len(krx[krx['Close'] >= MIN_PRICE])}")
     print(f"거래대금 통과: {len(krx[krx['Amount'] >= MIN_AMOUNT])}")
     print(f"등락률 통과: {len(krx[(krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])}")
