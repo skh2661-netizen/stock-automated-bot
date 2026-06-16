@@ -12,7 +12,6 @@ def connect():
 
 def init_db():
     conn = connect()
-    # 1. 후보 적재용 테이블
     conn.execute("""
         CREATE TABLE IF NOT EXISTS candidates (
             unique_key TEXT PRIMARY KEY,
@@ -28,7 +27,6 @@ def init_db():
             result_status TEXT DEFAULT '대기'
         )
     """)
-    # 2. 시스템 운영 로그 테이블 추가
     conn.execute("""
         CREATE TABLE IF NOT EXISTS logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,7 +48,7 @@ def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, sto
             INSERT OR IGNORE INTO candidates 
             (unique_key, date, timestamp, run_type, strategy_version, score_version, code, name, score, buy_p, target1_p, target2_p, stop_p) 
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (unique_key, today, now.strftime("%H:%M:%S"), run_type, "V8.4.2", "SCORE_A", code, name, score, buy_p, target1_p, target2_p, stop_p))
+        """, (unique_key, today, now.strftime("%H:%M:%S"), run_type, "V8.4.5", "SCORE_A", code, name, score, buy_p, target1_p, target2_p, stop_p))
         conn.commit()
         return cursor.rowcount > 0
     except Exception as e:
@@ -67,21 +65,11 @@ def get_today_candidates():
     conn.close()
     return [dict(row) for row in rows]
 
-# [추가] main.py 에러 해결을 위한 가변형 시스템 로그 저장 함수
-def save_log(*args):
+def save_log(run_type, message):
     conn = connect()
     now = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
-    
-    # main.py에서 넘기는 인자 수에 상관없이 유연하게 대처 (에러 원천 방어)
     try:
-        if len(args) == 1:
-            run_type, message = "SYSTEM", str(args[0])
-        elif len(args) >= 2:
-            run_type, message = str(args[0]), str(args[1])
-        else:
-            return
-
-        conn.execute("INSERT INTO logs (timestamp, run_type, message) VALUES (?,?,?)", (now, run_type, message))
+        conn.execute("INSERT INTO logs (timestamp, run_type, message) VALUES (?,?,?)", (now, str(run_type), str(message)))
         conn.commit()
     except Exception as e:
         print(f"로그 저장 오류: {e}")
