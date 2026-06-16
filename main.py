@@ -6,13 +6,18 @@ from market_check import is_market_open
 from telegram_bot import send_message, format_scan_message, format_validate_message, format_d3_profit_message
 
 async def run():
+    valid_modes = ["OPEN_SCAN", "CLOSE_SCAN", "REVIEW"]
     mode = sys.argv[1] if len(sys.argv) > 1 else "REVIEW"
+    if mode not in valid_modes:
+        mode = "REVIEW"
 
-    # DB 초기화 1회 실행으로 병목 해소
     init_db()
-    if not is_market_open():
-        await send_message("💤 [휴장일 알림] 오늘(주말/공휴일)은 한국 증시 휴장일입니다. 연산을 중지합니다.")
-        return
+    
+    # [수정] 휴장일이어도 REVIEW 모드(주말 결산 등)는 강제 실행하도록 허용
+    if mode != "REVIEW":
+        if not is_market_open():
+            await send_message("💤 [휴장일 알림] 오늘(주말/공휴일)은 한국 증시 휴장일입니다. 연산을 중지합니다.")
+            return
 
     try:
         if mode == "OPEN_SCAN":
