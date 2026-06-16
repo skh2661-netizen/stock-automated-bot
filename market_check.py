@@ -18,5 +18,4 @@ def is_market_open():
         except Exception: return False
         
     # 3. [핵심 수정] 장중(오전 9시 ~ 오후 3시 30분)에는 평일이면 무조건 개장으로 간주
-    # 오늘 데이터가 없어도 평일이면 정상 운영 중인 것으로 판단
     return True
