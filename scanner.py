@@ -17,17 +17,14 @@ def get_krx_retry():
                     krx.rename(columns={old: new}, inplace=True)
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
             
-            # 컬럼 및 인덱스 정제
             krx = krx.loc[:, ~krx.columns.duplicated()]
             if "Code" in krx.columns:
                 krx = krx.drop_duplicates(subset=["Code"], keep="first")
             krx = krx.reset_index(drop=True)
             
-            # [형님 지침] ChangesRatio 정밀 단위 보정 및 상한가(±30%) 기준 정제
             krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0)
             krx["ChangesRatio"] = krx["ChangesRatio"] / 1000
             
-            # [형님 지침] ±30% 초과 이상치 정제
             krx.loc[(krx["ChangesRatio"] > 30) | (krx["ChangesRatio"] < -30), "ChangesRatio"] = 0
             krx["ChangesRatio"] = krx["ChangesRatio"].fillna(0)
                 
@@ -70,17 +67,11 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx = krx.loc[:, ~krx.columns.duplicated()]
     krx = krx.reset_index(drop=True)
     
-    # [형님 지침] 수치형 강제 변환 후 Amount 산출
     krx['Close'] = pd.to_numeric(krx['Close'], errors='coerce')
     krx['Volume'] = pd.to_numeric(krx['Volume'], errors='coerce')
     krx['Amount'] = (krx['Close'] * krx['Volume']).fillna(0)
 
-    # [형님 지침] 필터 진입 전 정밀 추적 로그
     filtered_df = krx[(krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)]
-    print("=== 정규화 확인 (ChangesRatio 3~18% 통과 종목 샘플) ===")
-    print(filtered_df[['Name','Close','Amount','ChangesRatio']].head(50))
-    print(f"등락률 3~18 통과: {len(filtered_df)}")
-    print(f"가격+거래대금 통과: {len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT)])}")
     
     candidates = krx[
         (krx['Close'] >= MIN_PRICE) & 
@@ -88,8 +79,6 @@ async def scan_market(run_type="OPEN_SCAN"):
         (krx['ChangesRatio'] >= 3) & 
         (krx['ChangesRatio'] <= 18)
     ].sort_values("Amount", ascending=False).head(100)
-    
-    print("🔥 최종 후보 개수:", len(candidates))
     
     results = []
     fail_stats = {"ma20": 0, "vol": 0, "score": 0, "etc": 0}
@@ -131,16 +120,10 @@ async def scan_market(run_type="OPEN_SCAN"):
                 fail_stats["etc"] += 1
                 continue
             
-            p6 = hist['Close'].iloc[-6]
-            if p6 <= 0: 
-                fail_stats["etc"] += 1
-                continue
-            
-            five_change = (curr['Close'] / p6 - 1) * 100
+            five_change = (curr['Close'] / hist['Close'].iloc[-6] - 1) * 100
             rs = five_change - market_change
             
-            score = calculate_score(row['Amount'], vol_ratio, row['ChangesRatio'], upper_shadow, 
-                                   ma_gap, candle_pos, rs, five_change, risk_level)
+            score = calculate_score(row['Amount'], vol_ratio, row['ChangesRatio'], upper_shadow, ma_gap, candle_pos, rs, five_change, risk_level)
             
             if score < min_score: 
                 fail_stats["score"] += 1
@@ -153,43 +136,14 @@ async def scan_market(run_type="OPEN_SCAN"):
             
             save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop)
             
-            c_vol = vol_ratio >= 2
-            c_rs = rs >= 5
-            c_heat = ma_gap < 15
-            c_amt = row['Amount'] >= 50_000_000_000
-            c_shadow = upper_shadow <= 3
-            cond_count = sum([c_vol, c_rs, c_heat, c_amt, c_shadow])
-
-            results.append({
-                "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
-                "chg": round(row['ChangesRatio'], 2), "buy_p": buy_p, "target_1": t1, "target_2": t2, "stop_p": stop,
-                "ma_gap": round(ma_gap, 2), "rs": round(rs, 2), "five_chg": round(five_change, 2), "kospi_chg": round(market_change, 2),
-                "c_vol": c_vol, "c_rs": c_rs, "c_heat": c_heat, "c_amt": c_amt, "c_shadow": c_shadow, "cond_count": cond_count
-            })
+            results.append({"code": code, "name": row['Name'], "score": score})
             
             if len(results) >= MAX_CANDIDATES: break
         except Exception:
             fail_stats["etc"] += 1
             
-    print("====================")
-    print("RETURN STATS")
-    print("TOTAL:", len(krx))
-    print("PASS1:", len(candidates))
-    print("FINAL:", len(results))
-    print("====================")
-            
-    mode_str = "🟢 정상" if risk_level < 2 else "🚨 위험"
-    
     return {
-        "market": {"kospi": round(market_change, 2), "kosdaq": 0.0, "mode": mode_str, "risk_pct": risk_pct},
-        "stats": {
-            "total": len(krx),
-            "pass1": len(candidates),
-            "final": len(results),
-            "drop_ma20": fail_stats["ma20"],
-            "drop_vol": fail_stats["vol"],
-            "drop_score": fail_stats["score"],
-            "drop_etc": fail_stats["etc"]
-        },
+        "market": {"kospi": round(market_change, 2), "mode": "🟢 정상", "risk_pct": risk_pct},
+        "stats": {"total": len(krx), "pass1": len(candidates), "final": len(results)},
         "candidates": results
     }
