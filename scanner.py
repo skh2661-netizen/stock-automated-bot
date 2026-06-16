@@ -17,14 +17,17 @@ def get_krx_retry():
                     krx.rename(columns={old: new}, inplace=True)
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
             
+            # [필수 방어] 중복 제거 및 인덱스 리셋
             krx = krx.loc[:, ~krx.columns.duplicated()]
             if "Code" in krx.columns:
                 krx = krx.drop_duplicates(subset=['Code'], keep='first')
             krx = krx.reset_index(drop=True)
             
+            # [형님 지침] FDR 데이터 스케일 보정 (10000 단위 보정)
             krx['ChangesRatio'] = pd.to_numeric(krx['ChangesRatio'], errors='coerce')
-            # [형님 지침] 보수적 범위 확장: ±1000%까지 수용하여 데이터 분포 확인
-            krx.loc[(krx['ChangesRatio'] > 1000) | (krx['ChangesRatio'] < -1000), 'ChangesRatio'] = None
+            if krx['ChangesRatio'].abs().median() > 100:
+                krx['ChangesRatio'] = krx['ChangesRatio'] / 10000
+            
             krx['ChangesRatio'] = krx['ChangesRatio'].fillna(0)
                 
             return krx
@@ -66,13 +69,14 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx = krx.reset_index(drop=True)
     krx['Amount'] = krx['Close'] * krx['Volume']
 
-    # [형님 지침] 필터 교집합 및 원인 추적 정밀 로그
-    test = krx[(krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)]
-    print("=== 가격+거래대금 통과 샘플 ===")
-    t_test = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT)]
-    print(t_test[['Name','Close','Amount','ChangesRatio']].sort_values('Amount', ascending=False).head(30))
-    print(f"가격+거래대금 통과 개수: {len(t_test)}")
-    print(f"가격+거래대금 중 상승률 3~18% 통과: {len(t_test[(t_test['ChangesRatio'] >= 3) & (t_test['ChangesRatio'] <= 18)])}")
+    # [형님 지침] 보정된 데이터 검증 로그
+    print("=== 정규화된 등락률 샘플 ===")
+    print(krx[['Name','Close','Volume','Amount','ChangesRatio']].sort_values('ChangesRatio', ascending=False).head(20))
+    
+    print(f"가격조건 통과: {len(krx[krx['Close'] >= MIN_PRICE])}")
+    print(f"거래대금 통과: {len(krx[krx['Amount'] >= MIN_AMOUNT])}")
+    print(f"등락률 통과: {len(krx[(krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])}")
+    print(f"최종 조합 통과: {len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])}")
     
     candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
                      (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
