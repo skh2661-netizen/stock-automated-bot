@@ -17,16 +17,15 @@ def get_krx_retry():
                     krx.rename(columns={old: new}, inplace=True)
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
             
+            # 컬럼 및 인덱스 정제
             krx = krx.loc[:, ~krx.columns.duplicated()]
             if "Code" in krx.columns:
                 krx = krx.drop_duplicates(subset=["Code"], keep="first")
             krx = krx.reset_index(drop=True)
-
-            # [형님 지침] FDR 등락률 데이터 검증 및 보정
-            krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce")
-            krx.loc[(krx["ChangesRatio"] > 30) | (krx["ChangesRatio"] < -30), "ChangesRatio"] = 0
-            krx["ChangesRatio"] = krx["ChangesRatio"].fillna(0)
-
+            
+            # [형님 지침] 원시 데이터 타입 강제 변환
+            krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0)
+                
             return krx
         except Exception as e:
             print("KRX 재시도:", e)
@@ -63,25 +62,34 @@ async def scan_market(run_type="OPEN_SCAN"):
         market_change = 0
 
     krx = remove_bad_targets(get_krx_retry())
-    krx['Amount'] = krx['Close'] * krx['Volume']
+    krx = krx.loc[:, ~krx.columns.duplicated()]
+    krx = krx.reset_index(drop=True)
+    
+    # [형님 지침] Close, Volume 수치형 강제 변환 후 Amount 산출
+    krx['Close'] = pd.to_numeric(krx['Close'], errors='coerce')
+    krx['Volume'] = pd.to_numeric(krx['Volume'], errors='coerce')
+    krx['Amount'] = (krx['Close'] * krx['Volume']).fillna(0)
 
-    # [형님 지침] 최종 후보 선정 로직 및 추적 로그
+    # [형님 지침] 원시 데이터 판독 디버깅 로그
+    print("==============================")
+    print("ChangesRatio RAW CHECK")
+    print(krx["ChangesRatio"].head(30).tolist())
+    print(krx["ChangesRatio"].describe())
+    print("==============================")
+    print(krx[['Name','Close','Volume','Amount']].head(20))
+    print(krx['Amount'].describe())
+    
     candidates = krx[
-        (krx['Close'] >= MIN_PRICE) &
-        (krx['Amount'] >= MIN_AMOUNT) &
-        (krx['ChangesRatio'] >= 3) &
+        (krx['Close'] >= MIN_PRICE) & 
+        (krx['Amount'] >= MIN_AMOUNT) & 
+        (krx['ChangesRatio'] >= 3) & 
         (krx['ChangesRatio'] <= 18)
-    ].copy()
-
-    print("🔥 최종 후보 개수:", len(candidates))
-    if len(candidates) > 0:
-        print(candidates[['Name', 'Close', 'Amount', 'ChangesRatio']].head(20))
-
-    candidates = candidates.sort_values("Amount", ascending=False).head(100)
+    ].sort_values("Amount", ascending=False).head(100)
     
     results = []
     fail_stats = {"ma20": 0, "vol": 0, "score": 0, "etc": 0}
     
+    # [중략: 나머지 엔진 로직은 동일]
     for _, row in candidates.iterrows():
         code = str(row['Code']).zfill(6)
         await asyncio.sleep(0.15)
@@ -159,7 +167,6 @@ async def scan_market(run_type="OPEN_SCAN"):
         except Exception:
             fail_stats["etc"] += 1
             
-    # [형님 지침] 최종 반환 전 상태 정밀 추적 로그
     print("====================")
     print("RETURN STATS")
     print("TOTAL:", len(krx))
