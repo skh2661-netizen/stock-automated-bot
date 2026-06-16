@@ -40,7 +40,6 @@ async def scan_market(run_type="OPEN_SCAN"):
         risk_pct = 0
         
     if risk_level >= 2 and run_type == "CLOSE_SCAN":
-        # 텔레그램 통계 UI 오류 방지를 위해 실패 시에도 drop 변수 0으로 강제 초기화
         return {"market": {"kospi": 0, "kosdaq": 0, "mode": "🚨 위험", "risk_pct": risk_pct}, "stats": {"total":0, "pass1":0, "final":0, "drop_ma20": 0, "drop_vol": 0, "drop_score": 0, "drop_etc": 0}, "candidates": []}
     
     min_score = 75 if risk_level == 0 else (80 if risk_level == 1 else 85)
@@ -116,20 +115,22 @@ async def scan_market(run_type="OPEN_SCAN"):
             t2 = int(curr['Close'] * 1.063)
             stop = int(curr['Close'] * 0.970)
             
-            if save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop):
-                c_vol = vol_ratio >= 2
-                c_rs = rs >= 5
-                c_heat = ma_gap < 15
-                c_amt = row['Amount'] >= 50_000_000_000
-                c_shadow = upper_shadow <= 3
-                cond_count = sum([c_vol, c_rs, c_heat, c_amt, c_shadow])
+            # [핵심 수정] DB 저장 성공 여부와 무관하게(재실행 대비) 텔레그램 신호 리스트에 적재
+            save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop)
+            
+            c_vol = vol_ratio >= 2
+            c_rs = rs >= 5
+            c_heat = ma_gap < 15
+            c_amt = row['Amount'] >= 50_000_000_000
+            c_shadow = upper_shadow <= 3
+            cond_count = sum([c_vol, c_rs, c_heat, c_amt, c_shadow])
 
-                results.append({
-                    "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
-                    "chg": round(row['ChangesRatio'], 2), "buy_p": buy_p, "target_1": t1, "target_2": t2, "stop_p": stop,
-                    "ma_gap": round(ma_gap, 2), "rs": round(rs, 2), "five_chg": round(five_change, 2), "kospi_chg": round(market_change, 2),
-                    "c_vol": c_vol, "c_rs": c_rs, "c_heat": c_heat, "c_amt": c_amt, "c_shadow": c_shadow, "cond_count": cond_count
-                })
+            results.append({
+                "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
+                "chg": round(row['ChangesRatio'], 2), "buy_p": buy_p, "target_1": t1, "target_2": t2, "stop_p": stop,
+                "ma_gap": round(ma_gap, 2), "rs": round(rs, 2), "five_chg": round(five_change, 2), "kospi_chg": round(market_change, 2),
+                "c_vol": c_vol, "c_rs": c_rs, "c_heat": c_heat, "c_amt": c_amt, "c_shadow": c_shadow, "cond_count": cond_count
+            })
             
             if len(results) >= MAX_CANDIDATES: break
         except Exception:
@@ -137,7 +138,6 @@ async def scan_market(run_type="OPEN_SCAN"):
             
     mode_str = "🟢 정상" if risk_level < 2 else "🚨 위험"
     
-    # [핵심 수정] telegram_bot.py 호환을 위한 stats 통합 출력
     return {
         "market": {"kospi": round(market_change, 2), "kosdaq": 0.0, "mode": mode_str, "risk_pct": risk_pct},
         "stats": {
