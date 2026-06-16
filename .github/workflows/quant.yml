@@ -1,6 +1,6 @@
 name: V8.4 Momentum Swing Quant Engine
 
-# [핵심 보완] 동일 자원(SQLite)에 대한 동시 쓰기 충돌을 원천 차단하는 단일 점유 체계 구축
+# 동일 자원(SQLite)에 대한 동시 쓰기 충돌을 원천 차단하는 단일 점유 체계
 concurrency:
   group: quant-engine
   cancel-in-progress: false
@@ -33,7 +33,8 @@ jobs:
     - name: Python Setup
       uses: actions/setup-python@v5
       with:
-        python-version: "3.11"
+        # [핵심 수정] 패키지 빌드 안정성을 위해 Python 3.10 환경 고정
+        python-version: "3.10"
 
     - name: Install Dependencies
       run: pip install -r requirements.txt
@@ -65,7 +66,6 @@ jobs:
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         
         git add data/candidates.db
-        # 중복 push 에러 방지용 안전장치 유지
         git diff --cached --quiet || (
           git commit -m "[Auto] Update candidate database"
           git push
