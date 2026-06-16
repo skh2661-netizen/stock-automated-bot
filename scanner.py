@@ -72,9 +72,14 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx = remove_bad_targets(get_krx_retry())
     krx['Amount'] = krx['Close'] * krx['Volume']
     
+    # ==========================================
+    # [긴급 수정] 다중 필터링 충돌 방지를 위한 중복 인덱스 강제 제거
+    krx = krx.loc[~krx.index.duplicated(keep='first')]
+    # ==========================================
+    
     # 통계용: 1차 필터 통과 개수 산출
     pass1_count = len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
-                     (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])
+                         (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)])
 
     candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
                      (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
