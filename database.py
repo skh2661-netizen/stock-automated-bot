@@ -3,7 +3,7 @@ from datetime import datetime
 import os
 import pytz
 
-# [수정] GitHub Actions 환경의 영구 보존을 위해 data 폴더로 경로 변경
+# [핵심 수정] 깃허브 Actions(quant.yml)의 영구 보존 백업 경로와 100% 일치시킴
 DB_PATH = "data/candidates.db"
 
 def connect(): 
@@ -12,8 +12,9 @@ def connect():
     return conn
 
 def init_db():
-    # [추가] data 디렉토리 자동 생성
+    # 깃허브 가상 환경에서 data 폴더가 없을 경우 자동 생성하여 에러 원천 차단
     os.makedirs("data", exist_ok=True)
+    
     conn = connect()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS candidates (
