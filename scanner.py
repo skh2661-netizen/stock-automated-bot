@@ -1,147 +1,187 @@
-import telegram, asyncio
-import os
-import datetime
+import pandas as pd
+import datetime, asyncio, time
 import pytz
 
-async def send_message(text):
-    """텔레그램 메시지 안전 전송"""
-    token = os.environ.get("TELEGRAM_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    
-    if not token or not chat_id:
-        return
+try:
+    import FinanceDataReader as fdr
+except ImportError:
+    import finance_datareader as fdr
 
-    bot = telegram.Bot(token=token)
-    for _ in range(3):
-        try:
-            await bot.send_message(chat_id=chat_id, text=text, parse_mode=None)
-            break
+from scoring import calculate_score
+from risk import get_market_risk
+from database import save_candidate
+
+MIN_PRICE = 2000
+MIN_AMOUNT = 10_000_000_000
+MAX_CANDIDATES = 10
+
+def get_krx_retry(): 
+    for i in range(3):
+        try: 
+            krx = fdr.StockListing("KRX")
+            rename_map = {
+                "ChagesRatio": "ChangesRatio",
+                "ChgRate": "ChangesRatio",
+                "ChangeRate": "ChangesRatio",
+                "Changes": "ChangesRatio"
+            }
+            for old, new in rename_map.items():
+                if old in krx.columns and new not in krx.columns:
+                    krx.rename(columns={old: new}, inplace=True)
+            
+            krx = krx.loc[:, ~krx.columns.duplicated()]
+            
+            if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
+            return krx
         except Exception as e: 
-            await asyncio.sleep(3)
+            time.sleep(5)
+    raise Exception("KRX 데이터 연결 3회 실패")
 
-def format_scan_message(data):
-    """[V8.4.5] 오리지널 V8.4.2 UI + 탈락자 정밀 통계 완결판"""
+def remove_bad_targets(df):
+    pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
+    return df[~df['Name'].str.contains(pattern, regex=True, na=False)]
+
+def calculate_candle_position(row):
+    high_low = row['High'] - row['Low']
+    return ((row['Close'] - row['Low']) / high_low * 100) if high_low > 0 else None
+
+async def scan_market(run_type="OPEN_SCAN"):
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.datetime.now(kst)
-    time_str = now.strftime("%Y-%m-%d %H:%M")
+    start_date = (now - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
     
-    market = data["market"]
-    stats = data["stats"]
-    candidates = data["candidates"]
-    
-    mode_icon = "🟢" if "정상" in market["mode"] else "🚨"
-    msg = f"🎯 [V8.4.5 퀀트 시그널 터미널]\n\n"
-    msg += f"기준: {time_str}\n\n"
-    
-    msg += f"🌎 시장 상태\n"
-    msg += f" {mode_icon} 모드: {market['mode']}\n"
-    msg += f" • 코스피: {market['kospi']}%\n"
-    msg += f" • 코스닥: {market['kosdaq']}%\n"
-    msg += f" • 위험도: {market['risk_pct']}%\n\n"
-    
-    msg += f"📊 스캔 결과 통계\n"
-    msg += f" • 전체 종목: {stats['total']:,}개\n"
-    msg += f" • 1차 필터 통과: {stats['pass1']:,}개\n"
-    msg += f" • 최종 검출 신호: {stats['final']}개\n\n"
-
-    # [보완] 1차 필터 통과자 정밀 탈락 원인 UI 추가
-    msg += f"📉 1차 필터 통과자 정밀 탈락 원인\n"
-    msg += f" • MA20 이탈 (역배열): {stats.get('drop_ma20', 0)}개\n"
-    msg += f" • 거래량 유입 부족: {stats.get('drop_vol', 0)}개\n"
-    msg += f" • 종합 점수(RS 등) 미달: {stats.get('drop_score', 0)}개\n"
-    msg += f" • 기타(검증 제외 등): {stats.get('drop_etc', 0)}개\n"
-    
-    msg += f"\n⏰ 진입 시간 판단\n"
-    if now.hour >= 14:
-        msg += f" ⚠️ 14:00 이후 신규 진입 주의\n"
-        msg += f" 👉 종가 배팅 또는 익일 시초/눌림 대기 권장\n"
-    else:
-        msg += f" 👉 ☀️ 시초가 돌파 주도주 탐색\n"
-    msg += "=========================\n\n"
-    
-    if not candidates:
-        return msg + "⚙️ 필터 통과 종목 없음 (시드 보호 모드 정상 가동)"
+    try:
+        risk = get_market_risk(start_date)
+        risk_level = risk["level"]
+    except:
+        risk_level = 1
         
-    for i, r in enumerate(candidates, 1):
-        rank_icon = "🥇 1순위" if i == 1 else ("🥈 2순위" if i == 2 else f"🏅 {i}순위")
+    try:
+        kospi_df = fdr.DataReader("KS11", now.strftime("%Y-%m-%d"))
+        kospi_chg = (kospi_df['Close'].iloc[-1] / kospi_df['Open'].iloc[0] - 1) * 100
+    except:
+        kospi_chg = 0.0
 
-        # [유지] 형님의 오리지널 등급 및 R:R 로직
-        if r['score'] >= 85 and r['ma_gap'] < 15: 
-            sig_grade = "A+급 (🛡️ 정석형 (안정적 밸런스))"
-        elif r['score'] >= 85 and r['ma_gap'] >= 15: 
-            sig_grade = "A급 (🔥 공격형 (모멘텀 극대화))"
-        elif r['score'] >= 80: 
-            sig_grade = "B+급 (모멘텀 양호)"
-        else: 
-            sig_grade = "B급 (관찰 대상)"
+    try:
+        kosdaq_df = fdr.DataReader("KQ11", now.strftime("%Y-%m-%d"))
+        kosdaq_chg = (kosdaq_df['Close'].iloc[-1] / kosdaq_df['Open'].iloc[0] - 1) * 100
+    except:
+        kosdaq_chg = 0.0
 
-        if r['ma_gap'] >= 20: 
-            heat_judge = "🚨 초과열"
-            chase_warn = "❌ 추격 매수 절대 금지 (깊은 눌림 대기)"
-        elif r['ma_gap'] >= 15: 
-            heat_judge = "⚠️ 과열존재"
-            chase_warn = "⚠️ 추격 매수 주의 (비중 축소)"
-        else: 
-            heat_judge = "🟢 안정"
-            chase_warn = "✅ 진입선 도달 시 매수 유효"
+    market_info = {
+        "mode": "🟢 정상 작동" if risk_level < 2 else "🚨 위험 제한 모드",
+        "kospi": round(kospi_chg, 2),
+        "kosdaq": round(kosdaq_chg, 2),
+        "risk_pct": risk_level * 50
+    }
+    
+    krx = get_krx_retry()
+    total_count = len(krx)
+    krx['Amount'] = krx['Close'] * krx['Volume']
+    krx = remove_bad_targets(krx)
+    
+    krx = krx.loc[~krx.index.duplicated(keep='first')]
+    
+    krx['Max_OC'] = krx[['Open','Close']].max(axis=1)
+    krx['Upper_Shadow'] = (krx['High'] - krx['Max_OC']) / krx['Close'] * 100
+    
+    condition = (krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & \
+                (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18) & \
+                (krx['Upper_Shadow'] <= 5) & (krx['Volume'] >= 300000)
+    
+    pass1_count = len(krx[condition])
+    candidates = krx[condition].sort_values('Amount', ascending=False).head(30)
+    
+    results = []
+    drop_ma20 = drop_vol = drop_score = drop_etc = 0
 
-        if r['price'] <= r['buy_p']: signal_status = "🟢 매수 가능 구간"
-        else: signal_status = "🟡 눌림 대기"
-
-        reward = r['target_1'] - r['buy_p']
-        risk = r['buy_p'] - r['stop_p']
-        rr_ratio = round(reward / risk, 2) if risk > 0 else 0
-
-        msg += f"{rank_icon} {r['name']} ({r['code']})\n"
-        msg += f" 🎯 등급: {sig_grade}\n"
-        msg += f" 📊 종합 점수: {r['score']} / 100\n\n"
-
-        msg += f"🛠 핵심 조건 충족: {r['cond_count']} / 5\n"
-        msg += f" [{'✅' if r['c_vol'] else '❌'}] 거래량 (평균 대비 2배 이상)\n"
-        msg += f" [{'✅' if r['c_rs'] else '❌'}] 상대강도 (시장 대비 RS 우위)\n"
-        msg += f" [{'🟢' if r['c_heat'] else '⚠️'}] 이격도 (MA20 과열 방지)\n"
-        msg += f" [{'✅' if r['c_amt'] else '❌'}] 거래대금 (당일 500억 이상)\n"
-        msg += f" [{'✅' if r['c_shadow'] else '❌'}] 윗꼬리 리스크 (2% 미만 안정)\n\n"
+    for _, row in candidates.iterrows():
+        code = str(row['Code']).zfill(6)
+        await asyncio.sleep(0.15)
         
-        msg += f"📌 현재 상태 및 추격 위험도\n"
-        msg += f" • 현재가: {r['price']:,}원 ({r['chg']}%)\n"
-        msg += f" • 진입선: {r['buy_p']:,}원 이하\n"
-        msg += f" • 상태: {signal_status}\n"
-        msg += f" • 판정: {chase_warn}\n\n"
-        
-        msg += f"📈 시장 상대강도 (RS - 5일 기준)\n"
-        msg += f" • 종목(+{r['five_chg']}%) vs 코스피({r['kospi_chg']}%)\n"
-        msg += f" • 시장 대비: +{r['rs']}% (상대 우위)\n\n"
+        try:
+            hist = fdr.DataReader(code, start_date)
+            if len(hist) < 25: 
+                drop_etc += 1
+                continue
+            
+            ma20 = hist['Close'].rolling(20).mean().iloc[-1]
+            if pd.isna(ma20) or ma20 <= 0:
+                drop_ma20 += 1
+                continue
+                
+            ma_gap = (row['Close'] - ma20) / ma20 * 100
+            if ma_gap < 0: 
+                drop_ma20 += 1
+                continue
+            
+            five_change = (hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) * 100
+            if five_change > 30: 
+                drop_score += 1
+                continue
+            
+            high20 = hist['High'].rolling(20).max().iloc[-2]
+            if row['Close'] < high20 * 0.85: 
+                drop_score += 1
+                continue
+            
+            vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
+            if vol_ma <= 0 or (row['Volume'] / vol_ma) < 1.3: 
+                drop_vol += 1
+                continue
+            
+            close_pos = calculate_candle_position(row)
+            if close_pos is None: 
+                drop_etc += 1
+                continue
+            
+            rs = five_change - kospi_chg
+            
+            score = calculate_score(row['Amount'], (row['Volume']/vol_ma), row['ChangesRatio'], row['Upper_Shadow'], ma_gap, close_pos, rs, five_change, risk_level)
+            if score < 75: 
+                drop_score += 1
+                continue
+            
+            amount_100m = int(row['Amount'] / 100000000)
+            buy_p = int(row['Close'] * 0.985)
+            target_1 = int(row['Close'] * 1.023)
+            target_2 = int(row['Close'] * 1.063)
+            stop_p = int(row['Close'] * 0.970)
 
-        msg += f"🔥 과열도 및 손익비\n"
-        msg += f" • MA20 이격: +{r['ma_gap']}% ({heat_judge})\n"
-        msg += f" • 1차 R:R: {rr_ratio}\n\n"
-        
-        msg += f"🎯 매매 전략\n"
-        msg += f" • 매수: {r['buy_p']:,}원 부근\n"
-        msg += f" • 익절: {r['target_1']:,}원 / {r['target_2']:,}원\n"
-        msg += f" • 손절: {r['stop_p']:,}원 (-3% 엄수)\n\n"
+            c_vol = (row['Volume'] / vol_ma) >= 2.0
+            c_rs = rs > 5.0
+            c_heat = ma_gap < 15.0
+            c_amt = amount_100m >= 500
+            c_shadow = row['Upper_Shadow'] < 2.0
+            
+            cond_count = sum([c_vol, c_rs, c_heat, c_amt, c_shadow])
+            sig_type = "🔥 공격형 (모멘텀 극대화)" if ma_gap >= 15 else "🛡️ 정석형 (안정적 밸런스)"
+            
+            save_candidate(code, row['Name'], score, int(row['Close']), risk_level, round(rs, 2), round(ma_gap, 1), buy_p, target_1, stop_p)
+            
+            results.append({
+                "code": code, "name": row['Name'], "score": score, "price": int(row['Close']),
+                "amount": amount_100m, "chg": round(row['ChangesRatio'], 2),
+                "vol_ratio": round(row['Volume'] / vol_ma, 1), "ma_gap": round(ma_gap, 1),
+                "five_chg": round(five_change, 2), "kospi_chg": round(kospi_chg, 2), "rs": round(rs, 2),
+                "buy_p": buy_p, "target_1": target_1, "target_2": target_2, "stop_p": stop_p,
+                "sig_type": sig_type, "cond_count": cond_count, 
+                "c_vol": c_vol, "c_rs": c_rs, "c_heat": c_heat, "c_amt": c_amt, "c_shadow": c_shadow
+            })
+            
+            if len(results) >= MAX_CANDIDATES: break
+        except Exception as e:
+            drop_etc += 1
+            continue
+            
+    final_results = sorted(results, key=lambda x: x['score'], reverse=True)[:MAX_CANDIDATES]
+    drop_etc += max(0, pass1_count - (drop_ma20 + drop_vol + drop_score + drop_etc + len(results)))
 
-        msg += f"📌 사후 관리 규칙\n"
-        msg += f" • +3% 도달: 손절선을 진입가로 이동 (본절 방어)\n"
-        msg += f" • +6% 도달: 물량 50% 기계적 익절\n"
-        msg += f" • 고점 대비 -3%: 잔량 전량 청산 (트레일링)\n\n"
-
-        msg += f"⏱ 예상: 1~5일 모멘텀 스윙\n\n"
-
-        msg += f"🤖 [백테스트 시스템]\n"
-        msg += f" • 표본 상태: 실시간 데이터 적재 중\n"
-        msg += f" • 신뢰도 판정: 검증 대기 (통계값 빌드 중)\n"
-        msg += "=========================\n\n"
-        
-    return msg
-
-def format_validate_message(results):
-    """장 마감 생존 검사 리포트 유지"""
-    msg = "⚠️ V8.4.5 장 마감 생존 검사\n=========================\n"
-    if not results: return msg + "검사 대상 종목 없음"
-    for r in results:
-        status = "🔥 유지" if r["survive"] else "❌ 탈락"
-        reason_str = ', '.join(r['reason']) if r['reason'] else "특이사항 없음"
-        msg += f"{status} {r['name']} | 수익:{r['change']}% | 사유:{reason_str}\n"
-    return msg
+    return {
+        "market": market_info,
+        "stats": {
+            "total": total_count, "pass1": pass1_count, "final": len(final_results),
+            "drop_ma20": drop_ma20, "drop_vol": drop_vol, "drop_score": drop_score, "drop_etc": drop_etc
+        },
+        "candidates": final_results
+    }
