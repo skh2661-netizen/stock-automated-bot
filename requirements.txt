@@ -1,4 +1,4 @@
-finance-datareader
+FinanceDataReader
 pandas
 numpy
 pytz
