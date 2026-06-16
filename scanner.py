@@ -17,11 +17,11 @@ def get_krx_retry():
                     krx.rename(columns={old: new}, inplace=True)
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
             
-            # [STEP 1 조치] 판다스 reindex 크래시 방지를 위한 중복 라벨/코드 선제 타격 소거
-            if krx.index.has_duplicates:
-                krx = krx[~krx.index.duplicated(keep='first')]
+            # [최종 방어] 컬럼명 중복 제거 및 인덱스 초기화
+            krx = krx.loc[:, ~krx.columns.duplicated()]
             if "Code" in krx.columns:
-                krx = krx.drop_duplicates(subset=['Code'], keep='first')
+                krx = krx.drop_duplicates(subset=["Code"], keep="first")
+            krx = krx.reset_index(drop=True)
                 
             return krx
         except Exception as e:
@@ -58,9 +58,13 @@ async def scan_market(run_type="OPEN_SCAN"):
         market_change = 0
 
     krx = remove_bad_targets(get_krx_retry())
+
+    # [최종 방어] 필터링 직전 2차 검증
+    krx = krx.loc[:, ~krx.columns.duplicated()]
+    krx = krx.reset_index(drop=True)
+
     krx['Amount'] = krx['Close'] * krx['Volume']
     
-    # 중복 로우가 완전 청소되었으므로 다중 조건 필터링(&)이 에러 없이 고속으로 연산됩니다.
     candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
                      (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
     
