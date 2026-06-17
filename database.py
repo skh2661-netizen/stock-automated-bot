@@ -25,16 +25,21 @@ def init_db():
             d1_high INTEGER, d1_low INTEGER, d1_close INTEGER,
             d3_high INTEGER, d3_low INTEGER, d3_close INTEGER,
             d5_high INTEGER, d5_low INTEGER, d5_close INTEGER,
-            result_status TEXT DEFAULT '대기',
-            telegram_sent INTEGER DEFAULT 0
+            result_status TEXT DEFAULT '대기'
         )
     """)
-    # 하위 호환 및 마이그레이션 방어 로직
-    try:
-        conn.execute("ALTER TABLE candidates ADD COLUMN telegram_sent INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
-        
+
+    # 컬럼 자동 보정 로직 (마이그레이션 실패 원천 차단)
+    columns = [
+        "telegram_sent INTEGER DEFAULT 0"
+    ]
+    existing = [row["name"] for row in conn.execute("PRAGMA table_info(candidates)")]
+
+    for col in columns:
+        col_name = col.split()[0]
+        if col_name not in existing:
+            conn.execute(f"ALTER TABLE candidates ADD COLUMN {col}")
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,7 +72,6 @@ def get_today_candidates():
         return []
         
     conn = connect()
-    # KST 동기화 및 순수 DB 레벨 필터링 (파이썬 메모리 부하 원천 차단)
     today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
     rows = conn.execute("""
         SELECT * FROM candidates 
@@ -83,7 +87,6 @@ def mark_telegram_sent(unique_keys):
         return
         
     conn = connect()
-    # 종목 코드(code)가 아닌 고유 키(unique_key)로 단일 데이터 강제 타격
     conn.executemany("UPDATE candidates SET telegram_sent=1 WHERE unique_key=?", [(k,) for k in unique_keys])
     conn.commit()
     conn.close()
