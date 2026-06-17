@@ -7,9 +7,6 @@ async def send_message(text):
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     
-    print("TOKEN 존재:", bool(token))
-    print("CHAT 존재:", bool(chat_id))
-    
     if not token or not chat_id:
         print("텔레그램 환경변수 없음")
         return
@@ -37,7 +34,7 @@ def format_scan_message(data):
     mode_icon = "🟢" if "정상" in market.get("mode", "") else "🚨"
     msg = f"🎯 [V8.4.5 퀀트 시그널 터미널]\n\n기준: {time_str}\n\n"
     
-    msg += f"🌎 시장 상태\n {mode_icon} 모드: {market.get('mode', '알 수 없음')}\n • 코스피: {market.get('kospi', 0)}%\n • 위험도: {market.get('risk_pct', 0)}%\n\n"
+    msg += f"🌎 시장 상태\n {mode_icon} 모드: {market.get('mode', '알 수 없음')}\n • 코스피: {market.get('kospi', 0)}%\n • 코스닥: {market.get('kosdaq', 0)}%\n • 시스템 위험도: {market.get('risk_pct', 0)}%\n\n"
     msg += f"📊 스캔 결과 통계\n • 전체 종목: {stats.get('total', 0):,}개\n • 1차 통과: {stats.get('pass1', 0):,}개\n • 최종 신호: {stats.get('final', 0)}개\n\n"
     
     hour = now.hour
@@ -61,18 +58,20 @@ def format_scan_message(data):
         elif r.get('score', 0) >= 85 and r.get('ma_gap', 0) < 15: sig_grade = "A+급 (정석/안정형)"
         elif r.get('score', 0) >= 85 and r.get('ma_gap', 0) >= 15: sig_grade = "A급 (공격/과열존재)"
         elif r.get('score', 0) >= 80: sig_grade = "B+급 (모멘텀 양호)"
-        else: sig_grade = "B급 (수급 양호·추가 확인)" # UX 개선 반영
+        else: sig_grade = "B급 (수급 양호·추가 확인)"
 
         if r.get('ma_gap', 0) >= 20: heat_judge, chase_warn = "🚨 초과열", "❌ 추격 매수 절대 금지 (깊은 눌림 대기)"
         elif r.get('ma_gap', 0) >= 15: heat_judge, chase_warn = "⚠️ 과열", "⚠️ 추격 매수 주의 (비중 축소)"
         else: heat_judge, chase_warn = "🟢 안정", "✅ 진입선 도달 시 매수 유효"
 
-        # 장 마감 시간대 안전장치 (오후 3시 이후 로직 강제 전환)
-        if hour >= 15 or hour < 9:
+        is_closed = hour >= 15 or hour < 9
+        if is_closed:
             signal_status = "🌙 장 마감 대기"
             chase_warn = "⏸️ 신규 진입 보류 (내일 시초가 확인)"
+            strategy_text = f" • 금일 진입: 보류\n • 내일 시초가 확인 후 판단\n • 관심 매수가: {r.get('buy_p', 0):,}원 이하\n • 익절: {r.get('target_1', 0):,}원 / {r.get('target_2', 0):,}원\n • 손절: {r.get('stop_p', 0):,}원"
         else:
             signal_status = "🟢 매수 가능 구간" if r.get('price', 0) <= r.get('buy_p', 0) else "🟡 눌림 대기"
+            strategy_text = f" • 매수: {r.get('buy_p', 0):,}원 부근\n • 익절: {r.get('target_1', 0):,}원 / {r.get('target_2', 0):,}원\n • 손절: {r.get('stop_p', 0):,}원 (변동성 대응)"
 
         reward = r.get('target_1', 0) - r.get('buy_p', 0)
         risk = r.get('buy_p', 0) - r.get('stop_p', 0)
@@ -84,11 +83,12 @@ def format_scan_message(data):
             safe_cond_count = 0
 
         msg += f"{strong_buy_alert}{rank_icon} {r.get('name', '알수없음')} ({r.get('code', '000000')})\n 🎯 등급: {sig_grade}\n 📊 점수: {r.get('score', 0)} / 100\n\n"
-        msg += f"🛠 핵심 조건 충족: {safe_cond_count} / 5\n [{'✅' if r.get('c_vol', False) else '❌'}] 거래량 (평균 대비 2배 이상)\n [{'✅' if r.get('c_rs', False) else '❌'}] 상대강도 (시장 대비 RS 우위)\n [{'✅' if r.get('c_heat', False) else '⚠️'}] 이격도 (15% 초과 시 과열주의)\n [{'✅' if r.get('c_amt', False) else '❌'}] 거래대금 (당일 500억 이상 유입)\n [{'✅' if r.get('c_shadow', False) else '❌'}] 윗꼬리 안정성 (매물대 출회 위험 낮음)\n\n"
+        # [수정] 텍스트 출력을 1.5배 이상으로 변경하여 정확도 매핑 완료
+        msg += f"🛠 핵심 조건 충족: {safe_cond_count} / 5\n [{'✅' if r.get('c_vol', False) else '❌'}] 거래량 (평균 대비 1.5배 이상)\n [{'✅' if r.get('c_rs', False) else '❌'}] 상대강도 (시장 대비 RS 우위)\n [{'✅' if r.get('c_heat', False) else '⚠️'}] 이격도 (15% 초과 시 과열주의)\n [{'✅' if r.get('c_amt', False) else '❌'}] 거래대금 (당일 500억 이상 유입)\n [{'✅' if r.get('c_shadow', False) else '❌'}] 윗꼬리 안정성 (5% 이하)\n\n"
         msg += f"📌 현재 상태 및 추격 위험도\n • 현재가: {r.get('price', 0):,}원 ({r.get('chg', 0)}%)\n • 진입선: {r.get('buy_p', 0):,}원 이하\n • 상태: {signal_status}\n • 판정: {chase_warn}\n\n"
         msg += f"📈 시장 상대강도 (RS - 5일 기준)\n • 종목(+{r.get('five_chg', 0)}%) vs 코스피({r.get('kospi_chg', 0)}%)\n • 시장 대비: {r.get('rs', 0):+}% (상대 우위)\n\n"
         msg += f"🔥 과열도 및 손익비\n • MA20 이격: {r.get('ma_gap', 0):+}% ({heat_judge})\n • 1차 R:R: {rr_ratio}\n\n"
-        msg += f"🎯 매매 전략\n • 매수: {r.get('buy_p', 0):,}원 부근\n • 익절: {r.get('target_1', 0):,}원 / {r.get('target_2', 0):,}원\n • 손절: {r.get('stop_p', 0):,}원 (변동성 대응)\n\n=========================\n"
+        msg += f"🎯 매매 전략\n{strategy_text}\n\n=========================\n"
     return msg
 
 def format_validate_message(results):
