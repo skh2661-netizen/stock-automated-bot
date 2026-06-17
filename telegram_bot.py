@@ -61,20 +61,30 @@ def format_scan_message(data):
         elif r.get('score', 0) >= 85 and r.get('ma_gap', 0) < 15: sig_grade = "A+급 (정석/안정형)"
         elif r.get('score', 0) >= 85 and r.get('ma_gap', 0) >= 15: sig_grade = "A급 (공격/과열존재)"
         elif r.get('score', 0) >= 80: sig_grade = "B+급 (모멘텀 양호)"
-        else: sig_grade = "B급 (관찰 대상)"
+        else: sig_grade = "B급 (수급 양호·추가 확인)" # UX 개선 반영
 
         if r.get('ma_gap', 0) >= 20: heat_judge, chase_warn = "🚨 초과열", "❌ 추격 매수 절대 금지 (깊은 눌림 대기)"
         elif r.get('ma_gap', 0) >= 15: heat_judge, chase_warn = "⚠️ 과열", "⚠️ 추격 매수 주의 (비중 축소)"
         else: heat_judge, chase_warn = "🟢 안정", "✅ 진입선 도달 시 매수 유효"
 
-        signal_status = "🟢 매수 가능 구간" if r.get('price', 0) <= r.get('buy_p', 0) else "🟡 눌림 대기"
+        # 장 마감 시간대 안전장치 (오후 3시 이후 로직 강제 전환)
+        if hour >= 15 or hour < 9:
+            signal_status = "🌙 장 마감 대기"
+            chase_warn = "⏸️ 신규 진입 보류 (내일 시초가 확인)"
+        else:
+            signal_status = "🟢 매수 가능 구간" if r.get('price', 0) <= r.get('buy_p', 0) else "🟡 눌림 대기"
+
         reward = r.get('target_1', 0) - r.get('buy_p', 0)
         risk = r.get('buy_p', 0) - r.get('stop_p', 0)
         rr_ratio = round(reward / risk, 2) if risk > 0 else 0
 
+        try:
+            safe_cond_count = int(r.get('cond_count', 0))
+        except:
+            safe_cond_count = 0
+
         msg += f"{strong_buy_alert}{rank_icon} {r.get('name', '알수없음')} ({r.get('code', '000000')})\n 🎯 등급: {sig_grade}\n 📊 점수: {r.get('score', 0)} / 100\n\n"
-        # 수정 지점: [⚠️] 이격도 표기 문구 개선
-        msg += f"🛠 핵심 조건 충족: {r.get('cond_count', 0)} / 5\n [{'✅' if r.get('c_vol', False) else '❌'}] 거래량 (평균 대비 2배 이상)\n [{'✅' if r.get('c_rs', False) else '❌'}] 상대강도 (시장 대비 RS 우위)\n [{'✅' if r.get('c_heat', False) else '⚠️'}] 이격도 (15% 초과 시 과열주의)\n [{'✅' if r.get('c_amt', False) else '❌'}] 거래대금 (당일 500억 이상 유입)\n [{'✅' if r.get('c_shadow', False) else '❌'}] 윗꼬리 안정성 (매물대 출회 위험 낮음)\n\n"
+        msg += f"🛠 핵심 조건 충족: {safe_cond_count} / 5\n [{'✅' if r.get('c_vol', False) else '❌'}] 거래량 (평균 대비 2배 이상)\n [{'✅' if r.get('c_rs', False) else '❌'}] 상대강도 (시장 대비 RS 우위)\n [{'✅' if r.get('c_heat', False) else '⚠️'}] 이격도 (15% 초과 시 과열주의)\n [{'✅' if r.get('c_amt', False) else '❌'}] 거래대금 (당일 500억 이상 유입)\n [{'✅' if r.get('c_shadow', False) else '❌'}] 윗꼬리 안정성 (매물대 출회 위험 낮음)\n\n"
         msg += f"📌 현재 상태 및 추격 위험도\n • 현재가: {r.get('price', 0):,}원 ({r.get('chg', 0)}%)\n • 진입선: {r.get('buy_p', 0):,}원 이하\n • 상태: {signal_status}\n • 판정: {chase_warn}\n\n"
         msg += f"📈 시장 상대강도 (RS - 5일 기준)\n • 종목(+{r.get('five_chg', 0)}%) vs 코스피({r.get('kospi_chg', 0)}%)\n • 시장 대비: {r.get('rs', 0):+}% (상대 우위)\n\n"
         msg += f"🔥 과열도 및 손익비\n • MA20 이격: {r.get('ma_gap', 0):+}% ({heat_judge})\n • 1차 R:R: {rr_ratio}\n\n"
