@@ -7,15 +7,23 @@ async def send_message(text):
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     
+    # 디버깅: 환경 변수 세팅 여부 확인
+    print("TOKEN 존재:", bool(token))
+    print("CHAT 존재:", bool(chat_id))
+    
     if not token or not chat_id:
+        print("텔레그램 환경변수 없음")
         return
 
     bot = telegram.Bot(token=token)
     for _ in range(3):
         try:
             await bot.send_message(chat_id=chat_id, text=text, parse_mode=None)
-            break
-        except Exception: 
+            print("텔레그램 발송 성공")
+            return
+        except Exception as e:
+            # 디버깅: 네트워크/API 거절 사유 노출
+            print("텔레그램 오류:", e)
             await asyncio.sleep(3)
 
 def format_scan_message(data):
