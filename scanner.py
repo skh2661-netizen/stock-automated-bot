@@ -1,8 +1,8 @@
 import FinanceDataReader as fdr
 import pandas as pd
 import asyncio, datetime, pytz, time
-from scoring import calculate_score
 from risk import get_market_risk
+from scoring import calculate_score
 from database import save_candidate
 
 MIN_PRICE, MIN_AMOUNT, MAX_CANDIDATES = 2000, 10_000_000_000, 10
@@ -53,7 +53,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         risk_pct = 0
         
     if risk_level >= 2 and run_type == "CLOSE_SCAN":
-        return {"market": {"kospi": 0, "kosdaq": 0, "mode": "🚨 위험", "risk_pct": risk_pct}, "stats": {"total":0, "pass1":0, "final":0, "drop_ma20": 0, "drop_vol": 0, "drop_score": 0, "drop_etc": 0}, "candidates": []}
+        return {"market": {"kospi": 0, "kosdaq": 0, "mode": "🚨 위험", "risk_pct": risk_pct}, "stats": {"total":0, "pass1":0, "final":0, "drop_ma20": 0, "drop_vol": 0, "drop_score": 0, "drop_etc": 0}, "fail_stats": {"ma20": 0, "vol": 0, "score": 0, "etc": 0}, "candidates": []}
     
     min_score = 75 if risk_level == 0 else (80 if risk_level == 1 else 85)
 
@@ -136,7 +136,19 @@ async def scan_market(run_type="OPEN_SCAN"):
             
             save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop)
             
-            results.append({"code": code, "name": row['Name'], "score": score})
+            c_vol = vol_ratio >= 2
+            c_rs = rs >= 5
+            c_heat = ma_gap < 15
+            c_amt = row['Amount'] >= 50_000_000_000
+            c_shadow = upper_shadow <= 3
+            cond_count = sum([c_vol, c_rs, c_heat, c_amt, c_shadow])
+
+            results.append({
+                "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
+                "chg": round(row['ChangesRatio'], 2), "buy_p": buy_p, "target_1": t1, "target_2": t2, "stop_p": stop,
+                "ma_gap": round(ma_gap, 2), "rs": round(rs, 2), "five_chg": round(five_change, 2), "kospi_chg": round(market_change, 2),
+                "c_vol": c_vol, "c_rs": c_rs, "c_heat": c_heat, "c_amt": c_amt, "c_shadow": c_shadow, "cond_count": cond_count
+            })
             
             if len(results) >= MAX_CANDIDATES: break
         except Exception:
@@ -145,5 +157,6 @@ async def scan_market(run_type="OPEN_SCAN"):
     return {
         "market": {"kospi": round(market_change, 2), "mode": "🟢 정상", "risk_pct": risk_pct},
         "stats": {"total": len(krx), "pass1": len(candidates), "final": len(results)},
+        "fail_stats": fail_stats,
         "candidates": results
     }
