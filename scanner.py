@@ -134,8 +134,6 @@ async def scan_market(run_type="OPEN_SCAN"):
             t2 = int(curr['Close'] * 1.063)
             stop = int(curr['Close'] * 0.970)
             
-            save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop)
-            
             c_vol = vol_ratio >= 2
             c_rs = rs >= 5
             c_heat = ma_gap < 15
@@ -143,6 +141,13 @@ async def scan_market(run_type="OPEN_SCAN"):
             c_shadow = upper_shadow <= 3
             cond_count = sum([c_vol, c_rs, c_heat, c_amt, c_shadow])
 
+            # 전면 수정: DB에 모든 상세 지표 밀어넣기
+            save_candidate(
+                run_type, code, row['Name'], score, buy_p, t1, t2, stop,
+                int(curr['Close']), round(row['ChangesRatio'], 2), round(ma_gap, 2), round(rs, 2), 
+                round(five_change, 2), round(market_change, 2), c_vol, c_rs, c_heat, c_amt, c_shadow, cond_count
+            )
+            
             results.append({
                 "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
                 "chg": round(row['ChangesRatio'], 2), "buy_p": buy_p, "target_1": t1, "target_2": t2, "stop_p": stop,
