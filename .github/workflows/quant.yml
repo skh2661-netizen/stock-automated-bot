@@ -1,72 +1,47 @@
-name: V8.4 Momentum Swing Quant Engine
-
-# 동일 자원(SQLite)에 대한 동시 쓰기 충돌을 원천 차단하는 단일 점유 체계
-concurrency:
-  group: quant-engine
-  cancel-in-progress: false
+name: V8.4.5 Quant Terminal Auto-Run
 
 on:
-  schedule:
-    # KST 08:35 (UTC 일~목 23:35) -> 월~금 아침 시초가 스캔
-    - cron: '35 23 * * 0-4'
-    # KST 14:55 (UTC 월~금 05:55) -> 월~금 오후 종가 베팅 스캔
-    - cron: '55 5 * * 1-5'
-    # KST 15:35 (UTC 월~금 06:35) -> 월~금 장마감 사후 검증 및 D+3 익절 복기
-    - cron: '35 6 * * 1-5'
   workflow_dispatch:
-    inputs:
-      mode:
-        description: "실행 모드 (OPEN_SCAN / CLOSE_SCAN / REVIEW)"
-        required: true
-        default: "REVIEW"
+  schedule:
+    # 한국 시간(KST) 기준 동작을 위해 UTC로 변환 적용 (-9시간)
+    # KST 08:40 -> UTC 23:40 (월~금)
+    - cron: '40 23 * * 1-5'
+    # KST 15:00 -> UTC 06:00 (월~금)
+    - cron: '0 6 * * 1-5'
+    # KST 15:40 -> UTC 06:40 (월~금)
+    - cron: '40 6 * * 1-5'
+
+# [치명적 버그 수정] GitHub Actions 가상 서버에 DB 커밋&푸시 권한 강제 인가
+permissions:
+  contents: write
 
 jobs:
-  run-engine:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+    - name: 저장소 체크아웃
+      uses: actions/checkout@v3
 
-    - name: Python Setup
-      uses: actions/setup-python@v5
+    - name: 파이썬 환경 세팅
+      uses: actions/setup-python@v4
       with:
-        # [핵심 수정] 패키지 빌드 안정성을 위해 Python 3.10 환경 고정
-        python-version: "3.10"
+        python-version: '3.10'
 
-    - name: Install Dependencies
-      run: pip install -r requirements.txt
+    - name: 라이브러리 설치
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas finance-datareader python-telegram-bot pytz
 
-    - name: Run Engine
+    - name: 퀀트 파이프라인 가동 (메인 엔진)
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: |
-        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-          python main.py ${{ github.event.inputs.mode }}
-        else
-          SCHEDULE="${{ github.event.schedule }}"
-          
-          if [ "$SCHEDULE" == "35 23 * * 0-4" ]; then
-             python main.py OPEN_SCAN
-          elif [ "$SCHEDULE" == "55 5 * * 1-5" ]; then
-             python main.py CLOSE_SCAN
-          elif [ "$SCHEDULE" == "35 6 * * 1-5" ]; then
-             python main.py REVIEW
-          else
-             python main.py REVIEW
-          fi
-        fi
+      run: python main.py
 
-    - name: Save Database (Persistent DB)
+    - name: DB 업데이트 결과 Git 커밋 및 푸시
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        
         git add data/candidates.db
-        git diff --cached --quiet || (
-          git commit -m "[Auto] Update candidate database"
-          git push
-        )
+        git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update DB: telegram_sent flags" && git push)
