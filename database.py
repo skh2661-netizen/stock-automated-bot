@@ -25,13 +25,38 @@ def init_db():
             d1_high INTEGER, d1_low INTEGER, d1_close INTEGER,
             d3_high INTEGER, d3_low INTEGER, d3_close INTEGER,
             d5_high INTEGER, d5_low INTEGER, d5_close INTEGER,
-            result_status TEXT DEFAULT '대기'
+            result_status TEXT DEFAULT '대기',
+            telegram_sent INTEGER DEFAULT 0,
+            price INTEGER DEFAULT 0,
+            chg REAL DEFAULT 0.0,
+            ma_gap REAL DEFAULT 0.0,
+            rs REAL DEFAULT 0.0,
+            five_chg REAL DEFAULT 0.0,
+            kospi_chg REAL DEFAULT 0.0,
+            c_vol INTEGER DEFAULT 0,
+            c_rs INTEGER DEFAULT 0,
+            c_heat INTEGER DEFAULT 0,
+            c_amt INTEGER DEFAULT 0,
+            c_shadow INTEGER DEFAULT 0,
+            cond_count INTEGER DEFAULT 0
         )
     """)
 
-    # 컬럼 자동 보정 로직 (마이그레이션 실패 원천 차단)
+    # 누락된 상세 지표 12종 컬럼 자동 보정 (마이그레이션)
     columns = [
-        "telegram_sent INTEGER DEFAULT 0"
+        "telegram_sent INTEGER DEFAULT 0",
+        "price INTEGER DEFAULT 0",
+        "chg REAL DEFAULT 0.0",
+        "ma_gap REAL DEFAULT 0.0",
+        "rs REAL DEFAULT 0.0",
+        "five_chg REAL DEFAULT 0.0",
+        "kospi_chg REAL DEFAULT 0.0",
+        "c_vol INTEGER DEFAULT 0",
+        "c_rs INTEGER DEFAULT 0",
+        "c_heat INTEGER DEFAULT 0",
+        "c_amt INTEGER DEFAULT 0",
+        "c_shadow INTEGER DEFAULT 0",
+        "cond_count INTEGER DEFAULT 0"
     ]
     existing = [row["name"] for row in conn.execute("PRAGMA table_info(candidates)")]
 
@@ -49,7 +74,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p):
+def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p, price, chg, ma_gap, rs, five_chg, kospi_chg, c_vol, c_rs, c_heat, c_amt, c_shadow, cond_count):
     init_db()
     conn = connect()
     now = datetime.now(pytz.timezone("Asia/Seoul"))
@@ -58,9 +83,9 @@ def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, sto
     try:
         conn.execute("""
             INSERT OR IGNORE INTO candidates 
-            (unique_key, date, timestamp, run_type, strategy_version, score_version, code, name, score, buy_p, target1_p, target2_p, stop_p) 
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (unique_key, today, now.strftime("%H:%M:%S"), run_type, "V8.4.5", "SCORE_A", code, name, score, buy_p, target1_p, target2_p, stop_p))
+            (unique_key, date, timestamp, run_type, strategy_version, score_version, code, name, score, buy_p, target1_p, target2_p, stop_p, price, chg, ma_gap, rs, five_chg, kospi_chg, c_vol, c_rs, c_heat, c_amt, c_shadow, cond_count) 
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (unique_key, today, now.strftime("%H:%M:%S"), run_type, "V8.4.5", "SCORE_A", code, name, score, buy_p, target1_p, target2_p, stop_p, price, chg, ma_gap, rs, five_chg, kospi_chg, int(c_vol), int(c_rs), int(c_heat), int(c_amt), int(c_shadow), cond_count))
         conn.commit()
     except Exception as e:
         print(f"DB 오류: {e}")
@@ -78,14 +103,27 @@ def get_today_candidates():
         WHERE date=? AND telegram_sent=0 
         ORDER BY score DESC
     """, (today,)).fetchall()
-    
     conn.close()
-    return [dict(row) for row in rows]
+    
+    # DB의 target1_p 키를 텔레그램이 요구하는 target_1 키로 파이썬 단에서 자동 변환 보정
+    results = []
+    for row in rows:
+        r_dict = dict(row)
+        r_dict['target_1'] = r_dict.get('target1_p', 0)
+        r_dict['target_2'] = r_dict.get('target2_p', 0)
+        # SQLite는 Boolean을 0/1로 저장하므로 bool 연산자로 원상 복구
+        r_dict['c_vol'] = bool(r_dict.get('c_vol', 0))
+        r_dict['c_rs'] = bool(r_dict.get('c_rs', 0))
+        r_dict['c_heat'] = bool(r_dict.get('c_heat', 0))
+        r_dict['c_amt'] = bool(r_dict.get('c_amt', 0))
+        r_dict['c_shadow'] = bool(r_dict.get('c_shadow', 0))
+        results.append(r_dict)
+        
+    return results
 
 def mark_telegram_sent(unique_keys):
     if not unique_keys: 
         return
-        
     conn = connect()
     conn.executemany("UPDATE candidates SET telegram_sent=1 WHERE unique_key=?", [(k,) for k in unique_keys])
     conn.commit()
