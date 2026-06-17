@@ -111,7 +111,8 @@ async def scan_market(run_type="OPEN_SCAN"):
                 continue
                 
             vol_ratio = curr['Volume'] / vol_ma  
-            if vol_ratio < 1.3:
+            # [수정 완료] 드롭 필터 임계값을 1.5배로 상향하여 텔레그램 출력 조건과 100% 동기화
+            if vol_ratio < 1.5:
                 fail_stats["vol"] += 1
                 continue
             
@@ -136,7 +137,6 @@ async def scan_market(run_type="OPEN_SCAN"):
             t2 = int(curr['Close'] * 1.063)
             stop = int(curr['Close'] * 0.970)
             
-            # [수정] 종가 베팅 최적화를 위해 표시 및 검증 임계값을 1.5배로 상향 커스터마이징
             c_vol = bool(vol_ratio >= 1.5)
             c_rs = bool(rs >= 5)
             c_heat = bool(ma_gap < 15)
