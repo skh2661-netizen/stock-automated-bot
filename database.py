@@ -42,7 +42,6 @@ def init_db():
         )
     """)
 
-    # 누락된 상세 지표 12종 컬럼 자동 보정 (마이그레이션)
     columns = [
         "telegram_sent INTEGER DEFAULT 0",
         "price INTEGER DEFAULT 0",
@@ -81,11 +80,33 @@ def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, sto
     today = now.strftime("%Y-%m-%d")
     unique_key = f"{today}_{code}_{run_type}"
     try:
+        # [핵심 수정] INSERT OR IGNORE 폐기 -> ON CONFLICT DO UPDATE (Upsert) 정석 도입
+        # 형님의 지시대로 최신 데이터 발생 시 무조건 갱신하고 재발송 대기열(telegram_sent=0)로 리셋합니다.
         conn.execute("""
-            INSERT OR IGNORE INTO candidates 
+            INSERT INTO candidates 
             (unique_key, date, timestamp, run_type, strategy_version, score_version, code, name, score, buy_p, target1_p, target2_p, stop_p, price, chg, ma_gap, rs, five_chg, kospi_chg, c_vol, c_rs, c_heat, c_amt, c_shadow, cond_count) 
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (unique_key, today, now.strftime("%H:%M:%S"), run_type, "V8.4.5", "SCORE_A", code, name, score, buy_p, target1_p, target2_p, stop_p, price, chg, ma_gap, rs, five_chg, kospi_chg, int(c_vol), int(c_rs), int(c_heat), int(c_amt), int(c_shadow), cond_count))
+            ON CONFLICT(unique_key) DO UPDATE SET
+            timestamp=excluded.timestamp,
+            score=excluded.score,
+            buy_p=excluded.buy_p,
+            target1_p=excluded.target1_p,
+            target2_p=excluded.target2_p,
+            stop_p=excluded.stop_p,
+            price=excluded.price,
+            chg=excluded.chg,
+            ma_gap=excluded.ma_gap,
+            rs=excluded.rs,
+            five_chg=excluded.five_chg,
+            kospi_chg=excluded.kospi_chg,
+            c_vol=excluded.c_vol,
+            c_rs=excluded.c_rs,
+            c_heat=excluded.c_heat,
+            c_amt=excluded.c_amt,
+            c_shadow=excluded.c_shadow,
+            cond_count=excluded.cond_count,
+            telegram_sent=0
+        """, (unique_key, today, now.strftime("%H:%M:%S"), run_type, "V8.4.5", "SCORE_A", code, name, int(score), int(buy_p), int(target1_p), int(target2_p), int(stop_p), int(price), float(chg), float(ma_gap), float(rs), float(five_chg), float(kospi_chg), int(c_vol), int(c_rs), int(c_heat), int(c_amt), int(c_shadow), int(cond_count)))
         conn.commit()
     except Exception as e:
         print(f"DB 오류: {e}")
@@ -105,13 +126,11 @@ def get_today_candidates():
     """, (today,)).fetchall()
     conn.close()
     
-    # DB의 target1_p 키를 텔레그램이 요구하는 target_1 키로 파이썬 단에서 자동 변환 보정
     results = []
     for row in rows:
         r_dict = dict(row)
         r_dict['target_1'] = r_dict.get('target1_p', 0)
         r_dict['target_2'] = r_dict.get('target2_p', 0)
-        # SQLite는 Boolean을 0/1로 저장하므로 bool 연산자로 원상 복구
         r_dict['c_vol'] = bool(r_dict.get('c_vol', 0))
         r_dict['c_rs'] = bool(r_dict.get('c_rs', 0))
         r_dict['c_heat'] = bool(r_dict.get('c_heat', 0))
