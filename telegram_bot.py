@@ -7,7 +7,6 @@ async def send_message(text):
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     
-    # 디버깅: 환경 변수 세팅 여부 확인
     print("TOKEN 존재:", bool(token))
     print("CHAT 존재:", bool(chat_id))
     
@@ -22,7 +21,6 @@ async def send_message(text):
             print("텔레그램 발송 성공")
             return
         except Exception as e:
-            # 디버깅: 네트워크/API 거절 사유 노출
             print("텔레그램 오류:", e)
             await asyncio.sleep(3)
 
@@ -75,10 +73,11 @@ def format_scan_message(data):
         rr_ratio = round(reward / risk, 2) if risk > 0 else 0
 
         msg += f"{strong_buy_alert}{rank_icon} {r.get('name', '알수없음')} ({r.get('code', '000000')})\n 🎯 등급: {sig_grade}\n 📊 점수: {r.get('score', 0)} / 100\n\n"
-        msg += f"🛠 핵심 조건 충족: {r.get('cond_count', 0)} / 5\n [{'✅' if r.get('c_vol', False) else '❌'}] 거래량 (평균 대비 2배 이상)\n [{'✅' if r.get('c_rs', False) else '❌'}] 상대강도 (시장 대비 RS 우위)\n [{'✅' if r.get('c_heat', False) else '⚠️'}] 이격도 (MA20 단기 과열 방지)\n [{'✅' if r.get('c_amt', False) else '❌'}] 거래대금 (당일 500억 이상 유입)\n [{'✅' if r.get('c_shadow', False) else '❌'}] 윗꼬리 안정성 (매물대 출회 위험 낮음)\n\n"
+        # 수정 지점: [⚠️] 이격도 표기 문구 개선
+        msg += f"🛠 핵심 조건 충족: {r.get('cond_count', 0)} / 5\n [{'✅' if r.get('c_vol', False) else '❌'}] 거래량 (평균 대비 2배 이상)\n [{'✅' if r.get('c_rs', False) else '❌'}] 상대강도 (시장 대비 RS 우위)\n [{'✅' if r.get('c_heat', False) else '⚠️'}] 이격도 (15% 초과 시 과열주의)\n [{'✅' if r.get('c_amt', False) else '❌'}] 거래대금 (당일 500억 이상 유입)\n [{'✅' if r.get('c_shadow', False) else '❌'}] 윗꼬리 안정성 (매물대 출회 위험 낮음)\n\n"
         msg += f"📌 현재 상태 및 추격 위험도\n • 현재가: {r.get('price', 0):,}원 ({r.get('chg', 0)}%)\n • 진입선: {r.get('buy_p', 0):,}원 이하\n • 상태: {signal_status}\n • 판정: {chase_warn}\n\n"
-        msg += f"📈 시장 상대강도 (RS - 5일 기준)\n • 종목(+{r.get('five_chg', 0)}%) vs 코스피({r.get('kospi_chg', 0)}%)\n • 시장 대비: +{r.get('rs', 0)}% (상대 우위)\n\n"
-        msg += f"🔥 과열도 및 손익비\n • MA20 이격: +{r.get('ma_gap', 0)}% ({heat_judge})\n • 1차 R:R: {rr_ratio}\n\n"
+        msg += f"📈 시장 상대강도 (RS - 5일 기준)\n • 종목(+{r.get('five_chg', 0)}%) vs 코스피({r.get('kospi_chg', 0)}%)\n • 시장 대비: {r.get('rs', 0):+}% (상대 우위)\n\n"
+        msg += f"🔥 과열도 및 손익비\n • MA20 이격: {r.get('ma_gap', 0):+}% ({heat_judge})\n • 1차 R:R: {rr_ratio}\n\n"
         msg += f"🎯 매매 전략\n • 매수: {r.get('buy_p', 0):,}원 부근\n • 익절: {r.get('target_1', 0):,}원 / {r.get('target_2', 0):,}원\n • 손절: {r.get('stop_p', 0):,}원 (변동성 대응)\n\n=========================\n"
     return msg
 
