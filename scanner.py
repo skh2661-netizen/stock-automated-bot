@@ -60,7 +60,6 @@ async def scan_market(run_type="OPEN_SCAN"):
     try:
         kospi_hist = fdr.DataReader("KS11", start_date)
         kosdaq_hist = fdr.DataReader("KQ11", start_date)
-        
         market_5d_change = (kospi_hist['Close'].iloc[-1] / kospi_hist['Close'].iloc[-6] - 1) * 100 if len(kospi_hist) >= 6 else 0
         kospi_daily = (kospi_hist['Close'].iloc[-1] / kospi_hist['Close'].iloc[-2] - 1) * 100 if len(kospi_hist) >= 2 else 0
         kosdaq_daily = (kosdaq_hist['Close'].iloc[-1] / kosdaq_hist['Close'].iloc[-2] - 1) * 100 if len(kosdaq_hist) >= 2 else 0
@@ -111,7 +110,6 @@ async def scan_market(run_type="OPEN_SCAN"):
                 continue
                 
             vol_ratio = curr['Volume'] / vol_ma  
-            # [수정 완료] 드롭 필터 임계값을 1.5배로 상향하여 텔레그램 출력 조건과 100% 동기화
             if vol_ratio < 1.5:
                 fail_stats["vol"] += 1
                 continue
@@ -126,7 +124,9 @@ async def scan_market(run_type="OPEN_SCAN"):
             five_change = (curr['Close'] / hist['Close'].iloc[-6] - 1) * 100
             rs = five_change - market_5d_change
             
+            # [기존 로직 유지 및 출력 무결성 수정]
             score = int(calculate_score(row['Amount'], vol_ratio, row['ChangesRatio'], upper_shadow, ma_gap, candle_pos, rs, five_change, risk_level))
+            score = min(score, 100)  # <- 이 한 줄 추가
             
             if score < min_score: 
                 fail_stats["score"] += 1
