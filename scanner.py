@@ -11,20 +11,30 @@ def get_krx_retry():
     for i in range(3):
         try:
             krx = fdr.StockListing("KRX")
-            krx.rename(columns={"ChagesRatio": "ChangesRatio", "ChgRate": "ChangesRatio"}, inplace=True)
+            rename_map = {"ChagesRatio": "ChangesRatio", "ChgRate": "ChangesRatio", "ChangeRate": "ChangesRatio", "Changes": "ChangesRatio"}
+            for old, new in rename_map.items():
+                if old in krx.columns: krx.rename(columns={old: new}, inplace=True)
             krx = krx.loc[:, ~krx.columns.duplicated()].reset_index(drop=True)
-            krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0) / 1000
+            krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0)
             return krx
         except: time.sleep(5)
     raise Exception("KRX 연결 실패")
+
+def remove_bad_targets(df):
+    if "Name" not in df.columns: return df
+    pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
+    return df[~df['Name'].str.contains(pattern, regex=True, na=False)]
 
 async def scan_market(run_type="OPEN_SCAN"):
     kst = pytz.timezone("Asia/Seoul")
     now = datetime.datetime.now(kst)
     start_date = (now - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
+    try:
+        risk_data = get_market_risk(start_date)
+        risk_level = risk_data.get("level", 1)
+    except: risk_level = 1
     
-    risk_level = 1
-    krx = get_krx_retry()
+    krx = remove_bad_targets(get_krx_retry())
     krx['Close'] = pd.to_numeric(krx['Close'], errors='coerce')
     krx['Amount'] = (krx['Close'] * pd.to_numeric(krx['Volume'], errors='coerce')).fillna(0)
     
@@ -34,31 +44,25 @@ async def scan_market(run_type="OPEN_SCAN"):
     results = []
     for _, row in candidates.iterrows():
         changes = float(row['ChangesRatio'])
-        if run_type == "PRE_OPEN" and not (0 <= changes <= 7): continue
-        if run_type == "BREAKOUT_1" and not (3 <= changes <= 12): continue
-        if run_type == "CLOSE_BET" and not (1 <= changes <= 5): continue
+        if run_type == "TEST": pass
+        elif run_type == "PRE_OPEN" and not (0 <= changes <= 7): continue
+        elif run_type == "BREAKOUT_1" and not (3 <= changes <= 12): continue
+        elif run_type == "CLOSE_BET" and not (1 <= changes <= 5): continue
 
         code = str(row['Code']).zfill(6)
         hist = fdr.DataReader(code, start_date)
         if len(hist) < 25: continue
-        
-        curr, ma20 = hist.iloc[-1], hist['Close'].rolling(20).mean().iloc[-1]
+        curr, vol_ma = hist.iloc[-1], hist['Volume'].rolling(20).mean().iloc[-1]
+        ma20 = hist['Close'].rolling(20).mean().iloc[-1]
         ma_gap = (curr['Close'] - ma20) / ma20 * 100
-        score = min(int(calculate_score(row['Amount'], 1.5, changes, 0, ma_gap, 0, 0, 0, risk_level)), 100)
+        score = min(int(calculate_score(row['Amount'], curr['Volume']/vol_ma, changes, 0, ma_gap, 0, 0, 0, risk_level)), 100)
         
         buy_p, t1, t2, stop = int(curr['Close']*0.985), int(curr['Close']*1.023), int(curr['Close']*1.063), int(curr['Close']*0.970)
         
-        # [인자 20개 완벽 복구]
         save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop, 
                        int(curr['Close']), round(changes,2), round(ma_gap,2), 0, 0, 0, 0, 0, 0, 0, 0, 0)
         
-        results.append({
-            "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
-            "chg": round(changes, 2), "buy_p": buy_p, "target_1": t1, "target_2": t2, "stop_p": stop,
-            "ma_gap": round(ma_gap, 2), "rs": 0
-        })
+        results.append({"code": code, "name": row['Name'], "score": score, "price": int(curr['Close']), "chg": round(changes, 2), "buy_p": buy_p, "target_1": t1, "target_2": t2, "stop_p": stop, "ma_gap": round(ma_gap, 2), "rs": 0})
         if len(results) >= MAX_CANDIDATES: break
             
-    return {"market": {"kospi": 0, "kosdaq": 0, "mode": "테스트", "risk_pct": 0}, 
-            "stats": {"total": len(krx), "pass1": len(candidates), "final": len(results)}, 
-            "candidates": results}
+    return {"market": {"kospi": 0}, "stats": {"final": len(results)}, "candidates": results}
