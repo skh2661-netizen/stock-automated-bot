@@ -13,139 +13,57 @@ def get_krx_retry():
             krx = fdr.StockListing("KRX")
             rename_map = {"ChagesRatio": "ChangesRatio", "ChgRate": "ChangesRatio", "ChangeRate": "ChangesRatio", "Changes": "ChangesRatio"}
             for old, new in rename_map.items():
-                if old in krx.columns:
-                    krx.rename(columns={old: new}, inplace=True)
+                if old in krx.columns: krx.rename(columns={old: new}, inplace=True)
             if "ChangesRatio" not in krx.columns: raise Exception("등락률 컬럼 없음")
-            
-            krx = krx.loc[:, ~krx.columns.duplicated()]
-            if "Code" in krx.columns:
-                krx = krx.drop_duplicates(subset=["Code"], keep="first")
-            krx = krx.reset_index(drop=True)
-            
-            krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0)
-            krx["ChangesRatio"] = krx["ChangesRatio"] / 1000
-            
-            krx.loc[(krx["ChangesRatio"] > 30) | (krx["ChangesRatio"] < -30), "ChangesRatio"] = 0
-            krx["ChangesRatio"] = krx["ChangesRatio"].fillna(0)
-                
+            krx = krx.loc[:, ~krx.columns.duplicated()].reset_index(drop=True)
+            krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0) / 1000
             return krx
-        except Exception as e:
-            print("KRX 재시도:", e)
-            time.sleep(5)
-    raise Exception("KRX 데이터 연결 실패")
-
-def remove_bad_targets(df):
-    if "Name" not in df.columns: return df
-    pattern = '스팩|ETF|ETN|우$|우[A-Z]$|제[0-9]+호'
-    return df[~df['Name'].str.contains(pattern, regex=True, na=False)]
+        except: time.sleep(5)
+    raise Exception("KRX 연결 실패")
 
 async def scan_market(run_type="OPEN_SCAN"):
     kst = pytz.timezone("Asia/Seoul")
     now = datetime.datetime.now(kst)
     start_date = (now - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
-
+    
+    # 리스크 및 시장 데이터 로딩
     try:
         risk_data = get_market_risk(start_date)
         risk_level = risk_data.get("level", 1)
-        risk_pct = risk_data.get("change", 0)
-    except:
-        risk_level = 1
-        risk_pct = 0
-        
-    if risk_level >= 2 and run_type == "CLOSE_SCAN":
-        return {"market": {"kospi": 0, "kosdaq": 0, "mode": "🚨 위험", "risk_pct": risk_pct}, "stats": {"total":0, "pass1":0, "final":0, "drop_ma20": 0, "drop_vol": 0, "drop_score": 0, "drop_etc": 0}, "candidates": []}
+    except: risk_level = 1
     
-    min_score = 75 if risk_level == 0 else (80 if risk_level == 1 else 85)
-
-    try:
-        market_hist = fdr.DataReader("KS11", start_date)
-        market_change = (market_hist['Close'].iloc[-1] / market_hist['Close'].iloc[-6] - 1) * 100 if len(market_hist) >= 6 else 0
-    except: 
-        market_change = 0
-
-    krx = remove_bad_targets(get_krx_retry())
-    krx = krx.loc[:, ~krx.columns.duplicated()]
-    krx = krx.reset_index(drop=True)
-    
+    krx = get_krx_retry()
     krx['Close'] = pd.to_numeric(krx['Close'], errors='coerce')
     krx['Volume'] = pd.to_numeric(krx['Volume'], errors='coerce')
     krx['Amount'] = (krx['Close'] * krx['Volume']).fillna(0)
-
-    filtered_df = krx[(krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)]
     
-    candidates = krx[
-        (krx['Close'] >= MIN_PRICE) & 
-        (krx['Amount'] >= MIN_AMOUNT) & 
-        (krx['ChangesRatio'] >= 3) & 
-        (krx['ChangesRatio'] <= 18)
-    ].sort_values("Amount", ascending=False).head(100)
+    candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
+                     (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)].head(100)
     
     results = []
-    fail_stats = {"ma20": 0, "vol": 0, "score": 0, "etc": 0}
-    
     for _, row in candidates.iterrows():
+        # [V8.5 전술 필터 레이어]
+        changes = float(row['ChangesRatio'])
+        if run_type == "PRE_OPEN" and not (0 <= changes <= 7): continue
+        if run_type == "BREAKOUT_1" and not (3 <= changes <= 12): continue
+        if run_type == "CLOSE_BET" and not (1 <= changes <= 5): continue
+
         code = str(row['Code']).zfill(6)
-        await asyncio.sleep(0.15)
-        try:
-            hist = fdr.DataReader(code, start_date)
-            if len(hist) < 25: 
-                fail_stats["etc"] += 1
-                continue
+        hist = fdr.DataReader(code, start_date)
+        if len(hist) < 25: continue
+        
+        curr = hist.iloc[-1]
+        vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
+        ma20 = hist['Close'].rolling(20).mean().iloc[-1]
+        ma_gap = (curr['Close'] - ma20) / ma20 * 100
+        vol_ratio = curr['Volume'] / vol_ma
+        
+        # [점수 산출 및 무결성 수정 (이 부분이 핵심)]
+        score = int(calculate_score(row['Amount'], vol_ratio, changes, 0, ma_gap, 0, 0, 0, risk_level))
+        score = min(score, 100) # <- 무결성 수정 코드
+        
+        save_candidate(run_type, code, row['Name'], score, 0, 0, 0, 0)
+        results.append({"code": code, "name": row['Name'], "score": score})
+        if len(results) >= MAX_CANDIDATES: break
             
-            curr = hist.iloc[-1]
-            vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
-            if pd.isna(vol_ma) or vol_ma <= 0 or curr['High'] <= 0: 
-                fail_stats["etc"] += 1
-                continue
-            
-            ma20 = hist['Close'].rolling(20).mean().iloc[-1]
-            if pd.isna(ma20) or ma20 <= 0: 
-                fail_stats["etc"] += 1
-                continue
-            
-            ma_gap = (curr['Close'] - ma20) / ma20 * 100
-            if ma_gap < 0:
-                fail_stats["ma20"] += 1
-                continue
-                
-            vol_ratio = curr['Volume'] / vol_ma  
-            if vol_ratio < 1.3:
-                fail_stats["vol"] += 1
-                continue
-            
-            upper_shadow = ((curr['High'] - max(curr['Open'], curr['Close'])) / curr['High'] * 100)
-            candle_pos = ((curr['Close'] - curr['Low']) / (curr['High'] - curr['Low']) * 100) if (curr['High'] > curr['Low']) else 0
-            
-            if upper_shadow > 5: 
-                fail_stats["etc"] += 1
-                continue
-            
-            five_change = (curr['Close'] / hist['Close'].iloc[-6] - 1) * 100
-            rs = five_change - market_change
-            
-            # [전체 코드 수정 완료: 점수 산출 후 무결성 필터 적용]
-            score = calculate_score(row['Amount'], vol_ratio, row['ChangesRatio'], upper_shadow, ma_gap, candle_pos, rs, five_change, risk_level)
-            score = min(score, 100) 
-            
-            if score < min_score: 
-                fail_stats["score"] += 1
-                continue
-            
-            buy_p = int(curr['Close'] * 0.985)
-            t1 = int(curr['Close'] * 1.023)
-            t2 = int(curr['Close'] * 1.063)
-            stop = int(curr['Close'] * 0.970)
-            
-            save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop)
-            
-            results.append({"code": code, "name": row['Name'], "score": score})
-            
-            if len(results) >= MAX_CANDIDATES: break
-        except Exception:
-            fail_stats["etc"] += 1
-            
-    return {
-        "market": {"kospi": round(market_change, 2), "mode": "🟢 정상", "risk_pct": risk_pct},
-        "stats": {"total": len(krx), "pass1": len(candidates), "final": len(results)},
-        "candidates": results
-    }
+    return {"market": {"kospi": 0}, "stats": {"final": len(results)}, "candidates": results}
