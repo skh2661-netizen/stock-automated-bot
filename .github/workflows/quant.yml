@@ -1,14 +1,14 @@
-name: V8.4.5 Quant Terminal Auto-Run
+name: V8.4.5 Quant Engine Automated
 
 permissions:
   contents: write
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: '40 23 * * 0-4'
-    - cron: '0 6 * * 1-5'
-    - cron: '40 6 * * 1-5'
+    - cron: '38 23 * * 0-4'
+    - cron: '2 6 * * 1-5'
+    - cron: '42 6 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   build:
