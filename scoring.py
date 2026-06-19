@@ -12,7 +12,6 @@ def volume_score(vr):
     return 0
 
 def momentum_score(c):
-    # [수정] PRE_OPEN 갭 상승(0~3%) 종목도 점수를 받도록 구간 세분화
     if 7 <= c <= 12: return 15
     elif 3 <= c < 7: return 10
     elif 0 <= c < 3: return 5
@@ -20,12 +19,12 @@ def momentum_score(c):
     return 0
 
 def shadow_score(s_ratio):
-    if s_ratio <= 0.3: return 15
-    elif s_ratio <= 0.6: return 10
+    # [수정] 100점 만점을 맞추기 위해 10점으로 하향
+    if s_ratio <= 0.3: return 10
+    elif s_ratio <= 0.6: return 5
     return 0
 
 def trend_score(g):
-    # 과열 패널티 유지
     if 5 <= g <= 12: return 15
     elif 0 <= g < 5: return 10
     elif 12 < g <= 20: return 5
@@ -38,8 +37,9 @@ def close_position_score(cp):
     return 0
 
 def rs_score(rs, sc=0):
-    if rs >= 5: return 10
-    elif rs >= 2: return 5
+    # [수정] 100점 만점을 맞추기 위해 5점으로 하향 및 RS 기준 강화
+    if rs >= 8: return 5
+    elif rs >= 4: return 3
     return 0
 
 def calculate_score(amount, vr, c, s_ratio, g, cp, rs, sc, risk_level):
@@ -54,6 +54,5 @@ def calculate_score(amount, vr, c, s_ratio, g, cp, rs, sc, risk_level):
     if risk_level == 1: raw -= 5
     elif risk_level == 2: raw -= 20
     
-    # [수정] 실제 만점(110점) 기준으로 스케일링하여 점수 왜곡 방지
-    normalized = int(raw * 100 / 110)
-    return max(min(normalized, 100), 0)
+    # [수정] 억지 스케일링 제거. Raw 총합이 이미 100점이므로 상위권 점수 압축 소멸
+    return max(min(int(raw), 100), 0)
