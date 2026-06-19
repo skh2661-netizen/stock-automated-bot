@@ -5,8 +5,7 @@ from scoring import calculate_score
 from risk import get_market_risk
 from database import save_candidate
 
-# [수정 1] 거래대금 컷오프 150억으로 하향 (중소형 돌파주 확보)
-MIN_PRICE, MIN_AMOUNT, MAX_CANDIDATES = 2000, 15_000_000_000, 10
+MIN_PRICE, MIN_AMOUNT, MAX_CANDIDATES = 2000, 30_000_000_000, 10
 
 def get_krx_retry():
     for i in range(3):
@@ -93,7 +92,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         if run_type == "BREAKOUT_2":
             if ma_gap > 15:
                 fail_heat += 1; continue
-            if rs_val < 5:  
+            if rs_val < 5:  # [수정] 강도 약한 종목 제외
                 continue
 
         shadow_ratio = (curr['High'] - curr['Close']) / (curr['High'] - curr['Low'] + 0.0001)
@@ -101,6 +100,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         
         score = calculate_score(row['Amount'], vr, changes, shadow_ratio, ma_gap, cp_val, rs_val, 0, risk_level)
         
+        # [수정] 모드별 전략 보정치 완벽 적용
         if run_type == "PRE_OPEN": score += 5 if ma_gap < 5 else 0
         if run_type == "BREAKOUT_1" and vr >= 2: score += 5
         if run_type == "CLOSE_BET" and cp_val >= 80: score += 5
@@ -112,15 +112,10 @@ async def scan_market(run_type="OPEN_SCAN"):
         c_rs = 1 if changes > kospi_pct else 0
         cond_count = c_vol + c_amt + c_heat + c_shadow + c_rs
         
-        # [수정 2] cond_count 곱연산 페널티 삭제, 2개 이하일 때만 -5점
-        if cond_count <= 2:
-            score -= 5
-            
+        score -= (5 - cond_count) * 3
         score = min(max(int(score), 0), 100)
         
-        # [수정 3] TEST 모드일 경우 후보군 확보를 위해 컷오프 50으로 하향
-        cut_score = 50 if run_type == "TEST" else 55
-        if score < cut_score:
+        if score < 55:
             fail_score += 1; continue
         
         buy_p, t1, t2, stop = int(curr['Close']*0.985), int(curr['Close']*1.023), int(curr['Close']*1.063), int(curr['Close']*0.970)
@@ -128,6 +123,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop, 
                        int(curr['Close']), round(changes, 2), round(ma_gap, 2), 0,0,0,0,0,0,0,0,0)
         
+        # [수정] 텔레그램 발송을 위한 vr, amount, rs_val 추가
         results.append({
             "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
             "chg": round(changes, 2), "buy_p": buy_p, "target_1": t1, "target_2": t2, 
