@@ -19,7 +19,6 @@ def momentum_score(c):
     return 0
 
 def shadow_score(s_ratio):
-    # [수정] 100점 만점을 맞추기 위해 10점으로 하향
     if s_ratio <= 0.3: return 10
     elif s_ratio <= 0.6: return 5
     return 0
@@ -37,10 +36,31 @@ def close_position_score(cp):
     return 0
 
 def rs_score(rs, sc=0):
-    # [수정] 100점 만점을 맞추기 위해 5점으로 하향 및 RS 기준 강화
-    if rs >= 8: return 5
-    elif rs >= 4: return 3
+    if rs >= 10: return 10
+    elif rs >= 5: return 5
     return 0
+
+def get_conviction_score(rs, amount, vr, risk_level, ma_gap, cp):
+    score = 0
+    
+    # [수정] 약세장(risk_level >= 2)에서 강한 종목에 가산점 부여 (죽은 인자 부활)
+    if risk_level >= 2 and rs >= 10:
+        score += 5
+        
+    if rs >= 10: score += 10
+    elif rs >= 7: score += 7
+    elif rs >= 5: score += 5
+        
+    if amount >= 100_000_000_000: score += 10
+    elif amount >= 50_000_000_000: score += 5
+    
+    if vr >= 5: score += 5
+    
+    if 3 <= ma_gap <= 12: score += 5
+    if ma_gap >= 20: score -= 10
+    if cp >= 80: score += 3
+    
+    return max(score, 0)
 
 def calculate_score(amount, vr, c, s_ratio, g, cp, rs, sc, risk_level):
     raw = (money_score(amount) +
@@ -54,5 +74,5 @@ def calculate_score(amount, vr, c, s_ratio, g, cp, rs, sc, risk_level):
     if risk_level == 1: raw -= 5
     elif risk_level == 2: raw -= 20
     
-    # [수정] 억지 스케일링 제거. Raw 총합이 이미 100점이므로 상위권 점수 압축 소멸
-    return max(min(int(raw), 100), 0)
+    normalized = int(raw * 100 / 105)
+    return max(min(normalized, 100), 0)
