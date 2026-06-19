@@ -1,15 +1,15 @@
 import FinanceDataReader as fdr
 import pandas as pd
 import asyncio, datetime, pytz, time
+import requests
 from scoring import calculate_score
 from risk import get_market_risk
 from database import save_candidate
 
-# [수정 1] 거래대금 컷오프 150억으로 하향 (중소형 돌파주 확보)
 MIN_PRICE, MIN_AMOUNT, MAX_CANDIDATES = 2000, 15_000_000_000, 10
 
 def get_krx_retry():
-    for i in range(3):
+    for i in range(2):
         try:
             krx = fdr.StockListing("KRX")
             rename_map = {"ChagesRatio": "ChangesRatio", "ChgRate": "ChangesRatio"}
@@ -18,8 +18,26 @@ def get_krx_retry():
             krx = krx.loc[:, ~krx.columns.duplicated()].reset_index(drop=True)
             krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0)
             return krx
-        except: time.sleep(5)
-    raise Exception("KRX 연결 실패")
+        except: time.sleep(2)
+        
+    print("🚨 KRX 차단 감지. 네이버 금융 우회.")
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        df_list = []
+        for market in ["KOSPI", "KOSDAQ"]:
+            res = requests.get(f"https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2500", headers=headers)
+            stocks = res.json().get('stocks', [])
+            if not stocks: continue
+            df = pd.DataFrame(stocks)
+            df.rename(columns={'itemCode': 'Code', 'stockName': 'Name', 'closePrice': 'Close', 'fluctuationsRatio': 'ChangesRatio', 'accumulatedTradingVolume': 'Volume'}, inplace=True)
+            for col in ['Close', 'Volume']:
+                df[col] = df[col].astype(str).str.replace(',', '')
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            df['ChangesRatio'] = pd.to_numeric(df['ChangesRatio'], errors='coerce').fillna(0)
+            df_list.append(df)
+        return pd.concat(df_list, ignore_index=True)
+    except Exception as e:
+        raise Exception(f"연결 실패: {e}")
 
 def remove_bad_targets(df):
     if "Name" not in df.columns: return df
@@ -85,16 +103,16 @@ async def scan_market(run_type="OPEN_SCAN"):
         
         fail_ma20 += 1 if curr['Close'] < ma20 else 0
         
-        rs_val = changes - kospi_pct
+        # [수정] 약세장 착시 방지용 시장 페널티 적용 RS 계산
+        market_penalty = abs(min(kospi_pct, 0))
+        rs_val = changes - kospi_pct - (market_penalty * 0.5)
         
         if run_type == "BREAKOUT_1" and vr < 2:
             fail_vol += 1; continue
-            
         if run_type == "BREAKOUT_2":
             if ma_gap > 15:
                 fail_heat += 1; continue
-            if rs_val < 5:  
-                continue
+            if rs_val < 5: continue
 
         shadow_ratio = (curr['High'] - curr['Close']) / (curr['High'] - curr['Low'] + 0.0001)
         cp_val = (curr['Close'] - curr['Low']) / (curr['High'] - curr['Low'] + 0.0001) * 100
@@ -112,18 +130,22 @@ async def scan_market(run_type="OPEN_SCAN"):
         c_rs = 1 if changes > kospi_pct else 0
         cond_count = c_vol + c_amt + c_heat + c_shadow + c_rs
         
-        # [수정 2] cond_count 곱연산 페널티 삭제, 2개 이하일 때만 -5점
-        if cond_count <= 2:
-            score -= 5
-            
+        if cond_count <= 2: score -= 5
         score = min(max(int(score), 0), 100)
         
-        # [수정 3] TEST 모드일 경우 후보군 확보를 위해 컷오프 50으로 하향
-        cut_score = 50 if run_type == "TEST" else 55
+        # [수정] TEST 모드 컷오프를 45점으로 완화 (백테스트 괴리 방지)
+        cut_score = 45 if run_type == "TEST" else 55
         if score < cut_score:
             fail_score += 1; continue
         
-        buy_p, t1, t2, stop = int(curr['Close']*0.985), int(curr['Close']*1.023), int(curr['Close']*1.063), int(curr['Close']*0.970)
+        buy_p = int(curr['Close']*0.985)
+        t1, t2, stop = int(curr['Close']*1.023), int(curr['Close']*1.063), int(curr['Close']*0.970)
+        
+        # [수정] ATR 기반 동적 변동성 눌림선 계산 (14일 평균 진폭)
+        hist['ATR'] = hist['High'] - hist['Low']
+        atr = hist['ATR'].rolling(14).mean().iloc[-1]
+        if pd.isna(atr): atr = curr['Close'] * 0.05
+        pullback_price = int(curr['Close'] - (atr * 1.5))
         
         save_candidate(run_type, code, row['Name'], score, buy_p, t1, t2, stop, 
                        int(curr['Close']), round(changes, 2), round(ma_gap, 2), 0,0,0,0,0,0,0,0,0)
@@ -133,7 +155,8 @@ async def scan_market(run_type="OPEN_SCAN"):
             "chg": round(changes, 2), "buy_p": buy_p, "target_1": t1, "target_2": t2, 
             "stop_p": stop, "ma_gap": round(ma_gap, 2), "rs": round(rs_val, 2),
             "cond_count": cond_count, "c_vol": c_vol, "c_amt": c_amt, "c_heat": c_heat, "c_shadow": c_shadow, "c_rs": c_rs,
-            "vr": round(vr, 2), "amount": int(row['Amount'])
+            "vr": round(vr, 2), "amount": int(row['Amount']),
+            "pullback_price": pullback_price
         })
             
     results = sorted(results, key=lambda x: (x['score'], x['cond_count'], x['chg']), reverse=True)[:MAX_CANDIDATES]
