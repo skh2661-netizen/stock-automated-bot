@@ -18,29 +18,35 @@ def get_mode():
 
 async def run_pipeline():
     mode = get_mode()
-    # 테스트 강제 진입 (필요시 'TEST' 모드로 강제 실행)
     if mode is None:
-        mode = "TEST"
         print("시간 외 작동 - TEST 모드 강제 진입")
+        mode = "TEST"
 
     try:
         scan_result = await scan_market(run_type=mode)
         candidates = scan_result.get("candidates", [])
         
-        # [DEBUG] 후보군 확인용 로그
-        print(f"[DEBUG] 모드:{mode} / 최종 후보:{len(candidates)}건")
-
         if candidates:
-            msg = format_scan_message(scan_result)
-            await send_message(msg)
-            # unique_key 기반 마킹 (날짜_코드)
+            # [핵심 수정] 3개씩 쪼개서 발송하여 글자 수 제한 해결
+            chunk_size = 3
+            for i in range(0, len(candidates), chunk_size):
+                chunk = candidates[i:i + chunk_size]
+                chunk_result = scan_result.copy()
+                chunk_result["candidates"] = chunk
+                
+                msg = format_scan_message(chunk_result)
+                await send_message(msg)
+                await asyncio.sleep(0.5) # 전송 간격 0.5초 확보
+            
+            # DB 마킹 (전체 대상)
             today_str = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y%m%d')
             mark_telegram_sent([f"{today_str}_{c['code']}" for c in candidates])
-            print("발송 완료")
+            print(f"총 {len(candidates)}건 발송 성공")
         else:
-            print("후보 없음")
+            print("발송할 신규 후보 없음")
+            
     except Exception as e:
-        print(f"오류: {e}")
+        print(f"작전 오류 발생 ({mode}): {str(e)}")
 
 if __name__ == "__main__":
     asyncio.run(run_pipeline())
