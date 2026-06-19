@@ -19,23 +19,25 @@ def get_mode():
 
 async def run_pipeline():
     mode = get_mode()
-    # 시간 외 실행 시 테스트 모드 강제 진입
     if mode is None:
-        print("시간 외 작동 - 테스트 모드 진입")
-        mode = "TEST"
+        mode = "TEST" # 시간 외 테스트 모드 진입
 
     try:
-        if mode == "REVIEW":
-            print("복기 모드 실행")
-            return
-
         scan_result = await scan_market(run_type=mode)
-        save_log(mode, "스캔 완료")
-        
         candidates = scan_result.get("candidates", [])
+
         if candidates:
-            msg = format_scan_message(scan_result)
-            await send_message(msg)
+            # 메시지 길이 초과 방지: 3개씩 분할 발송
+            chunk_size = 3
+            for i in range(0, len(candidates), chunk_size):
+                chunk = candidates[i:i + chunk_size]
+                chunk_result = scan_result.copy()
+                chunk_result["candidates"] = chunk
+                
+                msg = format_scan_message(chunk_result)
+                await send_message(msg)
+                await asyncio.sleep(1) # 텔레그램 API 제한 방지
+            
             mark_telegram_sent([c["code"] for c in candidates])
             print(f"발송 완료: {len(candidates)}건")
         else:
