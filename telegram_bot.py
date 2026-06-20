@@ -5,7 +5,6 @@ from html import escape
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# [수정 5] 매번 인스턴스를 무겁게 루프 돌며 찍어내던 방식 폐기, 글로벌 객체 단 1회 할당
 if TELEGRAM_TOKEN:
     bot = Bot(token=TELEGRAM_TOKEN)
 else:
@@ -42,7 +41,7 @@ def format_scan_messages(scan_result):
     kp_str = f"+{market.get('kospi', 0)}%" if market.get('kospi', 0) > 0 else f"{market.get('kospi', 0)}%"
     kd_str = f"+{market.get('kosdaq', 0)}%" if market.get('kosdaq', 0) > 0 else f"{market.get('kosdaq', 0)}%"
     
-    msg1 = f"🎯 <b>V8.4.20 퀀트 시그널</b>\n\n[{mode_raw}]\n👉 {mode_text_map.get(mode_raw, mode_raw)}\n\n"
+    msg1 = f"🎯 <b>V8.4.21 퀀트 시그널</b>\n\n[{mode_raw}]\n👉 {mode_text_map.get(mode_raw, mode_raw)}\n\n"
     msg1 += f"🌎 <b>시장 해석 [{regime}]</b>\n코스피: {kp_str} | 코스닥: {kd_str}\n해석: {market.get('bias', '보합')}\n\n"
     msg1 += f"📊 <b>스캔 결과</b>\n최종 후보: {stats.get('final', 0)}개\n"
     if regime == "PANIC": msg1 += f"패닉장 탈락: {stats.get('fail_panic', 0)}개\n"
@@ -54,7 +53,7 @@ def format_scan_messages(scan_result):
     prime = next((c for c in candidates if c.get('is_prime_leader')), None)
     
     if prime:
-        p_score = prime['prime_score']
+        p_score = prime.get('prime_score', 0)
         if p_score >= 80: grade = "🔥🔥 <b>오늘의 프라임 리더 (Prime Leader)</b>"
         elif p_score >= 65: grade = "⭐ <b>오늘의 프라임 워치 (Prime Watch)</b>"
         else: grade = "👀 <b>오늘의 프라임 모니터 (Prime Monitor)</b>"
@@ -66,11 +65,11 @@ def format_scan_messages(scan_result):
         decision = get_decision_text(prime.get('ma_gap', 0), prime['price'], prime['buy_p'], prime.get('pullback_price', 0))
         
         msg1 += f"👑 <b>{safe_name}</b>\n"
-        msg1 += f"종합 {prime['score']}점 | 확신도 {prime['conviction']}점 | Prime {prime['prime_score']}점\n\n"
+        msg1 += f"종합 {prime['score']}점 | 확신도 {prime.get('conviction', 0)}점 | Prime {p_score}점\n\n"
         msg1 += "<b>[선정 이유]</b>\n"
-        msg1 += f"✅ 최근 5일 대금 유입 강도 (평균 대비 {prime.get('amount_strength', 0)}배 안정적 유지)\n"
+        msg1 += f"✅ 최근 5일 대금 유입 강도 (평균 대비 {prime.get('amount_strength', 0)}배 지속)\n"
         msg1 += f"✅ 3중 시계열 상대강도(RS 1D/5D/20D) 다차원 돌파\n"
-        msg1 += f"✅ 차트 구조적 안전 마진 확인 (MA20 +{prime['ma_gap']}%)\n\n"
+        msg1 += f"✅ 차트 구조적 안전 마진 확인 (MA20 +{prime.get('ma_gap', 0)}%)\n\n"
         msg1 += f"현재: {prime['price']:,}원\n판정: {decision}\n"
         msg1 += "=" * 20 + "\n\n"
     else:
