@@ -3,7 +3,7 @@ import pytz
 from datetime import datetime
 from scanner import scan_market
 from telegram_bot import send_message, format_scan_messages
-from database import mark_telegram_sent, save_log
+from database import mark_telegram_sent
 
 def get_mode():
     kst = pytz.timezone('Asia/Seoul')
@@ -14,38 +14,45 @@ def get_mode():
     if h == 11 and 0 <= m <= 20: return "BREAKOUT_2"
     if h == 15 and 0 <= m <= 25: return "CLOSE_BET"
     if h == 15 and 30 <= m <= 59: return "REVIEW"
-    return None
+    return "TEST"
 
 async def run_pipeline():
     mode = get_mode()
-    
-    # [수정] 운영 vs 테스트 분리
-    if mode is None:
-        print("시간 외 작동 - TEST 모드 강제 진입")
-        mode = "TEST"
+    print(f"\n▶️ [시스템 가동] 작전 모드: {mode}")
 
     try:
+        # 1. 스캐너 엔진 구동
+        print("⏳ SCAN 진행 중...")
         scan_result = await scan_market(run_type=mode)
         candidates = scan_result.get("candidates", [])
-        
-        print(f"[DEBUG] 모드:{mode} / 최종 후보:{len(candidates)}건")
+        print(f"✅ SCAN 완료 (생존 후보군: {len(candidates)}개)")
 
-        if candidates:
-            # [수정] Chunk 분할 발송 로직 제거 -> 포맷터가 주는 2개 메시지 순차 전송
-            messages = format_scan_messages(scan_result)
-            for msg in messages:
-                await send_message(msg)
-                await asyncio.sleep(1) # API 보호용 1초 대기
+        # [수정 2] 후보가 0개여도 가차없이 포맷터를 호출하여 시장 브리핑 발송 강제
+        print("⏳ MESSAGE 생성 중...")
+        messages = format_scan_messages(scan_result)
+        
+        if messages:
+            print(f"✅ MESSAGE 생성 완료 (분할 메시지 개수: {len(messages)}개)")
             
-            # DB 마킹 (당일 날짜 + 종목코드 조합)
-            today_str = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y%m%d')
-            mark_telegram_sent([f"{today_str}_{c['code']}" for c in candidates])
-            print("발송 및 마킹 완료")
+            # 3. 텔레그램 전송 레이어 기동
+            for i, msg in enumerate(messages, 1):
+                print(f"⏳ TELEGRAM 발송 중... ({i}/{len(messages)})")
+                await send_message(msg)
+                await asyncio.sleep(1) # 세션 보호
+            
+            print("✅ TELEGRAM 발송 완료")
+            
+            # 발송 성공 종목 마킹 처리
+            if candidates:
+                mark_telegram_sent([c['code'] for c in candidates])
+                print("🎯 당일 데이터 계약 마킹 완료")
         else:
-            print("후보 없음")
+            print("⚠️ 발송할 메시지 컨텐츠가 존재하지 않습니다.")
             
     except Exception as e:
-        print(f"작전 오류 발생 ({mode}): {str(e)}")
+        import traceback
+        print(f"\n❌ [치명적 파이프라인 오류] 작전 중단:\n{str(e)}")
+        print(traceback.format_exc())
 
 if __name__ == "__main__":
     asyncio.run(run_pipeline())
