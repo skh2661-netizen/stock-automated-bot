@@ -2,45 +2,48 @@ import FinanceDataReader as fdr
 import pandas as pd
 import asyncio, datetime, pytz, time, math
 import requests
+import sqlite3
+import os
 from scoring import calculate_score, get_conviction_score, get_prime_score
 from risk import get_market_risk
-from database import save_candidate
+from database import save_candidate, DB_PATH
 
 MIN_PRICE, MIN_AMOUNT, MAX_CANDIDATES = 2000, 15_000_000_000, 10
 
-# [수정] P0/P2: 다중 데이터 공급자 폴백(Fallback) 및 JSON 무결성 검사
+def safe_json_decode(res, channel_name):
+    try:
+        text_stripped = res.text.strip()
+        if text_stripped.startswith("<") or "text/html" in res.headers.get("Content-Type", "").lower():
+            print(f"🚨 [{channel_name}] HTML 점검 페이지 반환 감지. 우회합니다.")
+            return None
+        return res.json()
+    except Exception as e:
+        print(f"🚨 [{channel_name}] JSON 디코딩 실패: {e}")
+        return None
+
 def get_krx_retry():
-    # 1. 1차 공급자: FinanceDataReader (KRX 공식)
     for i in range(2):
         try:
             krx = fdr.StockListing("KRX")
-            krx.rename(columns={"ChagesRatio": "ChangesRatio", "ChgRate": "ChangesRatio"}, inplace=True)
-            krx = krx.loc[:, ~krx.columns.duplicated()].reset_index(drop=True)
-            krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0)
-            if not krx.empty:
+            if not krx.empty and "Symbol" in krx.columns:
+                krx.rename(columns={"ChagesRatio": "ChangesRatio", "ChgRate": "ChangesRatio"}, inplace=True)
+                krx = krx.loc[:, ~krx.columns.duplicated()].reset_index(drop=True)
+                krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0)
                 return krx
         except Exception as e:
             print(f"⚠️ FDR KRX 수집 지연: {e}")
-            time.sleep(2)
-        
-    print("🚨 KRX 수집 최종 실패. 네이버 금융 우회 기동을 시작합니다.")
-    
-    # 2. 2차 공급자: 네이버 금융 API (HTML 차단 방어 로직 포함)
+            time.sleep(1)
+
+    print("🔄 [폴백 2] 네이버 API 우회")
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        headers = {"User-Agent": "Mozilla/5.0"}
         df_list = []
         for market in ["KOSPI", "KOSDAQ"]:
             url = f"https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2500"
-            res = requests.get(url, headers=headers, timeout=10)
+            res = requests.get(url, headers=headers, timeout=5)
+            data = safe_json_decode(res, f"네이버-{market}")
+            if not data: continue
             
-            # [핵심] JSON 포맷 여부 엄격 검사
-            content_type = res.headers.get("Content-Type", "")
-            if "json" not in content_type.lower():
-                print(f"🚨 네이버 API 비정상 응답 감지 ({market}). Content-Type: {content_type}")
-                print(f"응답 헤더 스니펫: {res.text[:200]}")
-                continue
-                
-            data = res.json()
             stocks = data.get('stocks', [])
             if not stocks: continue
             
@@ -52,13 +55,21 @@ def get_krx_retry():
             df['ChangesRatio'] = pd.to_numeric(df['ChangesRatio'], errors='coerce').fillna(0)
             df_list.append(df)
             
-        if df_list:
-            return pd.concat(df_list, ignore_index=True)
-    except Exception as e: 
-        print(f"❌ 네이버 API 우회 중 치명적 예외 발생: {e}")
+        if df_list: return pd.concat(df_list, ignore_index=True)
+    except Exception as e:
+        print(f"🚨 네이버 우회 실패: {e}")
 
-    # 3. 최후의 보루: 파이프라인 붕괴를 막기 위한 빈 데이터프레임 반환
-    print("❌ 모든 데이터 공급 채널이 차단되었습니다. 빈 스캔 결과를 반환합니다.")
+    print("🔄 [폴백 3] 로컬 SQLite 캐시 복원")
+    if os.path.exists(DB_PATH):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cache_df = pd.read_sql_query("SELECT code AS Code, name AS Name, price AS Close, chg AS ChangesRatio FROM candidates WHERE date = (SELECT max(date) FROM candidates)", conn)
+            conn.close()
+            if not cache_df.empty: return cache_df
+        except Exception as e:
+            print(f"🚨 캐시 로드 실패: {e}")
+
+    print("❌ [최종 장애] 빈 데이터 프레임 반환")
     return pd.DataFrame(columns=['Code', 'Name', 'Close', 'ChangesRatio', 'Amount', 'Volume'])
 
 def remove_bad_targets(df):
@@ -72,14 +83,12 @@ def get_market_indices():
         start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=40)).strftime("%Y-%m-%d")
         kospi = fdr.DataReader("KS11", start_date)
         kosdaq = fdr.DataReader("KQ11", start_date)
-        
         kp_1d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-2]) - 1) * 100
         kd_1d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-2]) - 1) * 100
         kp_5d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-6]) - 1) * 100
         kd_5d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-6]) - 1) * 100
         kp_20d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-21]) - 1) * 100 if len(kospi) >= 21 else 0
         kd_20d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-21]) - 1) * 100 if len(kosdaq) >= 21 else 0
-        
         return round(kp_1d, 2), round(kd_1d, 2), round(kp_5d, 2), round(kd_5d, 2), round(kp_20d, 2), round(kd_20d, 2)
     except: return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
@@ -102,9 +111,7 @@ async def scan_market(run_type="OPEN_SCAN"):
     regime, bias_text = get_market_regime(kp_1d, kd_1d)
     
     krx = remove_bad_targets(get_krx_retry())
-    
-    # [수정] 데이터 프레임이 비어있을 경우 스캔 조기 종료
-    if krx.empty:
+    if krx.empty or "Code" not in krx.columns:
         return {
             "market": {"kospi": kp_1d, "kosdaq": kd_1d, "bias": bias_text, "regime": regime, "mode": run_type, "risk_pct": risk_level},
             "stats": {"total": 0, "pass1": 0, "final": 0, "fail_ma20": 0, "fail_vol": 0, "fail_score": 0, "fail_heat": 0, "fail_panic": 0},
@@ -139,7 +146,6 @@ async def scan_market(run_type="OPEN_SCAN"):
         ma_gap = (curr['Close'] - ma20) / ma20 * 100
         
         fail_ma20 += 1 if curr['Close'] < ma20 else 0
-        
         market_penalty = abs(min(kp_1d, 0))
         rs_1d = changes - kp_1d - (market_penalty * 0.5)
         stock_5d = ((curr['Close'] / hist['Close'].iloc[-6]) - 1) * 100
@@ -153,7 +159,6 @@ async def scan_market(run_type="OPEN_SCAN"):
         hist['Amt'] = hist['Close'] * hist['Volume']
         amount_ma5 = hist['Amt'].tail(6).iloc[:-1].mean() if len(hist) >= 6 else 0
         amount_prev20 = hist['Amt'].iloc[-21:-1].mean() if len(hist) >= 21 else hist['Amt'].head(20).mean()
-        
         amount_strength = round(amount_ma5 / amount_prev20, 2) if amount_prev20 > 0 else 0
         amount_strength = min(amount_strength, 5.0)
         
@@ -192,6 +197,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         norm_conviction = get_conviction_score(rs_1d, row['Amount'], vr, risk_level, ma_gap, cp_val)
         prime_score = get_prime_score(rs_1d, rs_5d, rs_20d, amount_strength, defense_passed)
         
+        # 가중합 산출 (Prime 45% + Score 45% + Risk 10%)
         risk_adjustment_score = 100 if risk_level == 1 else 50
         final_rank = (prime_score * 0.45) + (score * 0.45) + (risk_adjustment_score * 0.10)
         
