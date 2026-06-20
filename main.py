@@ -7,6 +7,12 @@ from scanner import scan_market
 from telegram_bot import send_message, format_scan_messages
 from database import mark_telegram_sent
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 def get_mode():
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.now(kst)
@@ -32,7 +38,7 @@ async def run_pipeline():
         messages = format_scan_messages(scan_result)
         
         if messages:
-            print(f"✅ MESSAGE 생성 완료 (분할 메시지 개수: {len(messages)}개)")
+            print(f"✅ MESSAGE 생성 완료 (분할 개수: {len(messages)}개)")
             for i, msg in enumerate(messages, 1):
                 print(f"⏳ TELEGRAM 발송 중... ({i}/{len(messages)})")
                 await send_message(msg)
@@ -49,17 +55,16 @@ async def run_pipeline():
         error_msg = traceback.format_exc()
         print(f"\n❌ [치명적 파이프라인 오류] 작전 중단:\n{error_msg}")
         
-        # [수정] P1: 엔진 사망 시 텔레그램 긴급 장애 알림 직보
         try:
             alert_text = (
-                f"🚨 <b>V8.4.21 시스템 장애 보고</b>\n\n"
+                f"🚨 <b>V8.4.22 시스템 장애 보고</b>\n\n"
                 f"<b>모드:</b> {mode}\n"
                 f"<b>오류:</b> {str(e)}\n\n"
-                f"<b>위치 (Traceback 요약):</b>\n<pre>{escape(error_msg[-1000:])}</pre>"
+                f"<b>위치 요약:</b>\n<pre>{error_msg[-1000:]}</pre>"
             )
             await send_message(alert_text)
         except Exception as tg_err:
-            print(f"❌ 장애 보고 텔레그램 발송마저 실패: {tg_err}")
+            print(f"❌ 장애 보고 텔레그램 발송 실패: {tg_err}")
 
 if __name__ == "__main__":
     asyncio.run(run_pipeline())
