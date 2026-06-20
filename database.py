@@ -28,11 +28,11 @@ def migrate_db():
         if existing_cols:
             for col, dtype in columns.items():
                 if col not in existing_cols:
-                    print(f"🔧 [DB MIGRATION] candidates 테이블에 {col} 컬럼을 추가합니다.")
+                    print(f"🔧 [DB MIGRATION] candidates 테이블에 {col} 컬럼 추가 완료.")
                     c.execute(f"ALTER TABLE candidates ADD COLUMN {col} {dtype}")
         conn.commit()
     except Exception as e:
-        print(f"⚠️ [DB MIGRATION 경고] 컬럼 추가 중 예외 발생: {e}")
+        print(f"⚠️ [DB MIGRATION] 예외 발생 (최초 생성 시 무시): {e}")
     finally:
         conn.close()
 
@@ -92,6 +92,6 @@ def mark_telegram_sent(target_codes):
             c.execute("UPDATE candidates SET sent_telegram = 1 WHERE code = ? AND sent_telegram = 0", (code,))
         conn.commit()
     except Exception as e:
-        print(f"⚠️ 텔레그램 마킹 실패 로그: {e}")
+        print(f"⚠️ 텔레그램 마킹 실패: {e}")
     finally:
         conn.close()
