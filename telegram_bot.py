@@ -5,11 +5,21 @@ from html import escape
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-async def send_message(text):
-    if not TELEGRAM_TOKEN or not CHAT_ID: return
+# [수정 5] 매번 인스턴스를 무겁게 루프 돌며 찍어내던 방식 폐기, 글로벌 객체 단 1회 할당
+if TELEGRAM_TOKEN:
     bot = Bot(token=TELEGRAM_TOKEN)
-    try: await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML')
-    except Exception as e: print(f"텔레그램 발송 오류: {e}")
+else:
+    bot = None
+
+async def send_message(text):
+    if not TELEGRAM_TOKEN or not CHAT_ID: 
+        print("❌ [환경변수 탈락] TELEGRAM_TOKEN 또는 TELEGRAM_CHAT_ID 값이 유실되었습니다.")
+        return
+    try: 
+        await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML')
+        print("🟢 텔레그램 통신 세션 발송 성공")
+    except Exception as e: 
+        print(f"❌ 텔레그램 발송 세션 실패: {e}")
 
 def get_decision_text(ma_gap, current_price, buy_price, pullback_price):
     if ma_gap >= 20: return f"❌ 초과열\n대기: {pullback_price:,}원 부근 눌림 (ATR)"
@@ -32,7 +42,7 @@ def format_scan_messages(scan_result):
     kp_str = f"+{market.get('kospi', 0)}%" if market.get('kospi', 0) > 0 else f"{market.get('kospi', 0)}%"
     kd_str = f"+{market.get('kosdaq', 0)}%" if market.get('kosdaq', 0) > 0 else f"{market.get('kosdaq', 0)}%"
     
-    msg1 = f"🎯 <b>V8.4.19 퀀트 시그널</b>\n\n[{mode_raw}]\n👉 {mode_text_map.get(mode_raw, mode_raw)}\n\n"
+    msg1 = f"🎯 <b>V8.4.20 퀀트 시그널</b>\n\n[{mode_raw}]\n👉 {mode_text_map.get(mode_raw, mode_raw)}\n\n"
     msg1 += f"🌎 <b>시장 해석 [{regime}]</b>\n코스피: {kp_str} | 코스닥: {kd_str}\n해석: {market.get('bias', '보합')}\n\n"
     msg1 += f"📊 <b>스캔 결과</b>\n최종 후보: {stats.get('final', 0)}개\n"
     if regime == "PANIC": msg1 += f"패닉장 탈락: {stats.get('fail_panic', 0)}개\n"
