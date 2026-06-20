@@ -1,159 +1,101 @@
 import sqlite3
-from datetime import datetime
 import os
+from datetime import datetime
 import pytz
 
-DB_PATH = "data/candidates.db"
+DB_PATH = "quant_data.db"
 
-def connect(): 
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row 
-    return conn
+def migrate_db():
+    # [수정 1] 기존 DB 파괴 없이 신규 컬럼 9개를 안전하게 동적 추가하는 엔진
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
 
-def init_db():
-    os.makedirs("data", exist_ok=True)
-    conn = connect()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS candidates (
-            unique_key TEXT PRIMARY KEY,
-            date TEXT, timestamp TEXT, run_type TEXT,
-            strategy_version TEXT, score_version TEXT,
-            code TEXT, name TEXT, score INTEGER,
-            buy_p INTEGER, target1_p INTEGER, target2_p INTEGER, stop_p INTEGER,
-            entry_price INTEGER DEFAULT NULL, entry_success INTEGER DEFAULT NULL,
-            exit_type TEXT DEFAULT '대기',
-            d1_high INTEGER, d1_low INTEGER, d1_close INTEGER,
-            d3_high INTEGER, d3_low INTEGER, d3_close INTEGER,
-            d5_high INTEGER, d5_low INTEGER, d5_close INTEGER,
-            result_status TEXT DEFAULT '대기',
-            telegram_sent INTEGER DEFAULT 0,
-            price INTEGER DEFAULT 0,
-            chg REAL DEFAULT 0.0,
-            ma_gap REAL DEFAULT 0.0,
-            rs REAL DEFAULT 0.0,
-            five_chg REAL DEFAULT 0.0,
-            kospi_chg REAL DEFAULT 0.0,
-            c_vol INTEGER DEFAULT 0,
-            c_rs INTEGER DEFAULT 0,
-            c_heat INTEGER DEFAULT 0,
-            c_amt INTEGER DEFAULT 0,
-            c_shadow INTEGER DEFAULT 0,
-            cond_count INTEGER DEFAULT 0
-        )
-    """)
+    columns = {
+        "prime_score": "INTEGER DEFAULT 0",
+        "final_rank": "REAL DEFAULT 0",
+        "conviction": "INTEGER DEFAULT 0",
+        "amount_strength": "REAL DEFAULT 0",
+        "rs_1d": "REAL DEFAULT 0",
+        "rs_5d": "REAL DEFAULT 0",
+        "rs_20d": "REAL DEFAULT 0",
+        "defense": "INTEGER DEFAULT 0",
+        "risk_level": "INTEGER DEFAULT 1"
+    }
 
-    columns = [
-        "telegram_sent INTEGER DEFAULT 0",
-        "price INTEGER DEFAULT 0",
-        "chg REAL DEFAULT 0.0",
-        "ma_gap REAL DEFAULT 0.0",
-        "rs REAL DEFAULT 0.0",
-        "five_chg REAL DEFAULT 0.0",
-        "kospi_chg REAL DEFAULT 0.0",
-        "c_vol INTEGER DEFAULT 0",
-        "c_rs INTEGER DEFAULT 0",
-        "c_heat INTEGER DEFAULT 0",
-        "c_amt INTEGER DEFAULT 0",
-        "c_shadow INTEGER DEFAULT 0",
-        "cond_count INTEGER DEFAULT 0"
-    ]
-    existing = [row["name"] for row in conn.execute("PRAGMA table_info(candidates)")]
-
-    for col in columns:
-        col_name = col.split()[0]
-        if col_name not in existing:
-            conn.execute(f"ALTER TABLE candidates ADD COLUMN {col}")
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT, run_type TEXT, message TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-def save_candidate(run_type, code, name, score, buy_p, target1_p, target2_p, stop_p, price, chg, ma_gap, rs, five_chg, kospi_chg, c_vol, c_rs, c_heat, c_amt, c_shadow, cond_count):
-    init_db()
-    conn = connect()
-    now = datetime.now(pytz.timezone("Asia/Seoul"))
-    today = now.strftime("%Y-%m-%d")
-    unique_key = f"{today}_{code}_{run_type}"
     try:
-        # [핵심 수정] INSERT OR IGNORE 폐기 -> ON CONFLICT DO UPDATE (Upsert) 정석 도입
-        # 형님의 지시대로 최신 데이터 발생 시 무조건 갱신하고 재발송 대기열(telegram_sent=0)로 리셋합니다.
-        conn.execute("""
-            INSERT INTO candidates 
-            (unique_key, date, timestamp, run_type, strategy_version, score_version, code, name, score, buy_p, target1_p, target2_p, stop_p, price, chg, ma_gap, rs, five_chg, kospi_chg, c_vol, c_rs, c_heat, c_amt, c_shadow, cond_count) 
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(unique_key) DO UPDATE SET
-            timestamp=excluded.timestamp,
-            score=excluded.score,
-            buy_p=excluded.buy_p,
-            target1_p=excluded.target1_p,
-            target2_p=excluded.target2_p,
-            stop_p=excluded.stop_p,
-            price=excluded.price,
-            chg=excluded.chg,
-            ma_gap=excluded.ma_gap,
-            rs=excluded.rs,
-            five_chg=excluded.five_chg,
-            kospi_chg=excluded.kospi_chg,
-            c_vol=excluded.c_vol,
-            c_rs=excluded.c_rs,
-            c_heat=excluded.c_heat,
-            c_amt=excluded.c_amt,
-            c_shadow=excluded.c_shadow,
-            cond_count=excluded.cond_count,
-            telegram_sent=0
-        """, (unique_key, today, now.strftime("%H:%M:%S"), run_type, "V8.4.5", "SCORE_A", code, name, int(score), int(buy_p), int(target1_p), int(target2_p), int(stop_p), int(price), float(chg), float(ma_gap), float(rs), float(five_chg), float(kospi_chg), int(c_vol), int(c_rs), int(c_heat), int(c_amt), int(c_shadow), int(cond_count)))
+        c.execute("PRAGMA table_info(candidates)")
+        existing_cols = [x[1] for x in c.fetchall()]
+        
+        # 기존 테이블이 존재할 때만 ALTER TABLE 실행
+        if existing_cols:
+            for col, dtype in columns.items():
+                if col not in existing_cols:
+                    print(f"🔧 [DB MIGRATION] candidates 테이블에 {col} 컬럼을 추가합니다.")
+                    c.execute(f"ALTER TABLE candidates ADD COLUMN {col} {dtype}")
         conn.commit()
     except Exception as e:
-        print(f"DB 오류: {e}")
+        print(f"⚠️ [DB MIGRATION 경고] 컬럼 추가 중 예외 발생 (최초 생성 시 무시 가능): {e}")
     finally:
         conn.close()
 
-def get_today_candidates():
-    if not os.path.exists(DB_PATH): 
-        return []
-        
-    conn = connect()
-    today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
-    rows = conn.execute("""
-        SELECT * FROM candidates 
-        WHERE date=? AND telegram_sent=0 
-        ORDER BY score DESC
-    """, (today,)).fetchall()
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS candidates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT,
+        run_type TEXT,
+        code TEXT,
+        name TEXT,
+        score INTEGER,
+        buy_p INTEGER,
+        target_1 INTEGER,
+        target_2 INTEGER,
+        stop_p INTEGER,
+        price INTEGER,
+        chg REAL,
+        ma_gap REAL,
+        prime_score INTEGER,
+        final_rank REAL,
+        conviction INTEGER,
+        amount_strength REAL,
+        rs_1d REAL,
+        rs_5d REAL,
+        rs_20d REAL,
+        defense INTEGER,
+        risk_level INTEGER,
+        sent_telegram INTEGER DEFAULT 0
+    )''')
+    conn.commit()
     conn.close()
     
-    results = []
-    for row in rows:
-        r_dict = dict(row)
-        r_dict['target_1'] = r_dict.get('target1_p', 0)
-        r_dict['target_2'] = r_dict.get('target2_p', 0)
-        r_dict['c_vol'] = bool(r_dict.get('c_vol', 0))
-        r_dict['c_rs'] = bool(r_dict.get('c_rs', 0))
-        r_dict['c_heat'] = bool(r_dict.get('c_heat', 0))
-        r_dict['c_amt'] = bool(r_dict.get('c_amt', 0))
-        r_dict['c_shadow'] = bool(r_dict.get('c_shadow', 0))
-        results.append(r_dict)
-        
-    return results
+    # 테이블 생성 후 반드시 마이그레이션 연동
+    migrate_db()
 
-def mark_telegram_sent(unique_keys):
-    if not unique_keys: 
-        return
-    conn = connect()
-    conn.executemany("UPDATE candidates SET telegram_sent=1 WHERE unique_key=?", [(k,) for k in unique_keys])
+def save_candidate(run_type, code, name, score, buy_p, t1, t2, stop, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level):
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    kst = pytz.timezone("Asia/Seoul")
+    date_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
+    
+    c.execute('''INSERT INTO candidates 
+        (date, run_type, code, name, score, buy_p, target_1, target_2, stop_p, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (date_str, run_type, code, name, score, buy_p, t1, t2, stop, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level))
     conn.commit()
     conn.close()
 
-def save_log(run_type, message):
-    init_db()
-    conn = connect()
-    now = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+def mark_telegram_sent(target_codes):
+    # [수정 3] 키 매핑 붕괴를 예방하기 위해 코드 리스트 직접 매칭 방식으로 안전하게 교정
+    if not target_codes: return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
     try:
-        conn.execute("INSERT INTO logs (timestamp, run_type, message) VALUES (?,?,?)", (now, str(run_type), str(message)))
+        for code in target_codes:
+            c.execute("UPDATE candidates SET sent_telegram = 1 WHERE code = ? AND sent_telegram = 0", (code,))
         conn.commit()
+    except Exception as e:
+        print(f"⚠️ 텔레그램 마킹 실패 로그: {e}")
     finally:
         conn.close()
