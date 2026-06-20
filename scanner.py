@@ -8,24 +8,42 @@ from database import save_candidate
 
 MIN_PRICE, MIN_AMOUNT, MAX_CANDIDATES = 2000, 15_000_000_000, 10
 
+# [수정] P0/P2: 다중 데이터 공급자 폴백(Fallback) 및 JSON 무결성 검사
 def get_krx_retry():
+    # 1. 1차 공급자: FinanceDataReader (KRX 공식)
     for i in range(2):
         try:
             krx = fdr.StockListing("KRX")
             krx.rename(columns={"ChagesRatio": "ChangesRatio", "ChgRate": "ChangesRatio"}, inplace=True)
             krx = krx.loc[:, ~krx.columns.duplicated()].reset_index(drop=True)
             krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0)
-            return krx
-        except: time.sleep(2)
+            if not krx.empty:
+                return krx
+        except Exception as e:
+            print(f"⚠️ FDR KRX 수집 지연: {e}")
+            time.sleep(2)
         
-    print("🚨 KRX 차단 감지. 네이버 금융 우회.")
+    print("🚨 KRX 수집 최종 실패. 네이버 금융 우회 기동을 시작합니다.")
+    
+    # 2. 2차 공급자: 네이버 금융 API (HTML 차단 방어 로직 포함)
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         df_list = []
         for market in ["KOSPI", "KOSDAQ"]:
-            res = requests.get(f"https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2500", headers=headers)
-            stocks = res.json().get('stocks', [])
+            url = f"https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2500"
+            res = requests.get(url, headers=headers, timeout=10)
+            
+            # [핵심] JSON 포맷 여부 엄격 검사
+            content_type = res.headers.get("Content-Type", "")
+            if "json" not in content_type.lower():
+                print(f"🚨 네이버 API 비정상 응답 감지 ({market}). Content-Type: {content_type}")
+                print(f"응답 헤더 스니펫: {res.text[:200]}")
+                continue
+                
+            data = res.json()
+            stocks = data.get('stocks', [])
             if not stocks: continue
+            
             df = pd.DataFrame(stocks)
             df.rename(columns={'itemCode': 'Code', 'stockName': 'Name', 'closePrice': 'Close', 'fluctuationsRatio': 'ChangesRatio', 'accumulatedTradingVolume': 'Volume'}, inplace=True)
             for col in ['Close', 'Volume']:
@@ -33,8 +51,15 @@ def get_krx_retry():
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             df['ChangesRatio'] = pd.to_numeric(df['ChangesRatio'], errors='coerce').fillna(0)
             df_list.append(df)
-        return pd.concat(df_list, ignore_index=True)
-    except Exception as e: raise Exception(f"연결 실패: {e}")
+            
+        if df_list:
+            return pd.concat(df_list, ignore_index=True)
+    except Exception as e: 
+        print(f"❌ 네이버 API 우회 중 치명적 예외 발생: {e}")
+
+    # 3. 최후의 보루: 파이프라인 붕괴를 막기 위한 빈 데이터프레임 반환
+    print("❌ 모든 데이터 공급 채널이 차단되었습니다. 빈 스캔 결과를 반환합니다.")
+    return pd.DataFrame(columns=['Code', 'Name', 'Close', 'ChangesRatio', 'Amount', 'Volume'])
 
 def remove_bad_targets(df):
     if "Name" not in df.columns: return df
@@ -77,6 +102,15 @@ async def scan_market(run_type="OPEN_SCAN"):
     regime, bias_text = get_market_regime(kp_1d, kd_1d)
     
     krx = remove_bad_targets(get_krx_retry())
+    
+    # [수정] 데이터 프레임이 비어있을 경우 스캔 조기 종료
+    if krx.empty:
+        return {
+            "market": {"kospi": kp_1d, "kosdaq": kd_1d, "bias": bias_text, "regime": regime, "mode": run_type, "risk_pct": risk_level},
+            "stats": {"total": 0, "pass1": 0, "final": 0, "fail_ma20": 0, "fail_vol": 0, "fail_score": 0, "fail_heat": 0, "fail_panic": 0},
+            "candidates": []
+        }
+        
     krx['Close'] = pd.to_numeric(krx['Close'], errors='coerce')
     krx['Amount'] = (krx['Close'] * pd.to_numeric(krx['Volume'], errors='coerce')).fillna(0)
     
@@ -116,7 +150,6 @@ async def scan_market(run_type="OPEN_SCAN"):
         down_days = sum(1 for i in range(-5, 0) if hist['Close'].iloc[i] < hist['Close'].iloc[i-1])
         defense_passed = (down_days <= 2) and (stock_5d > 3)
         
-        # [교정] 오늘 거래대금을 철저히 차단한 분모/분자 완벽 동기화 (이전 20일 데이터 매핑)
         hist['Amt'] = hist['Close'] * hist['Volume']
         amount_ma5 = hist['Amt'].tail(6).iloc[:-1].mean() if len(hist) >= 6 else 0
         amount_prev20 = hist['Amt'].iloc[-21:-1].mean() if len(hist) >= 21 else hist['Amt'].head(20).mean()
@@ -156,12 +189,11 @@ async def scan_market(run_type="OPEN_SCAN"):
         if cond_count <= 2: score -= 5
         score = min(max(int(score), 0), 100)
         
-        # 정규화 모듈 호출
         norm_conviction = get_conviction_score(rs_1d, row['Amount'], vr, risk_level, ma_gap, cp_val)
         prime_score = get_prime_score(rs_1d, rs_5d, rs_20d, amount_strength, defense_passed)
         
-        # 실질 스케일 가중합 연산 (40 / 40 / 20 백분의 1 단위 일치)
-        final_rank = (prime_score * 0.40) + (score * 0.40) + (norm_conviction * 0.20)
+        risk_adjustment_score = 100 if risk_level == 1 else 50
+        final_rank = (prime_score * 0.45) + (score * 0.45) + (risk_adjustment_score * 0.10)
         
         cut_score = 45 if run_type == "TEST" else 55
         if score < cut_score:
@@ -202,11 +234,9 @@ async def scan_market(run_type="OPEN_SCAN"):
             
     results = sorted(results, key=lambda x: (x['final_rank'], x['amount'], x['chg']), reverse=True)[:MAX_CANDIDATES]
     
-    # [교정] 형님의 핵심 제안인 '상대평가(백분위 컷오프)' 시스템 이식
     if results:
         p_scores = [c['prime_score'] for c in results]
         p_scores.sort(reverse=True)
-        # 상위 30% 순위에 위치한 동적 점수를 커트라인으로 산출 (하한선은 60점 방어)
         dynamic_cutoff = max(p_scores[min(2, len(p_scores)-1)], 60)
         prime_candidates = [c for c in results if c['prime_score'] >= dynamic_cutoff]
         prime = max(prime_candidates, key=lambda x: x['prime_blend_rank']) if prime_candidates else None
