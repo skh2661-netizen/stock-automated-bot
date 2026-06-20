@@ -6,7 +6,6 @@ import pytz
 DB_PATH = "quant_data.db"
 
 def migrate_db():
-    # [수정 1] 기존 DB 파괴 없이 신규 컬럼 9개를 안전하게 동적 추가하는 엔진
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
@@ -26,7 +25,6 @@ def migrate_db():
         c.execute("PRAGMA table_info(candidates)")
         existing_cols = [x[1] for x in c.fetchall()]
         
-        # 기존 테이블이 존재할 때만 ALTER TABLE 실행
         if existing_cols:
             for col, dtype in columns.items():
                 if col not in existing_cols:
@@ -34,7 +32,7 @@ def migrate_db():
                     c.execute(f"ALTER TABLE candidates ADD COLUMN {col} {dtype}")
         conn.commit()
     except Exception as e:
-        print(f"⚠️ [DB MIGRATION 경고] 컬럼 추가 중 예외 발생 (최초 생성 시 무시 가능): {e}")
+        print(f"⚠️ [DB MIGRATION 경고] 컬럼 추가 중 예외 발생: {e}")
     finally:
         conn.close()
 
@@ -69,7 +67,6 @@ def init_db():
     conn.commit()
     conn.close()
     
-    # 테이블 생성 후 반드시 마이그레이션 연동
     migrate_db()
 
 def save_candidate(run_type, code, name, score, buy_p, t1, t2, stop, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level):
@@ -87,7 +84,6 @@ def save_candidate(run_type, code, name, score, buy_p, t1, t2, stop, price, chg,
     conn.close()
 
 def mark_telegram_sent(target_codes):
-    # [수정 3] 키 매핑 붕괴를 예방하기 위해 코드 리스트 직접 매칭 방식으로 안전하게 교정
     if not target_codes: return
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
