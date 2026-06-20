@@ -41,18 +41,32 @@ def format_scan_messages(scan_result):
     kp_str = f"+{market.get('kospi', 0)}%" if market.get('kospi', 0) > 0 else f"{market.get('kospi', 0)}%"
     kd_str = f"+{market.get('kosdaq', 0)}%" if market.get('kosdaq', 0) > 0 else f"{market.get('kosdaq', 0)}%"
     
-    msg1 = f"🎯 <b>V8.4.22 퀀트 시그널</b>\n\n[{mode_raw}]\n👉 {mode_text_map.get(mode_raw, mode_raw)}\n\n"
+    msg1 = f"🎯 <b>V8.4.23 퀀트 시그널</b>\n\n[{mode_raw}]\n👉 {mode_text_map.get(mode_raw, mode_raw)}\n\n"
     msg1 += f"🌎 <b>시장 해석 [{regime}]</b>\n코스피: {kp_str} | 코스닥: {kd_str}\n해석: {market.get('bias', '보합')}\n\n"
     msg1 += f"📊 <b>스캔 결과</b>\n최종 후보: {stats.get('final', 0)}개\n"
     if regime == "PANIC": msg1 += f"패닉장 탈락: {stats.get('fail_panic', 0)}개\n"
     msg1 += "=" * 20 + "\n\n"
     
+    # [수정 1 & 2] 후보 고갈 시 TEST 분기 및 탈락 카운터 정밀 분석 인터페이스 이식
     if not candidates:
         msg1 += "🔥 <b>오늘의 시장 주도 후보 : 없음</b>\n\n"
         msg1 += "🚨 <b>[전술 지침] 자산 보호 및 공격 보류</b>\n"
         msg1 += f"1. <b>상태 요약:</b> 시장 심리 위축 및 임계 타점 충족군 전멸\n"
         msg1 += f"2. <b>리스크 요인:</b> 코스닥 변동성 이격 및 주도 세력 유입 부재\n"
-        msg1 += "3. <b>운용 전략:</b> <b>현금 비중 100% 유지</b> 후 안전선 대기\n"
+        
+        # TEST 모드 / 실전 매매 문구의 유연한 방어 분리
+        if mode_raw == "TEST":
+            msg1 += "3. <b>검증 전략:</b> <b>조건 충족 후보 부재 확인 (알고리즘 정상 작동)</b>\n\n"
+        else:
+            msg1 += "3. <b>운용 전략:</b> <b>현금 비중 100% 유지</b> 후 안전선 대기\n\n"
+            
+        msg1 += "📉 <b>필터 단계별 탈락 상세 분석</b>\n"
+        msg1 += f"- MA20 이탈 이격: {stats.get('fail_ma20', 0)}개\n"
+        msg1 += f"- 거래량 기준 미달: {stats.get('fail_vol', 0)}개\n"
+        msg1 += f"- 스코어 컷 미달: {stats.get('fail_score', 0)}개\n"
+        msg1 += f"- 과열 구간 제외: {stats.get('fail_heat', 0)}개\n"
+        if regime == "PANIC":
+            msg1 += f"- 패닉장 생존 점수 미달: {stats.get('fail_panic', 0)}개\n"
         msg1 += "=" * 20 + "\n"
         return [msg1]
 
