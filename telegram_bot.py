@@ -1,4 +1,29 @@
-# ... (상단 send_message 및 get_decision_text 함수는 기존 V8.4.21 유지) ...
+import os
+from telegram import Bot
+from html import escape
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+if TELEGRAM_TOKEN:
+    bot = Bot(token=TELEGRAM_TOKEN)
+else:
+    bot = None
+
+async def send_message(text):
+    if not TELEGRAM_TOKEN or not CHAT_ID: 
+        print("❌ [환경변수 탈락] TELEGRAM_TOKEN 또는 TELEGRAM_CHAT_ID 값이 유실되었습니다.")
+        return
+    try: 
+        await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML')
+        print("🟢 텔레그램 통신 세션 발송 성공")
+    except Exception as e: 
+        print(f"❌ 텔레그램 발송 세션 실패: {e}")
+
+def get_decision_text(ma_gap, current_price, buy_price, pullback_price):
+    if ma_gap >= 20: return f"❌ 초과열\n대기: {pullback_price:,}원 부근 눌림 (ATR)"
+    elif ma_gap >= 15: return f"⚠️ 과열 주의\n대기: {buy_price:,}원 부근 눌림"
+    else: return "🟢 공략 1순위 구간" if current_price <= buy_price else "🟡 진입선 대기"
 
 def format_scan_messages(scan_result):
     market = scan_result.get("market", {})
@@ -22,7 +47,6 @@ def format_scan_messages(scan_result):
     if regime == "PANIC": msg1 += f"패닉장 탈락: {stats.get('fail_panic', 0)}개\n"
     msg1 += "=" * 20 + "\n\n"
     
-    # [수정] P2: 최종 후보가 0개일 경우, 시장 방어 및 계좌 보존 전략 자동 도출
     if not candidates:
         msg1 += "🔥 <b>오늘의 시장 주도 후보 : 없음</b>\n\n"
         msg1 += "🚨 <b>[전술 지침] 자산 보호 및 공격 보류</b>\n"
@@ -86,7 +110,7 @@ def format_scan_messages(scan_result):
             msg2 += "⭐ <b>관심 후보</b>\n\n"
             for c in watch_interest:
                 abs_rank = all_candidates.index(c) + 1
-                msg2 += f"⭐ {abs_rank}位. <b>{escape(c['name'])}</b>\n"
+                msg2 += f"⭐ {abs_rank}위. <b>{escape(c['name'])}</b>\n"
                 msg2 += f"점수 {c['score']} | Prime {c.get('prime_score', 0)} | 조건 {c.get('cond_count', 0)}/5\n\n"
         if watch_observe:
             msg2 += "👀 <b>관찰 후보</b>\n\n"
@@ -94,6 +118,7 @@ def format_scan_messages(scan_result):
                 abs_rank = all_candidates.index(c) + 1
                 msg2 += f"{abs_rank}위. <b>{escape(c['name'])}</b>\n"
                 msg2 += f"점수 {c['score']} | 등락 +{c['chg']}%\n\n"
+    
     messages = [msg1]
     if msg2.strip(): messages.append(msg2)
     return messages
