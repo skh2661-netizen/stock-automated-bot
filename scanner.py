@@ -59,7 +59,7 @@ def get_krx_retry():
     except Exception as e:
         print(f"🚨 네이버 우회 실패: {e}")
 
-    print("🔄 [폴백 3] 로컬 SQLite 캐시 복원")
+    print("🔄 [폴백 3] 로컬 SQLite 캐시 복 복원")
     if os.path.exists(DB_PATH):
         try:
             conn = sqlite3.connect(DB_PATH)
@@ -113,11 +113,7 @@ async def scan_market(run_type="OPEN_SCAN"):
     if krx.empty or "Code" not in krx.columns:
         return {
             "market": {"kospi": kp_1d, "kosdaq": kd_1d, "bias": bias_text, "regime": regime, "mode": run_type, "risk_pct": risk_level},
-            "stats": {
-                "total": 0, "pass1": 0, "final": 0, 
-                "fail_price": 0, "fail_amount": 0, "fail_change": 0, 
-                "fail_ma20": 0, "fail_vol": 0, "fail_score": 0, "fail_heat": 0, "fail_panic": 0
-            },
+            "stats": {"total": 0, "pass1": 0, "final": 0, "fail_price": 0, "fail_amount": 0, "fail_change": 0, "fail_ma20": 0, "fail_vol": 0, "fail_score": 0, "fail_heat": 0, "fail_panic": 0, "fail_mode": 0},
             "candidates": []
         }
         
@@ -126,24 +122,34 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx['Amount'] = (krx['Close'] * krx['Volume']).fillna(0)
     krx['ChangesRatio'] = pd.to_numeric(krx['ChangesRatio'], errors='coerce').fillna(0)
     
-    # 1차 시장 전체 유니버스 단계 탈락자 전수 계측
     total_universe = len(krx)
     fail_price = len(krx[krx['Close'] < MIN_PRICE])
     fail_amount = len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] < MIN_AMOUNT)])
-    fail_change = len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & ((krx['ChangesRatio'] < 3) | (krx['ChangesRatio'] > 18))])
     
-    candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
-                     (krx['ChangesRatio'] >= 3) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
+    # [교정] 유니버스 생성 분리 및 Deadlock 해소 (1~18%)
+    if run_type == "TEST":
+        fail_change = 0
+        candidates = krx[(krx['Close'] >= MIN_PRICE) & 
+                         (krx['Amount'] >= MIN_AMOUNT)].sort_values("Amount", ascending=False).head(150)
+    else:
+        fail_change = len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & ((krx['ChangesRatio'] < 1) | (krx['ChangesRatio'] > 18))])
+        candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
+                         (krx['ChangesRatio'] >= 1) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
     
     results = []
-    fail_ma20, fail_vol, fail_score, fail_heat, fail_panic = 0, 0, 0, 0, 0
+    fail_ma20, fail_vol, fail_score, fail_heat, fail_panic, fail_mode = 0, 0, 0, 0, 0, 0
     
     for _, row in candidates.iterrows():
         changes = float(row['ChangesRatio'])
+        
+        # [교정] 모드별 탈락 통제 및 CLOSE_BET 구간 (1~7%) 반영
         if run_type != "TEST":
-            if run_type == "PRE_OPEN" and not (0 <= changes <= 7): continue
-            if run_type == "BREAKOUT_1" and not (3 <= changes <= 12): continue
-            if run_type == "CLOSE_BET" and not (1 <= changes <= 5): continue
+            if run_type == "PRE_OPEN" and not (0 <= changes <= 7): 
+                fail_mode += 1; continue
+            if run_type == "BREAKOUT_1" and not (3 <= changes <= 12): 
+                fail_mode += 1; continue
+            if run_type == "CLOSE_BET" and not (1 <= changes <= 7): 
+                fail_mode += 1; continue
 
         code = str(row['Code']).zfill(6)
         hist = fdr.DataReader(code, start_date)
@@ -156,7 +162,11 @@ async def scan_market(run_type="OPEN_SCAN"):
         vr = curr['Volume'] / vol_ma
         ma_gap = (curr['Close'] - ma20) / ma20 * 100
         
-        fail_ma20 += 1 if curr['Close'] < ma20 else 0
+        # [교정] MA20 위치 추출 (강제 삭제 안함)
+        is_below_ma20 = curr['Close'] < ma20
+        if is_below_ma20:
+            fail_ma20 += 1
+            
         market_penalty = abs(min(kp_1d, 0))
         rs_1d = changes - kp_1d - (market_penalty * 0.5)
         stock_5d = ((curr['Close'] / hist['Close'].iloc[-6]) - 1) * 100
@@ -189,7 +199,8 @@ async def scan_market(run_type="OPEN_SCAN"):
         shadow_ratio = (curr['High'] - curr['Close']) / (curr['High'] - curr['Low'] + 0.0001)
         cp_val = (curr['Close'] - curr['Low']) / (curr['High'] - curr['Low'] + 0.0001) * 100
         
-        score = calculate_score(row['Amount'], vr, changes, shadow_ratio, ma_gap, cp_val, rs_1d, risk_level)
+        # [교정] 스코어 엔진에 MA20 페널티 플래그 전달
+        score = calculate_score(row['Amount'], vr, changes, shadow_ratio, ma_gap, cp_val, rs_1d, risk_level, is_below_ma20=is_below_ma20)
         
         if run_type == "PRE_OPEN": score += 5 if ma_gap < 5 else 0
         if run_type == "BREAKOUT_1" and vr >= 2: score += 5
@@ -209,7 +220,6 @@ async def scan_market(run_type="OPEN_SCAN"):
         prime_score = get_prime_score(rs_1d, rs_5d, rs_20d, amount_strength, defense_passed)
         final_rank = (prime_score * 0.45) + (score * 0.45) + ((100 if risk_level == 1 else 50) * 0.10)
         
-        # TEST 엔진 검증을 위한 컷오프 임계점 유연화 (30점 적용)
         cut_score = 30 if run_type == "TEST" else 55
         if score < cut_score:
             fail_score += 1; continue
@@ -268,7 +278,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         "stats": {
             "total": total_universe, "pass1": len(candidates), "final": len(results),
             "fail_price": fail_price, "fail_amount": fail_amount, "fail_change": fail_change,
-            "fail_ma20": fail_ma20, "fail_vol": fail_vol, "fail_score": fail_score, "fail_heat": fail_heat, "fail_panic": fail_panic
+            "fail_ma20": fail_ma20, "fail_vol": fail_vol, "fail_score": fail_score, "fail_heat": fail_heat, "fail_panic": fail_panic, "fail_mode": fail_mode
         },
         "candidates": results
     }
