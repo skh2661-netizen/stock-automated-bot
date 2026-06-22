@@ -43,6 +43,16 @@ def format_scan_messages(scan_result):
     
     msg1 = f"🎯 <b>V8.4.24 퀀트 시그널</b>\n\n[{mode_raw}]\n👉 {mode_text_map.get(mode_raw, mode_raw)}\n\n"
     msg1 += f"🌎 <b>시장 해석 [{regime}]</b>\n코스피: {kp_str} | 코스닥: {kd_str}\n해석: {market.get('bias', '보합')}\n\n"
+    
+    # [교정] 데이터 수집 실패 시 비상 경고 최우선 출력
+    if stats.get('data_error', False):
+        msg1 += "🚨 <b>데이터 공급 장애 감지</b>\n"
+        msg1 += "- KRX Universe: 0개\n"
+        msg1 += "- 필터 분석 불가\n"
+        msg1 += "- 매매 판단 보류\n"
+        msg1 += "=" * 20 + "\n"
+        return [msg1]
+        
     msg1 += f"📊 <b>스캔 결과</b>\n전체 종목: {stats.get('total', 0)}개 -> 1차 통과: {stats.get('pass1', 0)}개 -> 최종 후보: {stats.get('final', 0)}개\n"
     msg1 += "=" * 20 + "\n\n"
     
@@ -62,7 +72,6 @@ def format_scan_messages(scan_result):
         msg1 += f"- 거래대금 부족: {stats.get('fail_amount', 0)}개\n"
         msg1 += f"- 상승률 조건 미달: {stats.get('fail_change', 0)}개\n\n"
         
-        # [교정] 지시하신 탈락 상세 분석 포맷 적용
         msg1 += "📉 <b>필터 단계별 탈락 상세 분석</b>\n"
         msg1 += f"- 운영 모드 조건 탈락: {stats.get('fail_mode', 0)}개\n"
         msg1 += f"- MA20 위험 구간: {stats.get('fail_ma20', 0)}개\n"
