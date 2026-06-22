@@ -55,7 +55,6 @@ def get_conviction_score(rs, amount, vr, risk_level, ma_gap, cp):
     if ma_gap >= 20: score -= 10
     if cp >= 80: score += 3
     
-    # 38점 만점 기준 100점 정규화
     normalized = int(max(score, 0) * 100 / 38)
     return min(normalized, 100)
 
@@ -70,7 +69,7 @@ def get_prime_score(rs1, rs5, rs20, amount_strength, defense_passed):
     
     return min(int(score), 100)
 
-def calculate_score(amount, vr, c, s_ratio, g, cp, rs, risk_level):
+def calculate_score(amount, vr, c, s_ratio, g, cp, rs, risk_level, is_below_ma20=False):
     raw = (money_score(amount) +
            volume_score(vr) +
            momentum_score(c) +
@@ -78,6 +77,11 @@ def calculate_score(amount, vr, c, s_ratio, g, cp, rs, risk_level):
            trend_score(g) +
            close_position_score(cp) +
            rs_score(rs))
+           
+    # [교정] MA20 미달 시 위험 가점(페널티 -10) 부여
+    if is_below_ma20:
+        raw -= 10
+        
     if risk_level == 1: raw -= 5
     elif risk_level == 2: raw -= 20
     return max(min(int(raw), 100), 0)
