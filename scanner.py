@@ -25,11 +25,20 @@ def get_krx_retry():
     for i in range(2):
         try:
             krx = fdr.StockListing("KRX")
-            if not krx.empty and "Symbol" in krx.columns:
-                krx.rename(columns={"ChagesRatio": "ChangesRatio", "ChgRate": "ChangesRatio"}, inplace=True)
-                krx = krx.loc[:, ~krx.columns.duplicated()].reset_index(drop=True)
-                krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0)
-                return krx
+            if not krx.empty:
+                print(f"🐛 [DEBUG] KRX columns: {krx.columns.tolist()}")
+                
+                # [교정] FDR 컬럼명 다형성 완벽 대응
+                if "Symbol" in krx.columns:
+                    krx.rename(columns={"Symbol": "Code"}, inplace=True)
+                elif "ISU_CD" in krx.columns:
+                    krx.rename(columns={"ISU_CD": "Code"}, inplace=True)
+                    
+                if "Code" in krx.columns:
+                    krx.rename(columns={"ChagesRatio": "ChangesRatio", "ChgRate": "ChangesRatio"}, inplace=True)
+                    krx = krx.loc[:, ~krx.columns.duplicated()].reset_index(drop=True)
+                    krx["ChangesRatio"] = pd.to_numeric(krx["ChangesRatio"], errors="coerce").fillna(0)
+                    return krx
         except Exception as e:
             print(f"⚠️ FDR KRX 수집 지연: {e}")
             time.sleep(1)
@@ -55,11 +64,12 @@ def get_krx_retry():
             df['ChangesRatio'] = pd.to_numeric(df['ChangesRatio'], errors='coerce').fillna(0)
             df_list.append(df)
             
+        print(f"🐛 [DEBUG] NAVER RESULT: {len(df_list)} markets fetched")
         if df_list: return pd.concat(df_list, ignore_index=True)
     except Exception as e:
         print(f"🚨 네이버 우회 실패: {e}")
 
-    print("🔄 [폴백 3] 로컬 SQLite 캐시 복 복원")
+    print("🔄 [폴백 3] 로컬 SQLite 캐시 복원")
     if os.path.exists(DB_PATH):
         try:
             conn = sqlite3.connect(DB_PATH)
@@ -110,10 +120,12 @@ async def scan_market(run_type="OPEN_SCAN"):
     regime, bias_text = get_market_regime(kp_1d, kd_1d)
     
     krx = remove_bad_targets(get_krx_retry())
+    
+    # [교정] 데이터 원천 유실 시 텔레그램 통신을 위한 data_error 플래그 신설
     if krx.empty or "Code" not in krx.columns:
         return {
             "market": {"kospi": kp_1d, "kosdaq": kd_1d, "bias": bias_text, "regime": regime, "mode": run_type, "risk_pct": risk_level},
-            "stats": {"total": 0, "pass1": 0, "final": 0, "fail_price": 0, "fail_amount": 0, "fail_change": 0, "fail_ma20": 0, "fail_vol": 0, "fail_score": 0, "fail_heat": 0, "fail_panic": 0, "fail_mode": 0},
+            "stats": {"total": 0, "pass1": 0, "final": 0, "fail_price": 0, "fail_amount": 0, "fail_change": 0, "fail_ma20": 0, "fail_vol": 0, "fail_score": 0, "fail_heat": 0, "fail_panic": 0, "fail_mode": 0, "data_error": True},
             "candidates": []
         }
         
@@ -123,10 +135,11 @@ async def scan_market(run_type="OPEN_SCAN"):
     krx['ChangesRatio'] = pd.to_numeric(krx['ChangesRatio'], errors='coerce').fillna(0)
     
     total_universe = len(krx)
+    print(f"🐛 [DEBUG] Total universe count after cleaning: {total_universe}")
+    
     fail_price = len(krx[krx['Close'] < MIN_PRICE])
     fail_amount = len(krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] < MIN_AMOUNT)])
     
-    # [교정] 유니버스 생성 분리 및 Deadlock 해소 (1~18%)
     if run_type == "TEST":
         fail_change = 0
         candidates = krx[(krx['Close'] >= MIN_PRICE) & 
@@ -142,7 +155,6 @@ async def scan_market(run_type="OPEN_SCAN"):
     for _, row in candidates.iterrows():
         changes = float(row['ChangesRatio'])
         
-        # [교정] 모드별 탈락 통제 및 CLOSE_BET 구간 (1~7%) 반영
         if run_type != "TEST":
             if run_type == "PRE_OPEN" and not (0 <= changes <= 7): 
                 fail_mode += 1; continue
@@ -162,7 +174,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         vr = curr['Volume'] / vol_ma
         ma_gap = (curr['Close'] - ma20) / ma20 * 100
         
-        # [교정] MA20 위치 추출 (강제 삭제 안함)
+        # [교정] MA20 위치는 통계 카운팅 및 점수 엔진 페널티로만 활용 (강제 삭제 금지)
         is_below_ma20 = curr['Close'] < ma20
         if is_below_ma20:
             fail_ma20 += 1
@@ -199,7 +211,6 @@ async def scan_market(run_type="OPEN_SCAN"):
         shadow_ratio = (curr['High'] - curr['Close']) / (curr['High'] - curr['Low'] + 0.0001)
         cp_val = (curr['Close'] - curr['Low']) / (curr['High'] - curr['Low'] + 0.0001) * 100
         
-        # [교정] 스코어 엔진에 MA20 페널티 플래그 전달
         score = calculate_score(row['Amount'], vr, changes, shadow_ratio, ma_gap, cp_val, rs_1d, risk_level, is_below_ma20=is_below_ma20)
         
         if run_type == "PRE_OPEN": score += 5 if ma_gap < 5 else 0
@@ -278,7 +289,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         "stats": {
             "total": total_universe, "pass1": len(candidates), "final": len(results),
             "fail_price": fail_price, "fail_amount": fail_amount, "fail_change": fail_change,
-            "fail_ma20": fail_ma20, "fail_vol": fail_vol, "fail_score": fail_score, "fail_heat": fail_heat, "fail_panic": fail_panic, "fail_mode": fail_mode
+            "fail_ma20": fail_ma20, "fail_vol": fail_vol, "fail_score": fail_score, "fail_heat": fail_heat, "fail_panic": fail_panic, "fail_mode": fail_mode, "data_error": False
         },
         "candidates": results
     }
