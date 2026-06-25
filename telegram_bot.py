@@ -13,7 +13,6 @@ async def send_message(text):
     try: await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML')
     except Exception as e: print(f"❌ 텔레그램 발송 실패: {e}")
 
-# [V8.7 자체 방어] 극강의 Compact UI 도입 (가독성 훼손 원천 차단)
 def format_holding_report(holding_results):
     if not holding_results: return ["📌 <b>HOLDING REPORT</b>\n\n등록된 종목 없음"]
         
@@ -27,11 +26,13 @@ def format_holding_report(holding_results):
 def format_scan_messages(scan_result):
     stats = scan_result.get("stats", {})
     candidates = scan_result.get("candidates", [])
-    mode_raw = scan_result.get("market", {}).get("mode", "UNKNOWN")
+    market = scan_result.get("market", {})
+    mode_raw = market.get("mode", "UNKNOWN")
     
     if stats.get('data_error', False): return ["🚨 데이터 공급 장애 감지"]
 
-    msg1 = f"🎯 <b>V8.7 퀀트 시그널 ({mode_raw})</b>\n\n"
+    msg1 = f"🎯 <b>V8.7 퀀트 시그널 ({mode_raw})</b>\n"
+    msg1 += f"🌎 시장: KP {market.get('kospi', 0)}% / KQ {market.get('kosdaq', 0)}%\n\n"
     
     leaders = [c for c in candidates if c['type'] == 'LEADER']
     entries = [c for c in candidates if c['type'] == 'ENTRY']
