@@ -54,7 +54,7 @@ def evaluate_exit(corp_score, chart_score, mkt_score, pnl_pct, is_below_ma20, do
     if pnl_pct <= -20 or (is_below_ma20 and pnl_pct <= -10): exit_score += 3
     elif is_below_ma20: exit_score += 2
     
-    # [V8.7 자체 방어] 우량주 골파기 방어 (Grace Period 적용)
+    # [V8.7] 우량주 골파기 털림 방어 (Grace Period)
     if corp_score >= 80 and exit_score >= 6:
         exit_score = 5 
         
