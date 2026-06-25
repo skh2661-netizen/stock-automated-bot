@@ -4,7 +4,6 @@ import asyncio, datetime, pytz, time
 import requests
 import sqlite3
 import os
-import traceback
 from scoring import calculate_breakout_score, calculate_close_score, calculate_preopen_score, get_conviction_score, get_prime_score
 from database import save_candidate, DB_PATH
 
@@ -77,13 +76,8 @@ def get_market_indices():
     except: return 0.0, 0.0
 
 async def scan_market(run_type="OPEN_SCAN"):
-    # [자체 방어] main.py 붕괴를 막기 위한 최상위 Fail-safe 블록
     try:
-        kst = pytz.timezone("Asia/Seoul")
-        start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
-        risk_level = 1
         kp_1d, kd_1d = get_market_indices()
-        
         krx = remove_bad_targets(get_krx_retry())
         if krx.empty or "Code" not in krx.columns:
             return {"market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d}, "stats": {"data_error": True}, "candidates": []}
@@ -93,96 +87,46 @@ async def scan_market(run_type="OPEN_SCAN"):
         krx['Amount'] = (krx['Close'] * krx['Volume']).fillna(0)
         krx['ChangesRatio'] = pd.to_numeric(krx['ChangesRatio'], errors='coerce').fillna(0)
         
-        total_universe = len(krx)
-        if run_type == "TEST":
-            candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT)].sort_values("Amount", ascending=False).head(150)
-        else:
-            candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & 
-                             (krx['ChangesRatio'] >= 1) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
-        
+        candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & (krx['ChangesRatio'] >= 1) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
         results = []
         
         for _, row in candidates.iterrows():
             changes = float(row['ChangesRatio'])
-            code = str(row['Code']).zfill(6)
-            
-            hist = fdr.DataReader(code, start_date)
+            hist = fdr.DataReader(str(row['Code']).zfill(6), datetime.datetime.now().strftime("%Y-%m-%d"))
             if len(hist) < 25: continue
             
             curr = hist.iloc[-1]
+            ma5 = hist['Close'].rolling(5).mean().iloc[-1]
             ma20 = hist['Close'].rolling(20).mean().iloc[-1]
-            vol_ma = hist['Volume'].rolling(20).mean().iloc[-1]
-            vr = curr['Volume'] / (vol_ma + 1)
+            vr = curr['Volume'] / (hist['Volume'].rolling(20).mean().iloc[-1] + 1)
             ma_gap = (curr['Close'] - ma20) / ma20 * 100
-            shadow_ratio = (curr['High'] - curr['Close']) / (curr['High'] - curr['Low'] + 0.0001)
             cp_val = (curr['Close'] - curr['Low']) / (curr['High'] - curr['Low'] + 0.0001) * 100
             
-            if run_type == "CLOSE_BET":
-                is_mega_cap = row['Amount'] >= 100_000_000_000
-                is_solid_candle = cp_val >= 70
-                if is_mega_cap and is_solid_candle: heat_limit = 35 
-                else: heat_limit = 25 
-            else:
-                heat_limit = 35 if row['Amount'] >= 100_000_000_000 else 25
-                
-            is_overheated = ma_gap > heat_limit
-            rs_1d = changes - kp_1d
+            # [V8.8.4] 방어: 가변 손절 ATR 연산
+            tr = pd.concat([hist['High'] - hist['Low'], (hist['High'] - hist['Close'].shift(1)).abs(), (hist['Low'] - hist['Close'].shift(1)).abs()], axis=1).max(axis=1)
+            atr = tr.rolling(14).mean().iloc[-1]
+            volatility_stop = int(curr['Close'] - (atr * 1.5))
             
-            hist['Amt'] = hist['Close'] * hist['Volume']
-            amount_prev20 = hist['Amt'].iloc[-21:-1].mean() if len(hist) >= 21 else hist['Amt'].head(20).mean()
-            amount_strength = min(round((hist['Amt'].tail(6).iloc[:-1].mean() if len(hist) >= 6 else 0) / (amount_prev20 + 1), 2), 5.0)
+            # [V8.8.4] 방어: 5MA 추세 확인
+            is_ma5_rising = ma5 > hist['Close'].rolling(5).mean().shift(1).iloc[-1]
             
-            norm_conviction = get_conviction_score(rs_1d, row['Amount'], vr, risk_level, ma_gap, cp_val)
-            prime_score = get_prime_score(rs_1d, rs_1d, rs_1d, amount_strength, True)
-            
-            if run_type == "PRE_OPEN": score = calculate_preopen_score(row['Amount'], vr, changes, shadow_ratio, cp_val, rs_1d, risk_level)
-            elif "BREAKOUT" in run_type: score = calculate_breakout_score(row['Amount'], vr, changes, rs_1d, risk_level)
-            else: score = calculate_close_score(row['Amount'], vr, changes, shadow_ratio, 0, cp_val, rs_1d, risk_level, ma_gap)
-                
-            heat_score = max(0, 100 - max(ma_gap, 0))
-            prime_final = (prime_score * 0.5) + (score * 0.3) + (heat_score * 0.2)
+            prime_score = get_prime_score(changes, changes, changes, 1.0, True)
+            score = calculate_close_score(row['Amount'], vr, changes, 0, 0, cp_val, changes, 1, ma_gap)
             
             candidate_type = "NONE"
-            if is_overheated and prime_score >= 70:
-                candidate_type = "WATCH" 
-            elif not is_overheated and score >= 55 and ma_gap <= 15:
-                candidate_type = "ENTRY"
-            elif prime_score >= 75:
-                candidate_type = "LEADER" if ma_gap <= 15 else "WATCH"
-            elif not is_overheated and score >= 55 and ma_gap > 15:
-                candidate_type = "WATCH"
+            if (score >= 80) and (prime_score >= 85) and (ma_gap <= 15) and is_ma5_rising: candidate_type = "STRONG_BUY"
+            elif (score >= 65) and (ma_gap <= 15) and is_ma5_rising: candidate_type = "BUY"
+            elif (score >= 60) and (15 < ma_gap <= 25): candidate_type = "SETUP"
+            elif (prime_score >= 70) and (ma_gap > 25): candidate_type = "WATCH"
 
-            if candidate_type == "NONE" and run_type != "TEST": continue
-
-            if ma_gap > 20: buy_p = int(curr['Close'] * 0.92)
-            elif ma_gap > 10: buy_p = int(curr['Close'] * 0.96)
-            else: buy_p = int(curr['Close'] * 0.985)
+            if candidate_type == "NONE": continue
                 
             results.append({
-                "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
-                "chg": round(changes, 2), "buy_p": buy_p, "ma_gap": round(ma_gap, 2), 
-                "rs": round(rs_1d, 2), "amount": int(row['Amount']),
-                "conviction": norm_conviction, "prime_score": prime_score,
-                "prime_final": round(prime_final, 1),
-                "type": candidate_type, "is_overheated": is_overheated
+                "code": str(row['Code']).zfill(6), "name": row['Name'], "score": score, "price": int(curr['Close']),
+                "buy_p": int(curr['Close']*0.985), "stop_p": max(int(curr['Close']*0.95), volatility_stop),
+                "t1": int(curr['Close']*1.05), "t2": int(curr['Close']*1.10),
+                "ma_gap": round(ma_gap, 2), "prime_score": prime_score, "type": candidate_type
             })
-                
-        type_priority = {"ENTRY": 3, "LEADER": 2, "WATCH": 1, "NONE": 0}
-        results = sorted(results, key=lambda x: (type_priority.get(x['type'], 0), x['prime_final'], x['amount']), reverse=True)[:MAX_CANDIDATES]
-        
-        return {
-            "market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d},
-            "stats": {"total": total_universe, "final": len(results), "data_error": False},
-            "candidates": results
-        }
-        
-    except Exception as e:
-        print(f"🚨 [scan_market 내부 치명적 오류 방어]: {e}")
-        # 오류 상세 내용 출력 (디버깅용)
-        traceback.print_exc()
-        # main.py 파이프라인 붕괴를 막기 위해 빈 딕셔너리 안전 반환
-        return {
-            "market": {"mode": run_type, "kospi": 0, "kosdaq": 0},
-            "stats": {"total": 0, "final": 0, "data_error": True},
-            "candidates": []
-        }
+            
+        return {"market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d}, "stats": {"total": total_universe, "final": len(results), "data_error": False}, "candidates": results}
+    except Exception: return {"stats": {"data_error": True}, "candidates": []}
