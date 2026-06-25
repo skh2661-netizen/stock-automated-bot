@@ -139,35 +139,26 @@ async def scan_market(run_type="OPEN_SCAN"):
         heat_score = max(0, 100 - max(ma_gap, 0))
         prime_final = (prime_score * 0.5) + (score * 0.3) + (heat_score * 0.2)
         
+        # [V8.8.1] ENTRY 타점 엄격 방어 로직 (ma_gap <= 15 강제)
         candidate_type = "NONE"
-        if is_overheated and prime_score >= 70: candidate_type = "WATCH" 
-        elif not is_overheated and score >= 55: candidate_type = "ENTRY"
-        elif prime_score >= 75: candidate_type = "LEADER" 
+        if is_overheated and prime_score >= 70:
+            candidate_type = "WATCH" 
+        elif not is_overheated and score >= 55 and ma_gap <= 15:
+            candidate_type = "ENTRY"
+        elif prime_score >= 75:
+            # 수급 대장이지만 과열일 경우 WATCH로 강등
+            candidate_type = "LEADER" if ma_gap <= 15 else "WATCH"
+        elif not is_overheated and score >= 55 and ma_gap > 15:
+            candidate_type = "WATCH"
 
         if candidate_type == "NONE" and run_type != "TEST": continue
 
-        # [V8.8] 과열도 기반 동적 매수 타점 교정 (-8% ~ -1.5%)
-        if ma_gap > 20:
-            buy_p = int(curr['Close'] * 0.92)
-        elif ma_gap > 10:
-            buy_p = int(curr['Close'] * 0.96)
-        else:
-            buy_p = int(curr['Close'] * 0.985)
+        if ma_gap > 20: buy_p = int(curr['Close'] * 0.92)
+        elif ma_gap > 10: buy_p = int(curr['Close'] * 0.96)
+        else: buy_p = int(curr['Close'] * 0.985)
             
         results.append({
             "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
             "chg": round(changes, 2), "buy_p": buy_p, "ma_gap": round(ma_gap, 2), 
             "rs": round(rs_1d, 2), "amount": int(row['Amount']),
-            "conviction": norm_conviction, "prime_score": prime_score,
-            "prime_final": round(prime_final, 1),
-            "type": candidate_type, "is_overheated": is_overheated
-        })
-            
-    type_priority = {"ENTRY": 3, "LEADER": 2, "WATCH": 1, "NONE": 0}
-    results = sorted(results, key=lambda x: (type_priority.get(x['type'], 0), x['prime_final'], x['amount']), reverse=True)[:MAX_CANDIDATES]
-    
-    return {
-        "market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d},
-        "stats": {"total": total_universe, "final": len(results), "data_error": False},
-        "candidates": results
-    }
+            "conviction": norm_conviction, "prime_score": prime_score
