@@ -114,6 +114,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         shadow_ratio = (curr['High'] - curr['Close']) / (curr['High'] - curr['Low'] + 0.0001)
         cp_val = (curr['Close'] - curr['Low']) / (curr['High'] - curr['Low'] + 0.0001) * 100
         
+        # Dynamic Heat Band 적용
         if run_type == "CLOSE_BET":
             is_mega_cap = row['Amount'] >= 100_000_000_000
             is_solid_candle = cp_val >= 70
@@ -139,26 +140,11 @@ async def scan_market(run_type="OPEN_SCAN"):
         heat_score = max(0, 100 - max(ma_gap, 0))
         prime_final = (prime_score * 0.5) + (score * 0.3) + (heat_score * 0.2)
         
-        # [V8.8.1] ENTRY 타점 엄격 방어 로직 (ma_gap <= 15 강제)
+        # V8.8.1 ENTRY 타점 엄격 방어 로직 (ma_gap <= 15 강제)
         candidate_type = "NONE"
         if is_overheated and prime_score >= 70:
             candidate_type = "WATCH" 
         elif not is_overheated and score >= 55 and ma_gap <= 15:
             candidate_type = "ENTRY"
         elif prime_score >= 75:
-            # 수급 대장이지만 과열일 경우 WATCH로 강등
             candidate_type = "LEADER" if ma_gap <= 15 else "WATCH"
-        elif not is_overheated and score >= 55 and ma_gap > 15:
-            candidate_type = "WATCH"
-
-        if candidate_type == "NONE" and run_type != "TEST": continue
-
-        if ma_gap > 20: buy_p = int(curr['Close'] * 0.92)
-        elif ma_gap > 10: buy_p = int(curr['Close'] * 0.96)
-        else: buy_p = int(curr['Close'] * 0.985)
-            
-        results.append({
-            "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
-            "chg": round(changes, 2), "buy_p": buy_p, "ma_gap": round(ma_gap, 2), 
-            "rs": round(rs_1d, 2), "amount": int(row['Amount']),
-            "conviction": norm_conviction, "prime_score": prime_score
