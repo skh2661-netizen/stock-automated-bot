@@ -114,14 +114,11 @@ async def scan_market(run_type="OPEN_SCAN"):
         shadow_ratio = (curr['High'] - curr['Close']) / (curr['High'] - curr['Low'] + 0.0001)
         cp_val = (curr['Close'] - curr['Low']) / (curr['High'] - curr['Low'] + 0.0001) * 100
         
-        # [V8.7] 대장주 2차 랠리 손실 방어 (Dynamic Heat Band 적용)
         if run_type == "CLOSE_BET":
             is_mega_cap = row['Amount'] >= 100_000_000_000
             is_solid_candle = cp_val >= 70
-            if is_mega_cap and is_solid_candle:
-                heat_limit = 35 
-            else:
-                heat_limit = 25 
+            if is_mega_cap and is_solid_candle: heat_limit = 35 
+            else: heat_limit = 25 
         else:
             heat_limit = 35 if row['Amount'] >= 100_000_000_000 else 25
             
@@ -149,7 +146,14 @@ async def scan_market(run_type="OPEN_SCAN"):
 
         if candidate_type == "NONE" and run_type != "TEST": continue
 
-        buy_p = int(curr['Close']*0.985)
+        # [V8.8] 과열도 기반 동적 매수 타점 교정 (-8% ~ -1.5%)
+        if ma_gap > 20:
+            buy_p = int(curr['Close'] * 0.92)
+        elif ma_gap > 10:
+            buy_p = int(curr['Close'] * 0.96)
+        else:
+            buy_p = int(curr['Close'] * 0.985)
+            
         results.append({
             "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
             "chg": round(changes, 2), "buy_p": buy_p, "ma_gap": round(ma_gap, 2), 
