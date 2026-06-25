@@ -1,6 +1,6 @@
 import FinanceDataReader as fdr
 import pandas as pd
-import asyncio, datetime, pytz, time, math
+import asyncio, datetime, pytz, time
 import requests
 import sqlite3
 import os
@@ -10,17 +10,15 @@ from database import save_candidate, DB_PATH
 
 MIN_PRICE, MIN_AMOUNT, MAX_CANDIDATES = 1000, 15_000_000_000, 15
 
-def safe_json_decode(res, channel_name):
+def safe_json_decode(res):
     try:
-        text_stripped = res.text.strip()
-        if text_stripped.startswith("<") or "text/html" in res.headers.get("Content-Type", "").lower():
-            return None
+        text = res.text.strip()
+        if text.startswith("<") or "text/html" in res.headers.get("Content-Type", "").lower(): return None
         return res.json()
-    except Exception:
-        return None
+    except Exception: return None
 
 def get_krx_retry():
-    for i in range(2):
+    for _ in range(2):
         try:
             krx = fdr.StockListing("KRX")
             if not krx.empty:
@@ -39,7 +37,7 @@ def get_krx_retry():
         for market in ["KOSPI", "KOSDAQ"]:
             url = f"https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2500"
             res = requests.get(url, headers=headers, timeout=5)
-            data = safe_json_decode(res, f"네이버-{market}")
+            data = safe_json_decode(res)
             if not data: continue
             stocks = data.get('stocks', [])
             if not stocks: continue
@@ -75,14 +73,14 @@ def get_market_indices():
         kosdaq = fdr.DataReader("KQ11", start_date)
         kp_1d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-2]) - 1) * 100
         kd_1d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-2]) - 1) * 100
-        return round(kp_1d, 2), round(kd_1d, 2), 0.0, 0.0, 0.0, 0.0
-    except: return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        return round(kp_1d, 2), round(kd_1d, 2)
+    except: return 0.0, 0.0
 
 async def scan_market(run_type="OPEN_SCAN"):
     kst = pytz.timezone("Asia/Seoul")
     start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
     risk_level = 1
-    kp_1d, kd_1d, _, _, _, _ = get_market_indices()
+    kp_1d, kd_1d = get_market_indices()
     
     krx = remove_bad_targets(get_krx_retry())
     if krx.empty or "Code" not in krx.columns:
@@ -117,45 +115,42 @@ async def scan_market(run_type="OPEN_SCAN"):
         shadow_ratio = (curr['High'] - curr['Close']) / (curr['High'] - curr['Low'] + 0.0001)
         cp_val = (curr['Close'] - curr['Low']) / (curr['High'] - curr['Low'] + 0.0001) * 100
         
-        # [V8.5] 대형주/중소형주 동적 과열 컷오프
-        heat_limit = 35 if row['Amount'] >= 100_000_000_000 else 25
+        # [V8.7 자체 방어] Dynamic Heat Band 적용 (대장주 20% 하드락 상실 방어)
+        if run_type == "CLOSE_BET":
+            is_mega_cap = row['Amount'] >= 100_000_000_000
+            is_solid_candle = cp_val >= 70
+            if is_mega_cap and is_solid_candle:
+                heat_limit = 35 
+            else:
+                heat_limit = 25 
+        else:
+            heat_limit = 35 if row['Amount'] >= 100_000_000_000 else 25
+            
         is_overheated = ma_gap > heat_limit
-
         rs_1d = changes - kp_1d
         
         hist['Amt'] = hist['Close'] * hist['Volume']
-        amount_ma5 = hist['Amt'].tail(6).iloc[:-1].mean() if len(hist) >= 6 else 0
         amount_prev20 = hist['Amt'].iloc[-21:-1].mean() if len(hist) >= 21 else hist['Amt'].head(20).mean()
-        amount_strength = min(round(amount_ma5 / (amount_prev20 + 1), 2), 5.0)
+        amount_strength = min(round((hist['Amt'].tail(6).iloc[:-1].mean() if len(hist) >= 6 else 0) / (amount_prev20 + 1), 2), 5.0)
         
         norm_conviction = get_conviction_score(rs_1d, row['Amount'], vr, risk_level, ma_gap, cp_val)
         prime_score = get_prime_score(rs_1d, rs_1d, rs_1d, amount_strength, True)
         
-        # [V8.5] 시간대별 스코어 엔진 독립 호출
-        if run_type == "PRE_OPEN":
-            score = calculate_preopen_score(row['Amount'], vr, changes, shadow_ratio, cp_val, rs_1d, risk_level)
-        elif "BREAKOUT" in run_type:
-            score = calculate_breakout_score(row['Amount'], vr, changes, rs_1d, risk_level)
-        else: # CLOSE_BET or TEST
-            score = calculate_close_score(row['Amount'], vr, changes, shadow_ratio, 0, cp_val, rs_1d, risk_level, ma_gap)
+        if run_type == "PRE_OPEN": score = calculate_preopen_score(row['Amount'], vr, changes, shadow_ratio, cp_val, rs_1d, risk_level)
+        elif "BREAKOUT" in run_type: score = calculate_breakout_score(row['Amount'], vr, changes, rs_1d, risk_level)
+        else: score = calculate_close_score(row['Amount'], vr, changes, shadow_ratio, 0, cp_val, rs_1d, risk_level, ma_gap)
             
-        # [V8.5] Prime Final (수급 + 점수 + 위치) 산출
         heat_score = max(0, 100 - max(ma_gap, 0))
         prime_final = (prime_score * 0.5) + (score * 0.3) + (heat_score * 0.2)
         
-        # [V8.5] 종목 성격(Type) 라벨링
         candidate_type = "NONE"
-        if is_overheated and prime_score >= 70:
-            candidate_type = "WATCH"  # 과열이나 수급 우수
-        elif not is_overheated and score >= 55:
-            candidate_type = "ENTRY"  # 실제 진입 가능 타점
-        elif prime_score >= 75:
-            candidate_type = "LEADER" # 시장 주도급
+        if is_overheated and prime_score >= 70: candidate_type = "WATCH" 
+        elif not is_overheated and score >= 55: candidate_type = "ENTRY"
+        elif prime_score >= 75: candidate_type = "LEADER" 
 
         if candidate_type == "NONE" and run_type != "TEST": continue
 
         buy_p = int(curr['Close']*0.985)
-        
         results.append({
             "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']),
             "chg": round(changes, 2), "buy_p": buy_p, "ma_gap": round(ma_gap, 2), 
@@ -165,7 +160,6 @@ async def scan_market(run_type="OPEN_SCAN"):
             "type": candidate_type, "is_overheated": is_overheated
         })
             
-    # 정렬: 타입 최우선 -> 프라임 파이널 -> 대금
     type_priority = {"ENTRY": 3, "LEADER": 2, "WATCH": 1, "NONE": 0}
     results = sorted(results, key=lambda x: (type_priority.get(x['type'], 0), x['prime_final'], x['amount']), reverse=True)[:MAX_CANDIDATES]
     
