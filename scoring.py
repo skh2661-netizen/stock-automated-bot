@@ -56,20 +56,16 @@ def get_prime_score(rs1, rs5, rs20, amount_strength, defense_passed):
     score += min(math.log1p(max(rs1, 0)) * 6.5, 20)
     score += min(math.log1p(max(rs5, 0)) * 6.5, 20)
     score += min(amount_strength * 15, 30)
-    
     if defense_passed: score += 20
     if rs20 >= 0: score += 10
-    
     return min(max(int(score), 0), 100)
 
-# [V8.5] 1. 장전(PRE_OPEN) 엔진
 def calculate_preopen_score(amount, vr, c, s_ratio, cp, rs, risk_level):
     raw = (money_score(amount) * 1.5) + (rs_score(rs) * 1.5) + (momentum_score(c)) + close_position_score(cp)
     if risk_level == 1: raw -= 5
     elif risk_level == 2: raw -= 20
     return max(min(int(raw), 100), 0)
 
-# [V8.5] 2. 장중 돌파(BREAKOUT) 엔진
 def calculate_breakout_score(amount, vr, c, rs, risk_level):
     vr_sc = min(vr * 10, 40)
     amt_sc = min(money_score(amount) * 1.2, 30)
@@ -80,7 +76,6 @@ def calculate_breakout_score(amount, vr, c, rs, risk_level):
     elif risk_level == 2: raw -= 20
     return max(min(int(raw), 100), 0)
 
-# [V8.5] 3. 종가(CLOSE_BET) 엔진
 def calculate_close_score(amount, vr, c, s_ratio, g, cp, rs, risk_level, ma_gap):
     ma_sc = max(25 - max(ma_gap, 0), 0)
     stab_sc = min(shadow_score(s_ratio) * 2.5, 25)
