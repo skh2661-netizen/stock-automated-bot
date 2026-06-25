@@ -5,7 +5,6 @@ import requests
 import sqlite3
 import os
 from scoring import calculate_breakout_score, calculate_close_score, calculate_preopen_score, get_conviction_score, get_prime_score
-from risk import get_market_risk
 from database import save_candidate, DB_PATH
 
 MIN_PRICE, MIN_AMOUNT, MAX_CANDIDATES = 1000, 15_000_000_000, 15
@@ -84,7 +83,7 @@ async def scan_market(run_type="OPEN_SCAN"):
     
     krx = remove_bad_targets(get_krx_retry())
     if krx.empty or "Code" not in krx.columns:
-        return {"market": {"mode": run_type}, "stats": {"data_error": True}, "candidates": []}
+        return {"market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d}, "stats": {"data_error": True}, "candidates": []}
         
     krx['Close'] = pd.to_numeric(krx['Close'], errors='coerce')
     krx['Volume'] = pd.to_numeric(krx['Volume'], errors='coerce')
@@ -115,7 +114,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         shadow_ratio = (curr['High'] - curr['Close']) / (curr['High'] - curr['Low'] + 0.0001)
         cp_val = (curr['Close'] - curr['Low']) / (curr['High'] - curr['Low'] + 0.0001) * 100
         
-        # [V8.7 자체 방어] Dynamic Heat Band 적용 (대장주 20% 하드락 상실 방어)
+        # [V8.7] 대장주 2차 랠리 손실 방어 (Dynamic Heat Band 적용)
         if run_type == "CLOSE_BET":
             is_mega_cap = row['Amount'] >= 100_000_000_000
             is_solid_candle = cp_val >= 70
@@ -164,7 +163,7 @@ async def scan_market(run_type="OPEN_SCAN"):
     results = sorted(results, key=lambda x: (type_priority.get(x['type'], 0), x['prime_final'], x['amount']), reverse=True)[:MAX_CANDIDATES]
     
     return {
-        "market": {"mode": run_type},
+        "market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d},
         "stats": {"total": total_universe, "final": len(results), "data_error": False},
         "candidates": results
     }
