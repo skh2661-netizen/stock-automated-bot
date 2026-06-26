@@ -89,7 +89,6 @@ async def scan_market(run_type="OPEN_SCAN"):
         start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
         kp_1d, kd_1d = get_market_indices()
         
-        # [수정] 폭락장 연동 동적 risk_level 적용
         if kp_1d <= -3.0 or kd_1d <= -4.0:
             risk_level = 3
         elif kp_1d <= -1.0 or kd_1d <= -1.5:
@@ -104,7 +103,7 @@ async def scan_market(run_type="OPEN_SCAN"):
         if kd_1d < -3.0: market_score -= 30
 
         if krx.empty or "Code" not in krx.columns:
-            return {"market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d, "market_score": market_score}, "stats": {"data_error": True}, "candidates": []}
+            return {"market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d, "market_score": market_score, "risk_level": risk_level}, "stats": {"data_error": True}, "candidates": []}
         
         krx['Close'], krx['Volume'] = pd.to_numeric(krx['Close'], errors='coerce'), pd.to_numeric(krx['Volume'], errors='coerce')
         krx['Amount'], krx['ChangesRatio'] = (krx['Close'] * krx['Volume']).fillna(0), pd.to_numeric(krx['ChangesRatio'], errors='coerce').fillna(0)
@@ -180,7 +179,7 @@ async def scan_market(run_type="OPEN_SCAN"):
                 traceback.print_exc()
         
         stats["final"] = len(results)
-        return {"market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d, "market_score": market_score}, "stats": stats, "candidates": results}
+        return {"market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d, "market_score": market_score, "risk_level": risk_level}, "stats": stats, "candidates": results}
     except Exception:
         traceback.print_exc()
-        return {"market": {"mode": run_type, "kospi": 0, "kosdaq": 0, "market_score": 100}, "stats": {"total": 0, "final": 0, "data_error": True}, "candidates": []}
+        return {"market": {"mode": run_type, "kospi": 0, "kosdaq": 0, "market_score": 100, "risk_level": 1}, "stats": {"total": 0, "final": 0, "data_error": True}, "candidates": []}
