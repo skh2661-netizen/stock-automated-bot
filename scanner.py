@@ -89,12 +89,9 @@ async def scan_market(run_type="OPEN_SCAN"):
         start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
         kp_1d, kd_1d = get_market_indices()
         
-        if kp_1d <= -3.0 or kd_1d <= -4.0:
-            risk_level = 3
-        elif kp_1d <= -1.0 or kd_1d <= -1.5:
-            risk_level = 2
-        else:
-            risk_level = 1
+        if kp_1d <= -3.0 or kd_1d <= -4.0: risk_level = 3
+        elif kp_1d <= -1.0 or kd_1d <= -1.5: risk_level = 2
+        else: risk_level = 1
 
         krx = remove_bad_targets(get_krx_retry())
         
@@ -142,19 +139,22 @@ async def scan_market(run_type="OPEN_SCAN"):
             
             conv = get_conviction_score(rs_1d, row['Amount'], curr['Volume']/(hist['Volume'].rolling(20).mean().iloc[-1]+1), risk_level, ma_gap, cp_val)
             
+            # [수정] 디테일한 Reason 판단
             reason = []
-            if is_overheated: reason.append("과열")
-            if ma_gap > 15: reason.append("20일선 이격")
-            if conv < 60: reason.append("확신 부족")
+            if is_overheated: reason.append("단기 과열 (추격 금지)")
+            if ma_gap > 15: reason.append("20일선 상방 이격 부담")
+            if ma_gap < -10: reason.append("20일선 하방 이격 (낙폭)")
+            if conv < 40: reason.append("단기 확신 부족 (수급 확인)")
+            elif conv < 60: reason.append("지속성 확인 필요 (눌림 대기)")
 
-            if is_overheated: candidate_type = "WATCH"
-            elif ps >= 75 and score >= 75 and ma_gap <= 15: candidate_type = "LEADER"
-            elif score >= 55 and ma_gap <= 15: candidate_type = "ENTRY"
-            elif score >= 55 and ma_gap > 15: candidate_type = "WATCH"
-            else: candidate_type = "WATCH"
+            # [수정] Candidate Type 판별 및 역배열(RECOVERY) 분리
+            if is_overheated: candidate_type = "⏳ 눌림 대기"
+            elif ps >= 75 and -10 <= ma_gap <= 15: candidate_type = "🔥 최우선 관찰"
+            elif score >= 55 and -10 <= ma_gap <= 15: candidate_type = "🟢 진입 후보"
+            elif score >= 55 and ma_gap < -10: candidate_type = "♻️ 낙폭 과대 (RECOVERY)"
+            else: candidate_type = "👀 관망"
 
             t1, t2, stop = calculate_trade_plan(curr['Close'], curr['Close']*0.98, score, ma_gap)
-            
             ma_factor = max(0, 100 - (ma_gap * 2))
             prime_final = round((ps * 0.35 + score * 0.30 + conv * 0.15 + ma_factor * 0.20), 1)
             
@@ -168,9 +168,14 @@ async def scan_market(run_type="OPEN_SCAN"):
             })
         
         results = list({x["code"]: x for x in results}.values())
-        results.sort(key=lambda x: ({"ENTRY": 3, "LEADER": 2, "WATCH": 1}.get(x['type'], 0), x['prime_final']), reverse=True)
+        
+        # [수정] 타입별 우선순위 정렬 (최우선 > 진입 > 낙폭 > 눌림 > 관망)
+        type_priority = {"🔥 최우선 관찰": 4, "🟢 진입 후보": 3, "♻️ 낙폭 과대 (RECOVERY)": 2, "⏳ 눌림 대기": 1, "👀 관망": 0}
+        results.sort(key=lambda x: (type_priority.get(x['type'], 0), x['prime_final']), reverse=True)
         results = results[:MAX_CANDIDATES]
-        if results: max(results, key=lambda x: x['prime_final'])['is_prime_leader'] = True
+        
+        # [수정] Prime Leader 선정 로직 강화 (종합점수 70% + 확신도 30%)
+        if results: max(results, key=lambda x: x['prime_final'] * 0.7 + x['conviction'] * 0.3)['is_prime_leader'] = True
         
         for i in results: 
             try:
