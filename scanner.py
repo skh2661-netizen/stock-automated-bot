@@ -139,43 +139,56 @@ async def scan_market(run_type="OPEN_SCAN"):
             
             conv = get_conviction_score(rs_1d, row['Amount'], curr['Volume']/(hist['Volume'].rolling(20).mean().iloc[-1]+1), risk_level, ma_gap, cp_val)
             
-            # [수정] 디테일한 Reason 판단
+            # [수정] 객관적 상태 분석 (Reason)
             reason = []
-            if is_overheated: reason.append("단기 과열 (추격 금지)")
+            if is_overheated: reason.append("단기 상승 확장 (신규 진입 효율 감소)")
             if ma_gap > 15: reason.append("20일선 상방 이격 부담")
-            if ma_gap < -10: reason.append("20일선 하방 이격 (낙폭)")
-            if conv < 40: reason.append("단기 확신 부족 (수급 확인)")
-            elif conv < 60: reason.append("지속성 확인 필요 (눌림 대기)")
+            if ma_gap < -10: reason.append("20일선 하방 이격 (낙폭 과대)")
+            if conv < 40: reason.append("수급 확인 단계")
+            elif conv < 60: reason.append("확신 형성 과정 (눌림 확인 필요)")
 
-            # [수정] Candidate Type 판별 및 역배열(RECOVERY) 분리
             if is_overheated: candidate_type = "⏳ 눌림 대기"
             elif ps >= 75 and -10 <= ma_gap <= 15: candidate_type = "🔥 최우선 관찰"
             elif score >= 55 and -10 <= ma_gap <= 15: candidate_type = "🟢 진입 후보"
             elif score >= 55 and ma_gap < -10: candidate_type = "♻️ 낙폭 과대 (RECOVERY)"
             else: candidate_type = "👀 관망"
 
-            t1, t2, stop = calculate_trade_plan(curr['Close'], curr['Close']*0.98, score, ma_gap)
+            if ma_gap > 20: buy_p = int(curr['Close'] * 0.92)
+            elif ma_gap > 10: buy_p = int(curr['Close'] * 0.96)
+            else: buy_p = int(curr['Close'] * 0.985)
+            
+            # [수정] 기술적 지지선을 고려한 동적 관심가 (Pullback Price)
+            pullback_price = max(int(ma20), int(curr['Close'] * 0.95))
+            
+            t1, t2, stop = calculate_trade_plan(curr['Close'], buy_p, score, ma_gap)
             ma_factor = max(0, 100 - (ma_gap * 2))
             prime_final = round((ps * 0.35 + score * 0.30 + conv * 0.15 + ma_factor * 0.20), 1)
             
+            # [수정] 정렬 전용 랭킹 스코어 도입
+            rank_score = prime_final + (5 if candidate_type == "🟢 진입 후보" else 0) - (10 if is_overheated else 0)
+            
             results.append({
                 "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']), "chg": round(changes, 2), 
-                "buy_p": int(curr['Close']*0.98), "ma_gap": round(ma_gap, 2), "rs_1d": round(rs_1d, 2), "rs_5d": round(rs_5d, 2), 
+                "buy_p": buy_p, "ma_gap": round(ma_gap, 2), "rs_1d": round(rs_1d, 2), "rs_5d": round(rs_5d, 2), 
                 "rs_20d": round(rs_20d, 2), "amount": int(row['Amount']), "conviction": conv, "prime_score": ps, "prime_final": prime_final, 
                 "target_1": t1, "target_2": t2, "stop_p": stop, "amount_strength": amt_s, 
-                "pullback_price": int(curr['Close'] * 0.95), "is_prime_leader": False, "is_overheated": is_overheated, 
+                "pullback_price": pullback_price, "rank_score": rank_score, "is_prime_leader": False, "is_overheated": is_overheated, 
                 "type": candidate_type, "reason": reason
             })
         
         results = list({x["code"]: x for x in results}.values())
         
-        # [수정] 타입별 우선순위 정렬 (최우선 > 진입 > 낙폭 > 눌림 > 관망)
-        type_priority = {"🔥 최우선 관찰": 4, "🟢 진입 후보": 3, "♻️ 낙폭 과대 (RECOVERY)": 2, "⏳ 눌림 대기": 1, "👀 관망": 0}
-        results.sort(key=lambda x: (type_priority.get(x['type'], 0), x['prime_final']), reverse=True)
+        # [수정] 정렬 알고리즘 독립화
+        results.sort(key=lambda x: x['rank_score'], reverse=True)
         results = results[:MAX_CANDIDATES]
         
-        # [수정] Prime Leader 선정 로직 강화 (종합점수 70% + 확신도 30%)
-        if results: max(results, key=lambda x: x['prime_final'] * 0.7 + x['conviction'] * 0.3)['is_prime_leader'] = True
+        # [수정] Prime Watch 선정식 분리 ('당장 행동 가능한 종목' 우선)
+        if results:
+            prime_leader = max(
+                results,
+                key=lambda x: x['prime_final'] * 0.5 + x['conviction'] * 0.3 + (20 if "진입 후보" in x['type'] else 0)
+            )
+            prime_leader['is_prime_leader'] = True
         
         for i in results: 
             try:
