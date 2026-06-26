@@ -28,14 +28,14 @@ def format_scan_messages(data):
     messages = []
     
     # ---------------------------------------------------------
-    # 메시지 1: V8.8.5 DAILY QUANT REPORT (시장 종합)
+    # 메시지 1: V8.8.8 DAILY QUANT REPORT (시장 종합)
     # ---------------------------------------------------------
-    market_msg = f"🎯 <b>V8.8.5 DAILY QUANT REPORT ({mode})</b>\n\n"
-    market_msg += f"📊 <b>시장:</b>\n"
+    market_msg = f"🎯 <b>V8.8.8 DAILY QUANT REPORT ({mode})</b>\n\n"
+    market_msg += f"📊 <b>시장 종합:</b>\n"
     market_msg += f"KOSPI: {kp_1d}% | KOSDAQ: {kd_1d}%\n"
     market_msg += f"시장점수: {market_score}/100\n\n"
     
-    market_msg += f"🧠 <b>판단:</b>\n"
+    market_msg += f"🧠 <b>시장 판단:</b>\n"
     if risk_level == 3:
         market_msg += "🚨 극단적 약세장\n신규 진입 보수적 대응"
     elif risk_level == 2:
@@ -51,7 +51,7 @@ def format_scan_messages(data):
         return messages
         
     # ---------------------------------------------------------
-    # 메시지 2: TOP SIGNAL (1위 종목 심층 분석)
+    # 메시지 2: PRIME WATCH (1위 종목 심층 분석)
     # ---------------------------------------------------------
     prime = next((c for c in candidates if c.get('is_prime_leader')), candidates[0])
     
@@ -62,41 +62,66 @@ def format_scan_messages(data):
         if not reasons: reasons.append("특이사항 없음")
     reason_text = "\n- ".join(reasons)
     
-    top_msg = f"👑 <b>TOP SIGNAL</b>\n\n"
+    top_msg = f"👑 <b>PRIME WATCH (오늘의 최우선 관찰)</b>\n\n"
+    
     top_msg += f"<b>1위 {escape(prime.get('name', ''))}</b>\n"
-    top_msg += f"Final {prime.get('prime_final', 0)}\n\n"
+    top_msg += f"등급: {prime.get('type', '👀 관망')}\n"
+    top_msg += f"⭐ <b>Final {prime.get('prime_final', 0)}</b>\n\n"
     
-    top_msg += f"상태:\n"
-    top_msg += f"{prime.get('type', '👀 관망')}\n"
-    top_msg += f"- {reason_text}\n\n"
+    # [수정] 매매 판단 레이어 (시장 리스크 + 종목 상대강도 결합)
+    rs20 = prime.get('rs_20d', 0)
+    top_msg += f"⚠️ <b>매매 판단:</b>\n"
+    if risk_level == 3:
+        if rs20 > 20:
+            top_msg += "🟡 <b>강한 종목 선별:</b> 시장 급락 속 주도력 유지 (분할 접근)\n\n"
+        else:
+            top_msg += "🔴 <b>관망:</b> 시장 리스크 과다 (신규 진입 보수적)\n\n"
+    elif risk_level == 2:
+        if rs20 > 15:
+            top_msg += "🟢 <b>조건 충족:</b> 시장 조정 대비 강한 방어력 (전략 진입)\n\n"
+        else:
+            top_msg += "🟡 <b>관심 유지:</b> 시장 안정 확인 후 눌림 접근\n\n"
+    else:
+        top_msg += "🟢 <b>조건 충족:</b> 현재 전략에 맞춰 접근 가능\n\n"
     
-    top_msg += f"핵심:\n"
-    top_msg += f"RS 20D {'+' if prime.get('rs_20d', 0)>0 else ''}{prime.get('rs_20d', 0)}%\n"
-    top_msg += f"MA {'+' if prime.get('ma_gap', 0)>0 else ''}{prime.get('ma_gap', 0)}%\n"
-    top_msg += f"Prime {prime.get('prime_score', 0)} | Conviction {prime.get('conviction', 0)}\n\n"
+    top_msg += f"🧠 <b>상태 분석:</b>\n- {reason_text}\n\n"
     
-    top_msg += f"전략:\n"
-    top_msg += f"{prime.get('pullback_price', 0):,}원 이하 관심\n"
-    top_msg += f"(목표 {prime.get('target_1', 0):,} / 손절 {prime.get('stop_p', 0):,})"
+    top_msg += f"💰 <b>가격 전략:</b>\n"
+    top_msg += f"현재가: {prime.get('price', 0):,}원 ({prime.get('chg', 0)}%)\n"
+    top_msg += f"관심가(1차대기): {prime.get('pullback_price', 0):,}원\n"
+    top_msg += f"진입가(주문기준): {prime.get('buy_p', 0):,}원\n"
+    top_msg += f"목표가: {prime.get('target_1', 0):,}원 / {prime.get('target_2', 0):,}원\n"
+    top_msg += f"손절가(필수): {prime.get('stop_p', 0):,}원\n\n"
+    
+    top_msg += f"🔥 <b>핵심 수급 및 강도:</b>\n"
+    top_msg += f"Prime: {prime.get('prime_score', 0)} | Conviction: {prime.get('conviction', 0)}\n"
+    top_msg += f"RS 20D: {'+' if prime.get('rs_20d', 0)>0 else ''}{prime.get('rs_20d', 0)}%\n"
+    top_msg += f"MA 이격: {'+' if prime.get('ma_gap', 0)>0 else ''}{prime.get('ma_gap', 0)}%\n"
+    top_msg += f"거래대금: {int(prime.get('amount', 0) // 100000000):,}억\n"
     
     messages.append(top_msg)
     
     # ---------------------------------------------------------
-    # 메시지 3: 후보 리스트 (나머지 리스트)
+    # 메시지 3: 후보 리스트 (TOP 2~10)
     # ---------------------------------------------------------
     if len(candidates) > 1:
         list_msg = "📋 <b>후보 리스트 (TOP 2~10)</b>\n\n"
         display_count = 1
         for c in candidates:
             if c.get('is_prime_leader'): continue
-            display_count += 1
-            if display_count > 10: break
             
             c_type = c.get('type', '')
             icon = "🔥" if "최우선" in c_type else "🟢" if "진입" in c_type else "♻️" if "낙폭" in c_type else "⏳"
-            list_msg += f"{display_count}. {icon} {escape(c.get('name', ''))} ({c.get('prime_final', 0)})\n"
             
-        list_msg += "\n상세 데이터 필요시 별도 요청"
+            # [수정] 순위 번호 버그 픽스
+            list_msg += f"{display_count + 1}. {icon} <b>{escape(c.get('name', ''))}</b> (Final {c.get('prime_final', 0)})\n"
+            list_msg += f"   ┗ RS20D {'+' if c.get('rs_20d', 0)>0 else ''}{c.get('rs_20d', 0)}% | Conv {c.get('conviction', 0)} | MA {'+' if c.get('ma_gap',0)>0 else ''}{c.get('ma_gap',0)}%\n"
+            list_msg += f"   ┗ 판정: {c_type}\n\n"
+            
+            display_count += 1
+            if display_count >= 10: break
+            
+        list_msg += "상세 데이터 필요시 별도 조회 요망"
         messages.append(list_msg)
         
     return messages
