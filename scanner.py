@@ -87,8 +87,16 @@ async def scan_market(run_type="OPEN_SCAN"):
     try:
         kst = pytz.timezone("Asia/Seoul")
         start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
-        risk_level = 1
         kp_1d, kd_1d = get_market_indices()
+        
+        # [수정] 폭락장 연동 동적 risk_level 적용
+        if kp_1d <= -3.0 or kd_1d <= -4.0:
+            risk_level = 3
+        elif kp_1d <= -1.0 or kd_1d <= -1.5:
+            risk_level = 2
+        else:
+            risk_level = 1
+
         krx = remove_bad_targets(get_krx_retry())
         
         market_score = 100
