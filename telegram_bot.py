@@ -1,63 +1,105 @@
-import os
 from telegram import Bot
 from html import escape
+import os
+import traceback
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+bot = Bot(token=os.environ.get("TELEGRAM_TOKEN")) if os.environ.get("TELEGRAM_TOKEN") else None
 
-if TELEGRAM_TOKEN: bot = Bot(token=TELEGRAM_TOKEN)
-else: bot = None
-
-# [복구] 메인 파이프라인에서 호출하는 send_message 함수 재탑재
 async def send_message(text):
-    if not TELEGRAM_TOKEN or not CHAT_ID: return
-    try: await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML')
-    except Exception as e: print(f"❌ 텔레그램 발송 실패: {e}")
+    if bot: 
+        try:
+            await bot.send_message(chat_id=os.environ.get("TELEGRAM_CHAT_ID"), text=text, parse_mode='HTML')
+        except Exception:
+            traceback.print_exc()
 
-REPORT_ID = "🎯 V8.8.4 DAILY QUANT REPORT"
-
-def format_holding_report(holding_results):
-    msg = f"{REPORT_ID} [3/3]\n\n👑 <b>HOLDING ENGINE</b>\n\n"
-    if not holding_results:
-        msg += "등록된 보유 종목 없음"
-        return [msg]
-    for r in holding_results:
-        exit_icon = "🚨" if r['exit_score'] >= 6 else "🛡️"
-        msg += f"<b>{escape(r['name'])}</b>\n"
-        msg += f"매수가: {r['buy_p']:,}원 | 현재가: {r['curr_p']:,}원\n"
-        msg += f"손익: {'🔴' if r['pnl'] < 0 else '🟢'} {r['pnl']}%\n"
-        msg += f"기업: {r['corp']} | 차트: {r['chart']}\n"
-        msg += f"EXIT: {r['exit_score']}/10 {exit_icon}\n"
-        msg += f"판정: {r['judgment']}\n"
-        msg += "-" * 20 + "\n"
-    return [msg]
-
-def format_scan_messages(scan_result):
-    stats = scan_result.get("stats", {})
-    candidates = scan_result.get("candidates", [])
-    market = scan_result.get("market", {})
-    mode_raw = market.get("mode", "UNKNOWN")
+def format_scan_messages(data):
+    stats = data.get('stats', {})
+    candidates = data.get('candidates', [])
+    market = data.get('market', {})
+    mode = market.get('mode', 'UNKNOWN')
+    market_score = market.get('market_score', 100)
+    kp_1d = market.get('kospi', 0.0)
+    kd_1d = market.get('kosdaq', 0.0)
+    risk_level = market.get('risk_level', 1)
     
-    if stats.get('data_error', False): return ["🚨 데이터 공급 장애 감지"]
-
+    if stats.get('data_error'): 
+        return ["🚨 <b>데이터 공급 장애 발생</b>\n점검이 필요합니다."]
+    
     messages = []
-    msg_market = f"{REPORT_ID} [1/3]\n\n🌎 <b>MARKET ({mode_raw})</b>\n\n"
-    msg_market += f"KOSPI  {market.get('kospi', 0)}%\nKOSDAQ {market.get('kosdaq', 0)}%\n\n"
-    msg_market += f"분석: {stats.get('total', 0)}개 → {stats.get('final', 0)}개 생존"
-    messages.append(msg_market)
     
-    leaders = [c for c in candidates if c['type'] == 'LEADER']
-    entries = [c for c in candidates if c['type'] == 'ENTRY']
-    watches = [c for c in candidates if c['type'] == 'WATCH']
+    # 1. 헤더 (시장 상태 및 리스크 요약)
+    header = f"🎯 <b>퀀트 시그널 ({mode})</b>\n\n"
+    header += f"🚨 <b>MARKET RISK</b>\n"
+    header += f"KOSPI: {kp_1d}%\n"
+    header += f"KOSDAQ: {kd_1d}%\n"
+    header += f"위험등급: {risk_level}\n"
+    header += f"시장 상태: {market_score}/100\n"
+    header += f"생존 후보: {stats.get('final', 0)} / {stats.get('total', 0)}\n"
+    header += "─" * 20
+    messages.append(header)
     
-    msg_scan = f"{REPORT_ID} [2/3]\n\n🔥 <b>SCANNER ENGINE</b>\n\n"
-    msg_scan += "🚀 <b>STRONG BUY</b>\n"
-    for i, c in enumerate(entries[:3], 1):
-        msg_scan += f"{i}. <b>{escape(c['name'])}</b> (Score:{c['score']})\n  진입:{c['buy_p']:,}원 | 손절:{c['stop_p']:,}\n"
-    
-    msg_scan += "\n⚠️ <b>WATCH (과열/관심)</b>\n"
-    for c in (leaders + watches)[:3]:
-        msg_scan += f"- {escape(c['name'])} (MA20 +{c['ma_gap']}%) \n"
+    if not candidates:
+        messages.append("🔥 <b>발견된 핵심 후보 없음</b>\n폭락 또는 수급 이탈 장세입니다.")
+        return messages
         
-    messages.append(msg_scan)
+    # 2. 후보 종목 상세 리포트
+    for idx, c in enumerate(candidates, 1):
+        name = escape(c.get('name', ''))
+        c_type = c.get('type', 'WATCH')
+        
+        # 타이틀 및 아이콘 매핑
+        if c.get('is_prime_leader'):
+            title = f"👑 PRIME LEADER\n{idx}) {name}"
+        elif c_type == "LEADER":
+            title = f"🚀 LEADER\n{idx}) {name}"
+        elif c_type == "ENTRY":
+            title = f"🟢 ENTRY\n{idx}) {name}"
+        else:
+            title = f"👀 WATCH\n{idx}) {name}"
+            
+        msg = f"<b>{title}</b>\n\n"
+        
+        msg += f"⭐ <b>PRIME FINAL : {c.get('prime_final', 0)}</b>\n"
+        msg += f"Score : {c.get('score', 0)}\n"
+        msg += f"Prime : {c.get('prime_score', 0)}\n"
+        msg += f"Conviction : {c.get('conviction', 0)}\n\n"
+        
+        msg += f"💰 <b>현재가</b>\n"
+        msg += f"{c.get('price', 0):,}원 ({c.get('chg', 0)}%)\n\n"
+        
+        msg += f"🎯 <b>전략</b>\n"
+        msg += f"관심 : {c.get('pullback_price', 0):,}\n"
+        msg += f"목표1 : {c.get('target_1', 0):,}\n"
+        msg += f"목표2 : {c.get('target_2', 0):,}\n"
+        msg += f"손절 : {c.get('stop_p', 0):,}\n\n"
+        
+        msg += f"📊 <b>수급</b>\n"
+        amount_100m = int(c.get('amount', 0) // 100000000)
+        msg += f"거래대금 : {amount_100m:,}억\n"
+        msg += f"거래량강도 : {c.get('amount_strength', 0)}배\n\n"
+        
+        msg += f"💪 <b>상대강도</b>\n"
+        msg += f"1D {'+' if c.get('rs_1d', 0)>0 else ''}{c.get('rs_1d', 0)}%\n"
+        msg += f"5D {'+' if c.get('rs_5d', 0)>0 else ''}{c.get('rs_5d', 0)}%\n"
+        msg += f"20D {'+' if c.get('rs_20d', 0)>0 else ''}{c.get('rs_20d', 0)}%\n\n"
+        
+        msg += f"📏 <b>위치</b>\n"
+        msg += f"20MA {'+' if c.get('ma_gap', 0)>0 else ''}{c.get('ma_gap', 0)}%\n\n"
+        
+        # 판단 근거 출력
+        reasons = c.get('reason', [])
+        if not reasons:
+            if c.get('prime_score', 0) >= 70: reasons.append("시장 대비 상대강도 우위")
+            if c.get('amount_strength', 0) >= 1.5: reasons.append("안정적 수급 유입")
+            if not reasons: reasons.append("특이사항 없음")
+            
+        reason_text = "\n- ".join(reasons)
+        msg += f"🧠 <b>판단:</b>\n- {reason_text}\n"
+        
+        messages.append(msg)
+        
     return messages
+
+def format_holding_report(h):
+    if not h: return ["📊 <b>보유 현황</b>\n보유 중인 종목이 없습니다."]
+    return ["📊 <b>보유 현황</b>\n" + "\n".join([f"- {i[1]}" for i in h])]
