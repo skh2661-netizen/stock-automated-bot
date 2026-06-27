@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 DB_PATH = "quant_data.db"
@@ -34,7 +34,6 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # 1. 기존 CANDIDATES 테이블 (호환성 및 기존 로직 유지)
     c.execute('''CREATE TABLE IF NOT EXISTS candidates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT, run_type TEXT, code TEXT, name TEXT, score INTEGER,
@@ -45,7 +44,6 @@ def init_db():
         risk_level INTEGER, sent_telegram INTEGER DEFAULT 0
     )''')
     
-    # 2. 기존 HOLDING ENGINE 전용 포트폴리오 테이블
     c.execute('''CREATE TABLE IF NOT EXISTS holding_table (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT UNIQUE,
@@ -58,7 +56,6 @@ def init_db():
         theme TEXT
     )''')
 
-    # 3. [신규 추가] MEMORY LAYER: 상태 스냅샷 및 반복 출현 추적 테이블
     c.execute('''CREATE TABLE IF NOT EXISTS candidate_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scan_datetime TEXT,
@@ -78,6 +75,7 @@ def init_db():
         amount INTEGER,
         amount_strength REAL,
         risk_level INTEGER,
+        is_leader INTEGER DEFAULT 0,
         created_at TEXT
     )''')
     
@@ -85,16 +83,11 @@ def init_db():
     conn.close()
     migrate_db()
 
-# 최초 임포트 시 자동 테이블 생성 및 마이그레이션 실행
 init_db()
 
-
-# ==========================================
-# [신규 추가] 히스토리 스냅샷 저장 함수 (Memory Layer)
-# ==========================================
 def save_candidate_history(scan_datetime, run_type, code, name, rank_position, price, chg, 
                            prime_final, prime_score, conviction, rs_1d, rs_5d, rs_20d, 
-                           ma_gap, amount, amount_strength, risk_level):
+                           ma_gap, amount, amount_strength, risk_level, is_leader=0):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     kst = pytz.timezone("Asia/Seoul")
@@ -103,21 +96,48 @@ def save_candidate_history(scan_datetime, run_type, code, name, rank_position, p
         c.execute('''INSERT INTO candidate_history (
                         scan_datetime, run_type, code, name, rank_position, price, chg, 
                         prime_final, prime_score, conviction, rs_1d, rs_5d, rs_20d, 
-                        ma_gap, amount, amount_strength, risk_level, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        ma_gap, amount, amount_strength, risk_level, is_leader, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                   (scan_datetime, run_type, code, name, rank_position, price, chg, 
                    prime_final, prime_score, conviction, rs_1d, rs_5d, rs_20d, 
-                   ma_gap, amount, amount_strength, risk_level, created_at))
+                   ma_gap, amount, amount_strength, risk_level, is_leader, created_at))
         conn.commit()
     except Exception as e:
         print(f"⚠️ 히스토리 저장 실패: {e}")
     finally:
         conn.close()
 
+# [신규 추가] 뇌와 입이 기억을 호출할 수 있는 '신호 지속성 분석 엔진'
+def get_signal_persistence(code):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    kst = pytz.timezone("Asia/Seoul")
+    today_str = datetime.now(kst).strftime("%Y-%m-%d")
+    five_days_ago = (datetime.now(kst) - timedelta(days=5)).strftime("%Y-%m-%d")
+    
+    analysis = {"today_count": 0, "five_days_days": 0, "max_rank": 99, "leader_count": 0, "avg_final": 0.0}
+    try:
+        # 1. 오늘 출현 횟수 계산
+        c.execute("SELECT COUNT(*) FROM candidate_history WHERE code = ? AND scan_datetime LIKE ?", (code, f"{today_str}%"))
+        analysis["today_count"] = c.fetchone()[0]
+        
+        # 2. 최근 5일간 출현한 '서로 다른 날짜'의 수 계산
+        c.execute("SELECT COUNT(DISTINCT SUBSTR(scan_datetime, 1, 10)) FROM candidate_history WHERE code = ? AND scan_datetime >= ?", (code, five_days_ago))
+        analysis["five_days_days"] = c.fetchone()[0]
+        
+        # 3. 최고 순위 및 리더 등극 횟수, 평균 점수 분석
+        c.execute("SELECT MIN(rank_position), SUM(is_leader), AVG(prime_final) FROM candidate_history WHERE code = ? AND scan_datetime >= ?", (code, five_days_ago))
+        row = c.fetchone()
+        if row and row[0] is not None:
+            analysis["max_rank"] = row[0]
+            analysis["leader_count"] = row[1] if row[1] else 0
+            analysis["avg_final"] = round(row[2], 1) if row[2] else 0.0
+    except Exception as e:
+        print(f"⚠️ 기억 레이어 조회 실패: {e}")
+    finally:
+        conn.close()
+    return analysis
 
-# ==========================================
-# 기존 보유 기능 및 저장 함수 (100% 원본 유지)
-# ==========================================
 def save_candidate(run_type, code, name, score, buy_p, t1, t2, stop, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
