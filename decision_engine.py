@@ -1,7 +1,8 @@
+import datetime
+import pytz
+from database import save_candidate, save_candidate_history
+
 def calculate_trade_plan(price, ma20_price, ma_gap, score):
-    """
-    타점 및 손절 전략 연산 (Scanner에서 이관됨)
-    """
     if ma_gap > 20: buy_p = int(price * 0.92)
     elif ma_gap > 10: buy_p = int(price * 0.96)
     else: buy_p = int(price * 0.985)
@@ -14,22 +15,16 @@ def calculate_trade_plan(price, ma20_price, ma_gap, score):
     else: target1, target2 = price * 1.03, price * 1.06
     
     stop_p = int(buy_p * 0.95)
-    
-    return {
-        "buy_p": buy_p,
-        "pullback_price": pullback_price,
-        "target_1": int(target1),
-        "target_2": int(target2),
-        "stop_p": stop_p
-    }
+    return {"buy_p": buy_p, "pullback_price": pullback_price, "target_1": int(target1), "target_2": int(target2), "stop_p": stop_p}
 
 def evaluate_candidates(scanner_output):
-    """
-    Scanner가 생성한 팩트(Raw Data)를 바탕으로 매매 액션과 랭킹을 최종 판단
-    """
     market = scanner_output.get("market", {})
     raw_candidates = scanner_output.get("raw_data", [])
+    run_type = market.get("mode", "OPEN_SCAN")
     risk_level = market.get("risk_level", 1)
+    
+    kst = pytz.timezone("Asia/Seoul")
+    scan_datetime = datetime.datetime.now(kst).strftime("%Y-%m-%d %H:%M")
     
     evaluated_results = []
     
@@ -37,74 +32,72 @@ def evaluate_candidates(scanner_output):
         feats = raw["features"]
         scores = raw["scores"]
         
-        # 1. 가격 전략 수립
-        trade_plan = calculate_trade_plan(
-            raw["price"], 
-            feats["ma20_price"], 
-            feats["ma_gap"], 
-            scores["score"]
-        )
+        trade_plan = calculate_trade_plan(raw["price"], feats["ma20_price"], feats["ma_gap"], scores["score"])
         
-        # 2. 상태(Reason) 및 액션(Action) 판단
-        action = "OBSERVE"
+        action = "👀 관망"
         reason = []
         rank_bonus = 0
         
         if feats["is_overheated"]:
-            action = "WAIT_PULLBACK"
+            action = "⏳ 눌림 대기"
             reason.append("가격 확장 상태 (신규 진입 효율 감소)")
             rank_bonus -= 10
         elif feats["ma_gap"] > 15:
-            action = "WAIT_PULLBACK"
+            action = "⏳ 눌림 대기"
             reason.append("20일선 상방 이격 부담")
         elif feats["ma_gap"] < -10:
-            action = "RECOVERY"
+            action = "♻️ 낙폭 과대 (RECOVERY)"
             reason.append("20일선 하방 이격 (낙폭 과대)")
         elif risk_level == 3 and feats["rs_20d"] > 20:
-            action = "STRONG_SELECTION"
+            action = "🔥 최우선 관찰"
             reason.append("시장 급락 속 주도력 유지")
             rank_bonus += 20
         elif scores["prime_score"] >= 75 and -10 <= feats["ma_gap"] <= 15:
-            action = "STRONG_SELECTION"
+            action = "🔥 최우선 관찰"
             reason.append("시장 대비 강한 수급 (분할 접근)")
             rank_bonus += 20
         elif scores["score"] >= 55 and -10 <= feats["ma_gap"] <= 15:
-            action = "ENTRY_CANDIDATE"
+            action = "🟢 진입 후보"
             reason.append("진입 조건 충족")
             rank_bonus += 5
         else:
             reason.append("수급 및 위치 확인 단계")
             
-        if feats["conviction"] < 40:
-            reason.append("단기 확신 형성 중")
+        if feats["conviction"] < 40: reason.append("수급 확인 단계")
+        elif feats["conviction"] < 60: reason.append("확신 형성 과정 (눌림 확인 필요)")
             
-        # 3. Decision 랭킹 스코어 계산
         rank_score = scores["prime_final"] + rank_bonus
         
         evaluated_results.append({
-            "code": raw["code"],
-            "name": raw["name"],
-            "price": raw["price"],
-            "chg": raw["chg"],
-            "features": feats,
-            "scores": scores,
-            "trade_plan": trade_plan,
-            "decision": {
-                "action": action,
-                "reason": reason,
-                "rank_score": rank_score,
-                "is_prime_leader": False
-            }
+            "code": raw["code"], "name": raw["name"], "price": raw["price"], "chg": raw["chg"],
+            "features": feats, "scores": scores, "trade_plan": trade_plan,
+            "decision": {"action": action, "reason": reason, "rank_score": rank_score, "is_prime_leader": False}
         })
         
-    # 4. 판단 랭킹 기준 내림차순 정렬 및 Prime Leader 선출
     evaluated_results.sort(key=lambda x: x["decision"]["rank_score"], reverse=True)
     
     if evaluated_results:
-        evaluated_results[0]["decision"]["is_prime_leader"] = True
+        # 가장 가치 있는 프라임 워치 선정
+        prime_leader = max(evaluated_results, key=lambda x: x['scores']['prime_final'] * 0.5 + x['features']['conviction'] * 0.3 + (20 if "진입" in x['decision']['action'] else 0))
+        prime_leader["decision"]["is_prime_leader"] = True
         
-    return {
-        "market": market,
-        "stats": scanner_output.get("stats", {}),
-        "candidates": evaluated_results
-    }
+    # [수정 이관] 최종 결정이 내려진 뒤 Memory Layer에 타임스탬프 스냅샷 영구 저장
+    for rank_idx, i in enumerate(evaluated_results, 1):
+        is_leader_flag = 1 if i["decision"]["is_prime_leader"] else 0
+        try:
+            # 1. 호환성 보존용 레거시 테이블 저장
+            save_candidate(run_type, i['code'], i['name'], i['scores']['score'], i['trade_plan']['buy_p'], i['trade_plan']['target_1'], i['trade_plan']['target_2'], i['trade_plan']['stop_p'], i['price'], i['chg'], i['features']['ma_gap'], i['scores']['prime_score'], i['scores']['prime_final'], i['features']['conviction'], i['features']['amount_strength'], i['features']['rs_1d'], i['features']['rs_5d'], i['features']['rs_20d'], is_leader_flag, risk_level)
+            
+            # 2. 신규 히스토리 메모리 디렉토리 저장
+            save_candidate_history(
+                scan_datetime=scan_datetime, run_type=run_type, code=i['code'], name=i['name'], rank_position=rank_idx,
+                price=i['price'], chg=i['chg'], prime_final=i['scores']['prime_final'], prime_score=i['scores']['prime_score'],
+                conviction=i['features']['conviction'], rs_1d=i['features']['rs_1d'], rs_5d=i['features']['rs_5d'], rs_20d=i['features']['rs_20d'],
+                ma_gap=i['features']['ma_gap'], amount=i['features']['amount'], amount_strength=i['features']['amount_strength'],
+                risk_level=risk_level, is_leader=is_leader_flag
+            )
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            
+    return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": evaluated_results}
