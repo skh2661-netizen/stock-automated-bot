@@ -16,11 +16,9 @@ def init_db():
 
 init_db()
 
-# [필수 누락 복구] 텔레그램 봇이 반드시 호출하는 기억 레이어 함수
 def get_signal_persistence(code):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
     five_days_ago = (datetime.now(pytz.timezone("Asia/Seoul")) - timedelta(days=5)).strftime("%Y-%m-%d")
     c.execute("SELECT COUNT(*), COUNT(DISTINCT SUBSTR(scan_datetime, 1, 10)), MIN(rank_position), SUM(is_leader), AVG(prime_final) FROM candidate_history WHERE code = ? AND scan_datetime >= ?", (code, five_days_ago))
     row = c.fetchone()
@@ -51,8 +49,7 @@ def get_signal_quality(risk_level, rs_20d, conviction):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     for m in [{"rs": 15.0, "conv": 10}, {"rs": 30.0, "conv": 20}, {"rs": 50.0, "conv": 40}]:
-        c.execute('''SELECT after_5d_chg, max_gain, max_drawdown FROM signal_outcome o JOIN candidate_history h ON o.history_id = h.id 
-                     WHERE o.evaluation_status = 'COMPLETED' AND o.market_regime = ? AND h.rs_20d BETWEEN ? AND ? AND h.conviction BETWEEN ? AND ?''',
+        c.execute('''SELECT after_5d_chg, max_gain, max_drawdown FROM signal_outcome o JOIN candidate_history h ON o.history_id = h.id WHERE o.evaluation_status = 'COMPLETED' AND o.market_regime = ? AND h.rs_20d BETWEEN ? AND ? AND h.conviction BETWEEN ? AND ?''',
                   (regime, rs_20d-m["rs"], rs_20d+m["rs"], conviction-m["conv"], conviction+m["conv"]))
         rows = c.fetchall()
         if len(rows) >= 5:
