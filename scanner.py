@@ -3,16 +3,9 @@ import pandas as pd
 import asyncio, datetime, pytz, time, requests, sqlite3, os, traceback
 from concurrent.futures import ThreadPoolExecutor
 from scoring import calculate_breakout_score, calculate_close_score, calculate_preopen_score, get_conviction_score, get_prime_score
-from database import save_candidate, DB_PATH
+from database import save_candidate_history, DB_PATH
 
 MIN_PRICE, MIN_AMOUNT, MAX_CANDIDATES = 1000, 15_000_000_000, 15
-
-def calculate_trade_plan(price, buy_p, score, ma_gap):
-    if score >= 80 and ma_gap <= 10: target1, target2 = price * 1.10, price * 1.18
-    elif ma_gap <= 5: target1, target2 = price * 1.08, price * 1.15
-    elif ma_gap <= 15: target1, target2 = price * 1.05, price * 1.10
-    else: target1, target2 = price * 1.03, price * 1.06
-    return int(target1), int(target2), int(buy_p * 0.95)
 
 def safe_json_decode(res):
     try:
@@ -51,7 +44,7 @@ def get_krx_retry():
     if os.path.exists(DB_PATH):
         try:
             conn = sqlite3.connect(DB_PATH)
-            cache_df = pd.read_sql_query("SELECT code AS Code, name AS Name, price AS Close, chg AS ChangesRatio FROM candidates WHERE date = (SELECT max(date) FROM candidates)", conn)
+            cache_df = pd.read_sql_query("SELECT code AS Code, name AS Name, price AS Close, chg AS ChangesRatio FROM candidate_history WHERE scan_datetime = (SELECT max(scan_datetime) FROM candidate_history)", conn)
             conn.close()
             if not cache_df.empty: 
                 cache_df["Volume"], cache_df["Amount"] = 1_000_000, pd.to_numeric(cache_df["Close"] * 1_000_000, errors='coerce').fillna(0)
@@ -60,8 +53,7 @@ def get_krx_retry():
     return pd.DataFrame(columns=['Code', 'Name', 'Close', 'ChangesRatio', 'Amount', 'Volume'])
 
 def remove_bad_targets(df):
-    if df.empty or "Name" not in df.columns:
-        return df
+    if df.empty or "Name" not in df.columns: return df
     pattern = r'스팩|ETF|ETN|우$|우[A-Z]$|[0-9]+우[A-Z]?$|제[0-9]+호'
     return df[~df['Name'].astype(str).str.contains(pattern, regex=True, na=False)]
 
@@ -83,9 +75,14 @@ def fetch_history(code, start_date):
         except: time.sleep(1)
     return code, None
 
-async def scan_market(run_type="OPEN_SCAN"):
+async def generate_raw_candidates(run_type="OPEN_SCAN"):
+    """
+    [역할 축소] 오직 지표 계산 및 Raw Data 생성만 수행
+    판단 로직, 랭킹, 타점 계산은 모두 Decision Engine으로 이관됨.
+    """
     try:
         kst = pytz.timezone("Asia/Seoul")
+        scan_datetime = datetime.datetime.now(kst).strftime("%Y-%m-%d %H:%M")
         start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
         kp_1d, kd_1d = get_market_indices()
         
@@ -100,16 +97,16 @@ async def scan_market(run_type="OPEN_SCAN"):
         if kd_1d < -3.0: market_score -= 30
 
         if krx.empty or "Code" not in krx.columns:
-            return {"market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d, "market_score": market_score, "risk_level": risk_level}, "stats": {"data_error": True}, "candidates": []}
+            return {"market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d, "market_score": market_score, "risk_level": risk_level}, "stats": {"data_error": True}, "raw_data": []}
         
         krx['Close'], krx['Volume'] = pd.to_numeric(krx['Close'], errors='coerce'), pd.to_numeric(krx['Volume'], errors='coerce')
         krx['Amount'], krx['ChangesRatio'] = (krx['Close'] * krx['Volume']).fillna(0), pd.to_numeric(krx['ChangesRatio'], errors='coerce').fillna(0)
         
-        stats = {"total": len(krx), "pass1": 0, "fail_heat": 0, "fail_score": 0, "fail_reader": 0, "final": 0, "data_error": False}
+        stats = {"total": len(krx), "pass1": 0, "fail_heat": 0, "fail_score": 0, "fail_reader": 0, "data_error": False}
         if run_type == "TEST": candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT)].sort_values("Amount", ascending=False).head(200)
         else: candidates = krx[(krx['Close'] >= MIN_PRICE) & (krx['Amount'] >= MIN_AMOUNT) & (krx['ChangesRatio'] >= 1) & (krx['ChangesRatio'] <= 18)].sort_values("Amount", ascending=False).head(100)
         
-        results = []
+        raw_results = []
         codes = candidates['Code'].apply(lambda x: str(x).zfill(6)).tolist()
         with ThreadPoolExecutor(max_workers=5) as ex: histories = dict(ex.map(lambda c: fetch_history(c, start_date), codes))
         
@@ -139,65 +136,65 @@ async def scan_market(run_type="OPEN_SCAN"):
             
             conv = get_conviction_score(rs_1d, row['Amount'], curr['Volume']/(hist['Volume'].rolling(20).mean().iloc[-1]+1), risk_level, ma_gap, cp_val)
             
-            # [수정] 객관적 상태 분석 (Reason)
-            reason = []
-            if is_overheated: reason.append("단기 상승 확장 (신규 진입 효율 감소)")
-            if ma_gap > 15: reason.append("20일선 상방 이격 부담")
-            if ma_gap < -10: reason.append("20일선 하방 이격 (낙폭 과대)")
-            if conv < 40: reason.append("수급 확인 단계")
-            elif conv < 60: reason.append("확신 형성 과정 (눌림 확인 필요)")
-
-            if is_overheated: candidate_type = "⏳ 눌림 대기"
-            elif ps >= 75 and -10 <= ma_gap <= 15: candidate_type = "🔥 최우선 관찰"
-            elif score >= 55 and -10 <= ma_gap <= 15: candidate_type = "🟢 진입 후보"
-            elif score >= 55 and ma_gap < -10: candidate_type = "♻️ 낙폭 과대 (RECOVERY)"
-            else: candidate_type = "👀 관망"
-
-            if ma_gap > 20: buy_p = int(curr['Close'] * 0.92)
-            elif ma_gap > 10: buy_p = int(curr['Close'] * 0.96)
-            else: buy_p = int(curr['Close'] * 0.985)
-            
-            # [수정] 기술적 지지선을 고려한 동적 관심가 (Pullback Price)
-            pullback_price = max(int(ma20), int(curr['Close'] * 0.95))
-            
-            t1, t2, stop = calculate_trade_plan(curr['Close'], buy_p, score, ma_gap)
             ma_factor = max(0, 100 - (ma_gap * 2))
             prime_final = round((ps * 0.35 + score * 0.30 + conv * 0.15 + ma_factor * 0.20), 1)
             
-            # [수정] 정렬 전용 랭킹 스코어 도입
-            rank_score = prime_final + (5 if candidate_type == "🟢 진입 후보" else 0) - (10 if is_overheated else 0)
-            
-            results.append({
-                "code": code, "name": row['Name'], "score": score, "price": int(curr['Close']), "chg": round(changes, 2), 
-                "buy_p": buy_p, "ma_gap": round(ma_gap, 2), "rs_1d": round(rs_1d, 2), "rs_5d": round(rs_5d, 2), 
-                "rs_20d": round(rs_20d, 2), "amount": int(row['Amount']), "conviction": conv, "prime_score": ps, "prime_final": prime_final, 
-                "target_1": t1, "target_2": t2, "stop_p": stop, "amount_strength": amt_s, 
-                "pullback_price": pullback_price, "rank_score": rank_score, "is_prime_leader": False, "is_overheated": is_overheated, 
-                "type": candidate_type, "reason": reason
+            raw_results.append({
+                "code": code,
+                "name": row['Name'],
+                "price": int(curr['Close']),
+                "chg": round(changes, 2),
+                "features": {
+                    "rs_1d": round(rs_1d, 2),
+                    "rs_5d": round(rs_5d, 2),
+                    "rs_20d": round(rs_20d, 2),
+                    "ma_gap": round(ma_gap, 2),
+                    "ma20_price": int(ma20),
+                    "amount": int(row['Amount']),
+                    "amount_strength": amt_s,
+                    "conviction": conv,
+                    "is_overheated": is_overheated
+                },
+                "scores": {
+                    "score": score,
+                    "prime_score": ps,
+                    "prime_final": prime_final
+                }
             })
+            
+        raw_results = list({x["code"]: x for x in raw_results}.values())
         
-        results = list({x["code"]: x for x in results}.values())
-        
-        # [수정] 정렬 알고리즘 독립화
-        results.sort(key=lambda x: x['rank_score'], reverse=True)
-        results = results[:MAX_CANDIDATES]
-        
-        # [수정] Prime Watch 선정식 분리 ('당장 행동 가능한 종목' 우선)
-        if results:
-            prime_leader = max(
-                results,
-                key=lambda x: x['prime_final'] * 0.5 + x['conviction'] * 0.3 + (20 if "진입 후보" in x['type'] else 0)
-            )
-            prime_leader['is_prime_leader'] = True
-        
-        for i in results: 
+        # 순위 부여를 위한 임시 1차 정렬 (DB 저장용)
+        raw_results.sort(key=lambda x: x['scores']['prime_final'], reverse=True)
+        raw_results = raw_results[:MAX_CANDIDATES]
+
+        # Memory Layer 스냅샷 저장
+        for rank_idx, i in enumerate(raw_results, 1):
             try:
-                save_candidate(run_type, i['code'], i['name'], i['score'], i['buy_p'], i['target_1'], i['target_2'], i['stop_p'], i['price'], i['chg'], i['ma_gap'], i['prime_score'], i['prime_final'], i['conviction'], i['amount_strength'], i['rs_1d'], i['rs_5d'], i['rs_20d'], 1 if i['is_prime_leader'] else 0, risk_level)
+                save_candidate_history(
+                    scan_datetime=scan_datetime,
+                    run_type=run_type,
+                    code=i['code'],
+                    name=i['name'],
+                    rank_position=rank_idx,
+                    price=i['price'],
+                    chg=i['chg'],
+                    prime_final=i['scores']['prime_final'],
+                    prime_score=i['scores']['prime_score'],
+                    conviction=i['features']['conviction'],
+                    rs_1d=i['features']['rs_1d'],
+                    rs_5d=i['features']['rs_5d'],
+                    rs_20d=i['features']['rs_20d'],
+                    ma_gap=i['features']['ma_gap'],
+                    amount=i['features']['amount'],
+                    amount_strength=i['features']['amount_strength'],
+                    risk_level=risk_level
+                )
             except Exception:
                 traceback.print_exc()
-        
-        stats["final"] = len(results)
-        return {"market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d, "market_score": market_score, "risk_level": risk_level}, "stats": stats, "candidates": results}
+
+        stats["final"] = len(raw_results)
+        return {"market": {"mode": run_type, "kospi": kp_1d, "kosdaq": kd_1d, "market_score": market_score, "risk_level": risk_level}, "stats": stats, "raw_data": raw_results}
     except Exception:
         traceback.print_exc()
-        return {"market": {"mode": run_type, "kospi": 0, "kosdaq": 0, "market_score": 100, "risk_level": 1}, "stats": {"total": 0, "final": 0, "data_error": True}, "candidates": []}
+        return {"market": {"mode": run_type, "kospi": 0, "kosdaq": 0, "market_score": 100, "risk_level": 1}, "stats": {"total": 0, "final": 0, "data_error": True}, "raw_data": []}
