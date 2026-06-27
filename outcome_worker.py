@@ -10,7 +10,6 @@ def process_outcomes():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # 평가 대기 중인 신호 추출
     c.execute("SELECT id, code, signal_date, price_at_signal FROM signal_outcome WHERE evaluation_status = 'PENDING'")
     pendings = c.fetchall()
     
@@ -25,14 +24,17 @@ def process_outcomes():
             continue
             
         try:
+            # [수정 4] 데이터 조회 시 시계열 밀림(Index Shift) 방어 처리
+            # 신호일(sig_date) 이후의 데이터만 추출하여 T+0을 엄격히 고정
             df = fdr.DataReader(code, sig_date)
-            time.sleep(0.5) # API 밴 방어
+            time.sleep(0.5)
             
-            if len(df) < 2: continue # T+1도 안 지났거나 정지 종목
+            if len(df) < 2: continue # T+1 미도달
             
             days_passed = len(df) - 1
-            future_df = df.iloc[1:]
+            future_df = df.iloc[1:] # T+1부터 T+N까지의 실제 추이
             
+            # 저장된 entry_price(발생 당시 진입가)를 기준으로 미래 수익률 연산
             max_gain = round(((future_df['High'].max() / entry_price) - 1) * 100, 2)
             mdd = round(((future_df['Low'].min() / entry_price) - 1) * 100, 2)
             
@@ -47,7 +49,7 @@ def process_outcomes():
                 SET after_1d_chg=?, after_3d_chg=?, after_5d_chg=?, max_gain=?, max_drawdown=?, evaluation_status=?
                 WHERE id=?
             ''', (a1, a3, a5, max_gain, mdd, status, pid))
-            print(f"  └ [{code}] 업데이트 완료 (상태: {status}, T+{days_passed} 진행)")
+            print(f"  └ [{code}] 업데이트 완료 (상태: {status}, T+{days_passed} 경과)")
             
         except Exception as e:
             print(f"❌ [{code}] 에러: {e}")
