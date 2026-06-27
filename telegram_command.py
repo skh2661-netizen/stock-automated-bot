@@ -32,7 +32,6 @@ def fetch_latest_candidate_data(keyword):
         conn.close()
 
 def fetch_pattern_stats(code):
-    """과거 완료된 성적표를 전수조사하여 집단 평균 통계를 도출합니다."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
@@ -60,7 +59,6 @@ def fetch_pattern_stats(code):
             """, (code,))
             wins = c.fetchone()[0]
             
-            # (승률, 5일평균수익, 최대상승, 최대낙폭, 총표본수, Level 고정값)
             return (round(wins/total*100, 1), round(avg5, 2), round(avg_gain, 2), round(avg_dd, 2), total, 1)
     except Exception as e:
         print(f"통계 집계 에러: {e}")
