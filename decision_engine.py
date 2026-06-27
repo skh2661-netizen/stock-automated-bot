@@ -86,16 +86,13 @@ def evaluate_candidates(scanner_output):
     if evaluated_results:
         for c in evaluated_results:
             memory = get_signal_persistence(c["code"])
-            # 고품질 반복을 중시하는 Memory Score 계산식 (출현 편향 억제)
             raw_memory_score = (
                 (min(memory.get("five_days_days", 0), 3) * 2) +
                 (memory.get("leader_count", 0) * 6) +
                 (max(0, 10 - memory.get("max_rank", 10)) * 1.5) +
                 (memory.get("avg_final", 0.0) * 0.02)
             )
-            # 최대 25점 Cap 적용
             memory_score = min(raw_memory_score, 25)
-            
             c["decision"]["_leader_score"] = (c['scores']['prime_final'] * 0.5) + (c['features']['conviction'] * 0.3) + (20 if "진입" in c['decision']['action'] else 0) + memory_score
             
         prime_leader = max(evaluated_results, key=lambda x: x["decision"]["_leader_score"])
@@ -106,7 +103,6 @@ def evaluate_candidates(scanner_output):
         try:
             save_candidate(run_type, i['code'], i['name'], i['scores']['score'], i['trade_plan']['buy_p'], i['trade_plan']['target_1'], i['trade_plan']['target_2'], i['trade_plan']['stop_p'], i['price'], i['chg'], i['features']['ma_gap'], i['scores']['prime_score'], i['scores']['prime_final'], i['features']['conviction'], i['features']['amount_strength'], i['features']['rs_1d'], i['features']['rs_5d'], i['features']['rs_20d'], is_leader_flag, risk_level)
             
-            # 발급된 DB 무결성 PK(history_id) 수령
             actual_history_id = save_candidate_history(
                 scan_datetime=scan_datetime, run_type=run_type, code=i['code'], name=i['name'], rank_position=rank_idx,
                 price=i['price'], chg=i['chg'], prime_final=i['scores']['prime_final'], prime_score=i['scores']['prime_score'],
@@ -117,7 +113,6 @@ def evaluate_candidates(scanner_output):
             
             action_type = i["decision"]["action"]
             if is_leader_flag or "최우선" in action_type or "진입" in action_type or "방어" in action_type:
-                # 정확한 history_id로 성적표 PENDING 등록
                 register_signal_outcome(
                     history_id=actual_history_id, 
                     code=i['code'], 
