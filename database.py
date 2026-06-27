@@ -16,6 +16,17 @@ def init_db():
 
 init_db()
 
+# [필수 누락 복구] 텔레그램 봇이 반드시 호출하는 기억 레이어 함수
+def get_signal_persistence(code):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
+    five_days_ago = (datetime.now(pytz.timezone("Asia/Seoul")) - timedelta(days=5)).strftime("%Y-%m-%d")
+    c.execute("SELECT COUNT(*), COUNT(DISTINCT SUBSTR(scan_datetime, 1, 10)), MIN(rank_position), SUM(is_leader), AVG(prime_final) FROM candidate_history WHERE code = ? AND scan_datetime >= ?", (code, five_days_ago))
+    row = c.fetchone()
+    conn.close()
+    return {"today_count": row[0] if row else 0, "five_days_days": row[1] if row else 0, "max_rank": row[2] if row and row[2] else 99, "leader_count": row[3] if row and row[3] else 0, "avg_final": round(row[4], 1) if row and row[4] else 0.0}
+
 def save_candidate_history(scan_datetime, run_type, code, name, rank_position, price, chg, prime_final, prime_score, conviction, rs_1d, rs_5d, rs_20d, ma_gap, amount, amount_strength, risk_level, is_leader=0):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -44,8 +55,10 @@ def get_signal_quality(risk_level, rs_20d, conviction):
                      WHERE o.evaluation_status = 'COMPLETED' AND o.market_regime = ? AND h.rs_20d BETWEEN ? AND ? AND h.conviction BETWEEN ? AND ?''',
                   (regime, rs_20d-m["rs"], rs_20d+m["rs"], conviction-m["conv"], conviction+m["conv"]))
         rows = c.fetchall()
-        if len(rows) >= 5: # 표본 5개 이상 보장
-            return {"win_rate": round(len([r for r in rows if r[0] > 0])/len(rows)*100, 1), "match_count": len(rows), "is_valid": True}
+        if len(rows) >= 5:
+            win_rate = round(len([r for r in rows if r[0] > 0])/len(rows)*100, 1)
+            conn.close()
+            return {"win_rate": win_rate, "match_count": len(rows), "is_valid": True}
     conn.close()
     return {"win_rate": 0.0, "match_count": 0, "is_valid": False}
 
