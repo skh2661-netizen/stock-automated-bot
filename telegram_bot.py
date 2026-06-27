@@ -5,45 +5,36 @@ import asyncio
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# [수정] main.py의 await 호출 규격에 맞춘 비동기 처리
 async def send_message(text):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ 텔레그램 설정 오류")
-        return False
-        
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
-    
     try:
-        # 비동기 환경에서 requests 블로킹 방지
         response = await asyncio.to_thread(requests.post, url, json=payload, timeout=10)
         response.raise_for_status()
         return True
-    except Exception as e:
-        print(f"❌ 텔레그램 메세지 전송 실패: {e}")
-        return False
+    except Exception: return False
 
-# [수정] main.py가 호출하는 run_type, result 인자 구조 확립
 def format_scan_messages(run_type, result):
-    if not result or "candidates" not in result: 
-        return ["⚠️ 데이터 추출 실패"]
+    if not result or "candidates" not in result: return ["⚠️ 데이터 추출 실패"]
     
     market = result.get("market", {})
     candidates = result.get("candidates", [])
-    risk_level = market.get("risk_level", 1)
-    risk_text = "위험도 0/100 (안정)" if risk_level == 1 else ("위험도 50/100 (조정)" if risk_level == 2 else "위험도 100/100 (극단적 약세)")
+    regime = market.get("regime", "NORMAL")
     
-    survival_count = sum(1 for c in candidates if "폭락장 상대강도 리더" in c["decision"]["action"] or "생존 감시 대상" in c["decision"]["action"])
+    survival_count = sum(1 for c in candidates if "리더" in c["decision"]["action"] or "감시" in c["decision"]["action"])
     
     msg_list = []
-    header = f"🎯 <b>V8.8.17 DAILY QUANT REPORT ({run_type})</b>\n\n"
-    header += f"📊 <b>시장 지표</b>\n"
-    header += f"KOSPI: {market.get('kospi', 0.0)}% | 시장 진단: {risk_text}\n"
-    header += f"폭락장 생존 후보 포착: {survival_count} / {len(candidates)}\n"
+    header = f"🎯 <b>V8.8.18 DAILY QUANT REPORT ({run_type})</b>\n\n"
+    header += f"📊 <b>시장 지표 ({regime} 국면)</b>\n"
+    header += f"KOSPI: {market.get('kospi', 0.0)}% | KOSDAQ: {market.get('kosdaq', 0.0)}%\n"
+    header += f"전체 스캔 후보: {len(candidates)}개\n"
+    header += f"주도(방어) 리더 포착: {survival_count}개\n"
     header += "━" * 20 + "\n\n"
     current_msg = header
     
-    for idx, c in enumerate(candidates, 1):
+    # [교정] 상위 10개로 출력 개수 하드 리미트
+    for idx, c in enumerate(candidates[:10], 1):
         is_leader = c["decision"].get("is_prime_leader", False)
         icon = "👑 [PRIME WATCH]" if is_leader else f"🔹 {idx}위"
         
@@ -52,9 +43,11 @@ def format_scan_messages(run_type, result):
         block += f"Final: {c['scores']['prime_final']} | Prime: {c['scores']['prime_score']}\n"
         block += f"RS20D: {'+' if c['features']['rs_20d']>0 else ''}{c['features']['rs_20d']}% | Conv: {c['features']['conviction']}\n\n"
         
+        # [교정] 연결이 복구된 지속성 분석 출력
         t10 = c['decision'].get('top10_stability', {})
         block += f"📌 <b>지속성 분석</b>\n"
-        block += f"TOP10 유지: {t10.get('top10_count', 0)}회 | 최근 {t10.get('days', 0)}일 출현\n"
+        block += f"오늘 누적 포착: {t10.get('top10_count', 0)}회\n"
+        block += f"최근 출현 일수: {t10.get('recent_days', 0)}일\n"
         block += f"평균 순위: {t10.get('avg_rank', 0.0)}위\n\n"
         
         block += f"🎯 <b>매매 준비도</b>\n"
