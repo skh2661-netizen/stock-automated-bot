@@ -1,4 +1,4 @@
-from datetime import datetime
+import datetime
 import pytz
 from database import save_candidate_history, get_signal_persistence, register_signal_outcome, get_signal_quality, get_top10_stability, save_top10_tracking
 
@@ -12,8 +12,7 @@ def evaluate_candidates(scanner_output):
     run_type = market.get("mode", "OPEN_SCAN")
     risk_level = market.get("risk_level", 1)
     
-    # [수정] 모듈 참조 오류 해결 (정상적인 시간 객체 생성)
-    scan_datetime = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
+    scan_datetime = datetime.datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
     
     evaluated_results = []
     
@@ -82,3 +81,15 @@ def evaluate_candidates(scanner_output):
     for rank_idx, i in enumerate(evaluated_results, 1):
         try:
             if rank_idx <= 10:
+                save_top10_tracking(scan_datetime, i['code'], i['name'], rank_idx, i['scores']['prime_final'], risk_level)
+                
+            actual_history_id = save_candidate_history(scan_datetime, run_type, i['code'], i['name'], rank_idx, i['price'], i['chg'], i['scores']['prime_final'], i['scores']['prime_score'], i['features']['conviction'], i['features']['rs_1d'], i['features']['rs_5d'], i['features']['rs_20d'], i['features']['ma_gap'], i['features']['amount'], i['features']['amount_strength'], risk_level, (1 if i["decision"].get("is_prime_leader") else 0))
+            
+            action_type = i["decision"]["action"]
+            if "리더" in action_type or "최우선" in action_type or "진입" in action_type:
+                register_signal_outcome(actual_history_id, i['code'], i['name'], i['price'], risk_level)
+                
+        except Exception:
+            pass
+            
+    return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": evaluated_results}
