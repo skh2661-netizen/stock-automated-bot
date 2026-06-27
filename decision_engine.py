@@ -38,6 +38,7 @@ def evaluate_candidates(scanner_output):
         reason = []
         rank_bonus = 0
         
+        # [수정 3 & 5] 폭락장(Risk 3) 셧다운 방어 로직 적용
         if feats["is_overheated"]:
             action = "⏳ 눌림 대기"
             reason.append("가격 확장 상태 (신규 진입 효율 감소)")
@@ -50,9 +51,10 @@ def evaluate_candidates(scanner_output):
             reason.append("20일선 하방 이격 (낙폭 과대)")
         elif risk_level == 3:
             if feats["rs_20d"] > 20 and feats["conviction"] >= 60:
-                action = "🔥 최우선 관찰"
-                reason.append("폭락장 생존 및 강력한 수급 동반 (분할 접근)")
+                action = "🔥 시장 생존 리더"
+                reason.append("폭락장 생존 및 강력한 수급 동반 (즉시 진입 금지)")
                 rank_bonus += 20
+                trade_plan["buy_p"] = 0 # 실전 매매 필터: 즉시 진입가 블라인드 처리
             elif feats["rs_20d"] > 20:
                 action = "🟡 방어 후보"
                 reason.append("상대강도는 높으나 수급(Conviction) 부족")
@@ -72,7 +74,6 @@ def evaluate_candidates(scanner_output):
         elif feats["conviction"] < 60: reason.append("확신 형성 과정 (눌림 확인 필요)")
             
         rank_score = scores["prime_final"] + rank_bonus
-        
         pattern_stats = get_signal_quality(risk_level, feats["rs_20d"], feats["conviction"])
         
         evaluated_results.append({
@@ -86,13 +87,14 @@ def evaluate_candidates(scanner_output):
     if evaluated_results:
         for c in evaluated_results:
             memory = get_signal_persistence(c["code"])
-            raw_memory_score = (
-                (min(memory.get("five_days_days", 0), 3) * 2) +
-                (memory.get("leader_count", 0) * 6) +
-                (max(0, 10 - memory.get("max_rank", 10)) * 1.5) +
-                (memory.get("avg_final", 0.0) * 0.02)
-            )
-            memory_score = min(raw_memory_score, 25)
+            stats = c["pattern_stats"]
+            
+            # [수정 2] 출현 편향 제거 및 실제 승률(Outcome) 기반의 Memory Confidence 재설계
+            persistence_score = (min(memory.get("five_days_days", 0), 3) * 2) + (memory.get("leader_count", 0) * 6) + max(0, 10 - memory.get("max_rank", 10))
+            win_rate = stats.get("win_rate", 0.0) if stats.get("is_valid") else 0.0
+            sample_count = stats.get("match_count", 0)
+            
+            memory_score = (persistence_score * 0.4) + (win_rate * 0.4) + (min(sample_count, 20) * 0.2)
             c["decision"]["_leader_score"] = (c['scores']['prime_final'] * 0.5) + (c['features']['conviction'] * 0.3) + (20 if "진입" in c['decision']['action'] else 0) + memory_score
             
         prime_leader = max(evaluated_results, key=lambda x: x["decision"]["_leader_score"])
@@ -108,17 +110,12 @@ def evaluate_candidates(scanner_output):
                 price=i['price'], chg=i['chg'], prime_final=i['scores']['prime_final'], prime_score=i['scores']['prime_score'],
                 conviction=i['features']['conviction'], rs_1d=i['features']['rs_1d'], rs_5d=i['features']['rs_5d'], rs_20d=i['features']['rs_20d'],
                 ma_gap=i['features']['ma_gap'], amount=i['features']['amount'], amount_strength=i['features']['amount_strength'],
-                risk_level=risk_level, is_leader=is_leader_flag, engine_version="V8.8.13"
+                risk_level=risk_level, is_leader=is_leader_flag, engine_version="V8.8.14"
             )
             
             action_type = i["decision"]["action"]
-            if is_leader_flag or "최우선" in action_type or "진입" in action_type or "방어" in action_type:
-                register_signal_outcome(
-                    history_id=actual_history_id, 
-                    code=i['code'], 
-                    name=i['name'], 
-                    price_at_signal=i['price']
-                )
+            if is_leader_flag or "최우선" in action_type or "진입" in action_type or "생존 리더" in action_type or "방어" in action_type:
+                register_signal_outcome(history_id=actual_history_id, code=i['code'], name=i['name'], price_at_signal=i['price'])
                 
         except Exception:
             import traceback
