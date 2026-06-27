@@ -7,46 +7,32 @@ DB_PATH = "quant_data.db"
 
 def migrate_db():
     tables = {
-        "candidates": {
-            "engine_version": "TEXT DEFAULT 'V8.8.16'"
-        },
-        "candidate_history": {
-            "engine_version": "TEXT DEFAULT 'V8.8.16'"
-        },
-        "signal_outcome": {
-            "market_regime": "TEXT DEFAULT 'NORMAL'"
-        }
+        "candidates": {"engine_version": "TEXT DEFAULT 'V8.8.17'"},
+        "candidate_history": {"engine_version": "TEXT DEFAULT 'V8.8.17'"},
+        "signal_outcome": {"market_regime": "TEXT DEFAULT 'NORMAL'"}
     }
-    
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
     for table, columns in tables.items():
         try:
             c.execute(f"PRAGMA table_info({table})")
             existing = [row[1] for row in c.fetchall()]
-            
-            # 테이블이 존재할 경우에만 ALTER TABLE 수행
             if existing:
                 for col, dtype in columns.items():
                     if col not in existing:
                         c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {dtype}")
-        except Exception as e:
-            print(f"⚠️ {table} 마이그레이션 에러: {e}")
-            
+        except Exception: pass
     conn.commit()
     conn.close()
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, run_type TEXT, code TEXT, name TEXT, score INTEGER, buy_p INTEGER, target_1 INTEGER, target_2 INTEGER, stop_p INTEGER, price INTEGER, chg REAL, ma_gap REAL, prime_score INTEGER, final_rank REAL, conviction INTEGER, amount_strength REAL, rs_1d REAL, rs_5d REAL, rs_20d REAL, defense INTEGER, risk_level INTEGER, sent_telegram INTEGER DEFAULT 0, engine_version TEXT DEFAULT 'V8.8.16')''')
-    c.execute('''CREATE TABLE IF NOT EXISTS candidate_history (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_datetime TEXT, run_type TEXT, code TEXT, name TEXT, rank_position INTEGER, price INTEGER, chg REAL, prime_final REAL, prime_score REAL, conviction REAL, rs_1d REAL, rs_5d REAL, rs_20d REAL, ma_gap REAL, amount INTEGER, amount_strength REAL, risk_level INTEGER, is_leader INTEGER DEFAULT 0, created_at TEXT, engine_version TEXT DEFAULT 'V8.8.16')''')
+    c.execute('''CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, run_type TEXT, code TEXT, name TEXT, score INTEGER, buy_p INTEGER, target_1 INTEGER, target_2 INTEGER, stop_p INTEGER, price INTEGER, chg REAL, ma_gap REAL, prime_score INTEGER, final_rank REAL, conviction INTEGER, amount_strength REAL, rs_1d REAL, rs_5d REAL, rs_20d REAL, defense INTEGER, risk_level INTEGER, sent_telegram INTEGER DEFAULT 0, engine_version TEXT DEFAULT 'V8.8.17')''')
+    c.execute('''CREATE TABLE IF NOT EXISTS candidate_history (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_datetime TEXT, run_type TEXT, code TEXT, name TEXT, rank_position INTEGER, price INTEGER, chg REAL, prime_final REAL, prime_score REAL, conviction REAL, rs_1d REAL, rs_5d REAL, rs_20d REAL, ma_gap REAL, amount INTEGER, amount_strength REAL, risk_level INTEGER, is_leader INTEGER DEFAULT 0, created_at TEXT, engine_version TEXT DEFAULT 'V8.8.17')''')
     c.execute('''CREATE TABLE IF NOT EXISTS signal_outcome (id INTEGER PRIMARY KEY AUTOINCREMENT, history_id INTEGER, code TEXT, name TEXT, signal_date TEXT, price_at_signal INTEGER, after_1d_chg REAL DEFAULT 0.0, after_3d_chg REAL DEFAULT 0.0, after_5d_chg REAL DEFAULT 0.0, max_gain REAL DEFAULT 0.0, max_drawdown REAL DEFAULT 0.0, evaluation_status TEXT DEFAULT 'PENDING', market_regime TEXT)''')
     conn.commit()
     conn.close()
-    
-    # DB 초기화 직후 누락된 컬럼을 검사하여 자동 마이그레이션 수행
     migrate_db()
 
 init_db()
@@ -60,17 +46,26 @@ def get_signal_persistence(code):
     conn.close()
     return {"today_count": row[0] if row else 0, "five_days_days": row[1] if row else 0, "max_rank": row[2] if row and row[2] else 99, "leader_count": row[3] if row and row[3] else 0, "avg_final": round(row[4], 1) if row and row[4] else 0.0}
 
+# [신규] 당일 TOP10 유지 횟수 및 시간 추적기
+def get_top10_stability(code):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    today = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
+    c.execute('''SELECT COUNT(*), AVG(rank_position) FROM candidate_history WHERE code = ? AND rank_position <= 10 AND scan_datetime LIKE ?''', (code, f"{today}%"))
+    row = c.fetchone()
+    conn.close()
+    return {"top10_count": row[0] if row else 0, "avg_rank": round(row[1], 1) if row and row[1] else 0.0}
+
 def save_candidate_history(scan_datetime, run_type, code, name, rank_position, price, chg, prime_final, prime_score, conviction, rs_1d, rs_5d, rs_20d, ma_gap, amount, amount_strength, risk_level, is_leader=0):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''INSERT INTO candidate_history (scan_datetime, run_type, code, name, rank_position, price, chg, prime_final, prime_score, conviction, rs_1d, rs_5d, rs_20d, ma_gap, amount, amount_strength, risk_level, is_leader, created_at, engine_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'V8.8.16')''',
+    c.execute('''INSERT INTO candidate_history (scan_datetime, run_type, code, name, rank_position, price, chg, prime_final, prime_score, conviction, rs_1d, rs_5d, rs_20d, ma_gap, amount, amount_strength, risk_level, is_leader, created_at, engine_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'V8.8.17')''',
               (scan_datetime, run_type, code, name, rank_position, price, chg, prime_final, prime_score, conviction, rs_1d, rs_5d, rs_20d, ma_gap, amount, amount_strength, risk_level, is_leader, datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     inserted_id = c.lastrowid
     conn.close()
     return inserted_id
 
-# [수정 1] 인자 누락 시 에러 방지를 위한 기본값(risk_level=1) 적용
 def register_signal_outcome(history_id, code, name, price_at_signal, risk_level=1):
     if not history_id: return
     regime = "CRASH" if risk_level == 3 else ("WARNING" if risk_level == 2 else "NORMAL")
@@ -100,7 +95,7 @@ def get_signal_quality(risk_level, rs_20d, conviction):
 def save_candidate(run_type, code, name, score, buy_p, t1, t2, stop, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''INSERT INTO candidates (date, run_type, code, name, score, buy_p, target_1, target_2, stop_p, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level, sent_telegram, engine_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'V8.8.16')''', 
+    c.execute('''INSERT INTO candidates (date, run_type, code, name, score, buy_p, target_1, target_2, stop_p, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level, sent_telegram, engine_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'V8.8.17')''', 
               (datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S"), run_type, code, name, score, buy_p, t1, t2, stop, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level))
     conn.commit()
     conn.close()
