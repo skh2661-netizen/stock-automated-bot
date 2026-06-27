@@ -37,7 +37,6 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # 1. 기존 CANDIDATES 테이블
     c.execute('''CREATE TABLE IF NOT EXISTS candidates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT, run_type TEXT, code TEXT, name TEXT, score INTEGER,
@@ -49,7 +48,6 @@ def init_db():
         engine_version TEXT DEFAULT 'V8.8.13'
     )''')
     
-    # 2. 기존 HOLDING ENGINE 전용 포트폴리오 테이블
     c.execute('''CREATE TABLE IF NOT EXISTS holding_table (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT UNIQUE,
@@ -62,7 +60,6 @@ def init_db():
         theme TEXT
     )''')
 
-    # 3. MEMORY LAYER 1단계: 상태 스냅샷 및 관측 기록 (버전 트래킹 추가)
     c.execute('''CREATE TABLE IF NOT EXISTS candidate_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scan_datetime TEXT,
@@ -87,7 +84,6 @@ def init_db():
         engine_version TEXT DEFAULT 'V8.8.13'
     )''')
     
-    # 4. MEMORY LAYER 2단계: 과거 신호의 미래 수익률 추적 성적표 테이블
     c.execute('''CREATE TABLE IF NOT EXISTS signal_outcome (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         history_id INTEGER,          
@@ -180,4 +176,100 @@ def register_signal_outcome(history_id, code, name, price_at_signal):
         conn.close()
 
 def get_signal_quality(risk_level, rs_20d, conviction):
-    conn = sqlite3.connect(
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    fallback_levels = [
+        {"rs_margin": 15.0, "conv_margin": 10},
+        {"rs_margin": 30.0, "conv_margin": 20},
+        {"rs_margin": 50.0, "conv_margin": 40}
+    ]
+    quality_stats = {"match_count": 0, "win_rate": 0.0, "avg_after_5d": 0.0, "avg_max_gain": 0.0, "avg_mdd": 0.0, "is_valid": False, "search_level": 0}
+    
+    try:
+        for level_idx, margins in enumerate(fallback_levels, 1):
+            rs_min = rs_20d - margins["rs_margin"]
+            rs_max = rs_20d + margins["rs_margin"]
+            conv_min = conviction - margins["conv_margin"]
+            conv_max = conviction + margins["conv_margin"]
+            
+            c.execute('''
+                SELECT o.after_5d_chg, o.max_gain, o.max_drawdown 
+                FROM signal_outcome o
+                JOIN candidate_history h ON o.history_id = h.id
+                WHERE o.evaluation_status = 'COMPLETED'
+                  AND h.risk_level = ?
+                  AND h.rs_20d BETWEEN ? AND ?
+                  AND h.conviction BETWEEN ? AND ?
+            ''', (risk_level, rs_min, rs_max, conv_min, conv_max))
+            
+            rows = c.fetchall()
+            if rows:
+                total = len(rows)
+                if total < 5:
+                    continue
+                    
+                wins = len([r for r in rows if r[0] > 0])
+                quality_stats["match_count"] = total
+                quality_stats["win_rate"] = round((wins / total) * 100, 1)
+                quality_stats["avg_after_5d"] = round(sum(r[0] for r in rows) / total, 2)
+                quality_stats["avg_max_gain"] = round(sum(r[1] for r in rows) / total, 2)
+                quality_stats["avg_mdd"] = round(sum(r[2] for r in rows) / total, 2)
+                quality_stats["is_valid"] = True
+                quality_stats["search_level"] = level_idx
+                break
+    except Exception as e:
+        print(f"⚠️ 유사 패턴 통계 연산 에러: {e}")
+    finally:
+        conn.close()
+    return quality_stats
+
+def save_candidate(run_type, code, name, score, buy_p, t1, t2, stop, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    kst = pytz.timezone("Asia/Seoul")
+    date_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
+    c.execute('''INSERT INTO candidates 
+        (date, run_type, code, name, score, buy_p, target_1, target_2, stop_p, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level, engine_version) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'V8.8.13')''',
+        (date_str, run_type, code, name, score, buy_p, t1, t2, stop, price, chg, ma_gap, prime_score, final_rank, conviction, amount_strength, rs_1d, rs_5d, rs_20d, defense, risk_level))
+    conn.commit()
+    conn.close()
+
+def mark_telegram_sent(target_codes):
+    if not target_codes:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        for code in target_codes:
+            c.execute("UPDATE candidates SET sent_telegram = 1 WHERE code = ? AND sent_telegram = 0", (code,))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+def add_holding(code, name, buy_price, quantity, weight, sector, theme):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    kst = pytz.timezone("Asia/Seoul")
+    buy_date = datetime.now(kst).strftime("%Y-%m-%d")
+    try:
+        c.execute('''INSERT OR REPLACE INTO holding_table 
+            (code, name, buy_price, quantity, weight, buy_date, sector, theme) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+            (code, name, buy_price, quantity, weight, buy_date, sector, theme))
+        conn.commit()
+    except Exception as e:
+        print(f"⚠️ 보유 종목 저장 실패: {e}")
+    finally:
+        conn.close()
+
+def get_all_holdings():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT code, name, buy_price, quantity, weight, buy_date, sector, theme FROM holding_table")
+    rows = c.fetchall()
+    conn.close()
+    return rows
