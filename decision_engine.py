@@ -1,6 +1,6 @@
 import datetime
 import pytz
-from database import save_candidate, save_candidate_history
+from database import save_candidate, save_candidate_history, get_signal_persistence
 
 def calculate_trade_plan(price, ma20_price, ma_gap, score):
     if ma_gap > 20: buy_p = int(price * 0.92)
@@ -38,6 +38,7 @@ def evaluate_candidates(scanner_output):
         reason = []
         rank_bonus = 0
         
+        # [수정 1] 폭락장(Risk 3) 디테일 판정: 가짜 방어주 걸러내기
         if feats["is_overheated"]:
             action = "⏳ 눌림 대기"
             reason.append("가격 확장 상태 (신규 진입 효율 감소)")
@@ -48,10 +49,15 @@ def evaluate_candidates(scanner_output):
         elif feats["ma_gap"] < -10:
             action = "♻️ 낙폭 과대 (RECOVERY)"
             reason.append("20일선 하방 이격 (낙폭 과대)")
-        elif risk_level == 3 and feats["rs_20d"] > 20:
-            action = "🔥 최우선 관찰"
-            reason.append("시장 급락 속 주도력 유지")
-            rank_bonus += 20
+        elif risk_level == 3:
+            if feats["rs_20d"] > 20 and feats["conviction"] >= 60:
+                action = "🔥 최우선 관찰"
+                reason.append("폭락장 생존 및 강력한 수급 동반 (분할 접근)")
+                rank_bonus += 20
+            elif feats["rs_20d"] > 20:
+                action = "🟡 방어 후보"
+                reason.append("상대강도는 높으나 수급(Conviction) 부족")
+                rank_bonus += 5
         elif scores["prime_score"] >= 75 and -10 <= feats["ma_gap"] <= 15:
             action = "🔥 최우선 관찰"
             reason.append("시장 대비 강한 수급 (분할 접근)")
@@ -76,19 +82,23 @@ def evaluate_candidates(scanner_output):
         
     evaluated_results.sort(key=lambda x: x["decision"]["rank_score"], reverse=True)
     
+    # [수정 2] 프라임 리더 선출 시 Memory Layer(기억)의 반복 출현 가중치 부여
     if evaluated_results:
-        # 가장 가치 있는 프라임 워치 선정
-        prime_leader = max(evaluated_results, key=lambda x: x['scores']['prime_final'] * 0.5 + x['features']['conviction'] * 0.3 + (20 if "진입" in x['decision']['action'] else 0))
+        for c in evaluated_results:
+            memory = get_signal_persistence(c["code"])
+            # 최근 5일 중 출현한 일수(days) 하나당 3점씩 보너스 (최대 15점)
+            persistence_bonus = min(memory.get("five_days_days", 0) * 3, 15)
+            # 임시 연산용 리더 스코어 저장 (DB에는 저장 안 함)
+            c["decision"]["_leader_score"] = (c['scores']['prime_final'] * 0.5) + (c['features']['conviction'] * 0.3) + (20 if "진입" in c['decision']['action'] else 0) + persistence_bonus
+            
+        prime_leader = max(evaluated_results, key=lambda x: x["decision"]["_leader_score"])
         prime_leader["decision"]["is_prime_leader"] = True
         
-    # [수정 이관] 최종 결정이 내려진 뒤 Memory Layer에 타임스탬프 스냅샷 영구 저장
     for rank_idx, i in enumerate(evaluated_results, 1):
         is_leader_flag = 1 if i["decision"]["is_prime_leader"] else 0
         try:
-            # 1. 호환성 보존용 레거시 테이블 저장
             save_candidate(run_type, i['code'], i['name'], i['scores']['score'], i['trade_plan']['buy_p'], i['trade_plan']['target_1'], i['trade_plan']['target_2'], i['trade_plan']['stop_p'], i['price'], i['chg'], i['features']['ma_gap'], i['scores']['prime_score'], i['scores']['prime_final'], i['features']['conviction'], i['features']['amount_strength'], i['features']['rs_1d'], i['features']['rs_5d'], i['features']['rs_20d'], is_leader_flag, risk_level)
             
-            # 2. 신규 히스토리 메모리 디렉토리 저장
             save_candidate_history(
                 scan_datetime=scan_datetime, run_type=run_type, code=i['code'], name=i['name'], rank_position=rank_idx,
                 price=i['price'], chg=i['chg'], prime_final=i['scores']['prime_final'], prime_score=i['scores']['prime_score'],
