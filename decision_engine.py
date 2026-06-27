@@ -38,7 +38,6 @@ def evaluate_candidates(scanner_output):
         reason = []
         rank_bonus = 0
         
-        # 폭락장(Risk 3) 디테일 수급 정밀 필터링 구현
         if feats["is_overheated"]:
             action = "⏳ 눌림 대기"
             reason.append("가격 확장 상태 (신규 진입 효율 감소)")
@@ -74,43 +73,41 @@ def evaluate_candidates(scanner_output):
             
         rank_score = scores["prime_final"] + rank_bonus
         
-        # [STEP 4.5 선행 연산] 과거 동형 패턴의 실전 성적표 데이터 호출
+        # 3단계 하향식 Fallback 패턴 매칭 적용
         pattern_stats = get_signal_quality(risk_level, feats["rs_20d"], feats["conviction"])
         
         evaluated_results.append({
             "code": raw["code"], "name": raw["name"], "price": raw["price"], "chg": raw["chg"],
-            "features": feats, "scores": scores, "trade_plan": trade_plan,
-            "pattern_stats": pattern_stats, # 입(Telegram)이 읽을 수 있도록 성적표 투하
+            "features": feats, "scores": scores, "trade_plan": trade_plan, "pattern_stats": pattern_stats,
             "decision": {"action": action, "reason": reason, "rank_score": rank_score, "is_prime_leader": False}
         })
         
     evaluated_results.sort(key=lambda x: x["decision"]["rank_score"], reverse=True)
     
-    # [교정 완료] 단순 빈도 조사를 배제한 다면적 'Memory Confidence Score' 모델 연산
+    # 기하학적 누적 신뢰 지표 산출 및 최대 25점 고정 상한선(Cap) 규제
     if evaluated_results:
         for c in evaluated_results:
             memory = get_signal_persistence(c["code"])
-            
-            # 형님의 기하학적 다면 기억 공식 100% 반영
-            memory_score = (
-                (memory.get("five_days_days", 0) * 3) +
-                (memory.get("leader_count", 0) * 5) +
+            raw_memory_score = (
+                (memory.get("five_days_days", 0) * 2) +
+                (memory.get("leader_count", 0) * 3) +
                 max(0, 10 - memory.get("max_rank", 10)) +
-                (memory.get("avg_final", 0.0) * 0.05)
+                (memory.get("avg_final", 0.0) * 0.03)
             )
-            
-            # 리더 선정 연산식에 정밀 고도화된 memory_score를 바인딩
+            memory_score = min(raw_memory_score, 25)
             c["decision"]["_leader_score"] = (c['scores']['prime_final'] * 0.5) + (c['features']['conviction'] * 0.3) + (20 if "진입" in c['decision']['action'] else 0) + memory_score
             
         prime_leader = max(evaluated_results, key=lambda x: x["decision"]["_leader_score"])
         prime_leader["decision"]["is_prime_leader"] = True
         
+    # 완결된 판결 정보 기반의 Memory 영구 귀속 및 복기 성적표 연동
     for rank_idx, i in enumerate(evaluated_results, 1):
         is_leader_flag = 1 if i["decision"]["is_prime_leader"] else 0
         try:
             save_candidate(run_type, i['code'], i['name'], i['scores']['score'], i['trade_plan']['buy_p'], i['trade_plan']['target_1'], i['trade_plan']['target_2'], i['trade_plan']['stop_p'], i['price'], i['chg'], i['features']['ma_gap'], i['scores']['prime_score'], i['scores']['prime_final'], i['features']['conviction'], i['features']['amount_strength'], i['features']['rs_1d'], i['features']['rs_5d'], i['features']['rs_20d'], is_leader_flag, risk_level)
             
-            save_candidate_history(
+            # 실제 DB가 발급한 역전 고유 ID를 수령 (버그 원천 제거)
+            actual_history_id = save_candidate_history(
                 scan_datetime=scan_datetime, run_type=run_type, code=i['code'], name=i['name'], rank_position=rank_idx,
                 price=i['price'], chg=i['chg'], prime_final=i['scores']['prime_final'], prime_score=i['scores']['prime_score'],
                 conviction=i['features']['conviction'], rs_1d=i['features']['rs_1d'], rs_5d=i['features']['rs_5d'], rs_20d=i['features']['rs_20d'],
@@ -120,7 +117,8 @@ def evaluate_candidates(scanner_output):
             
             action_type = i["decision"]["action"]
             if is_leader_flag or "최우선" in action_type or "진입" in action_type or "방어" in action_type:
-                register_signal_outcome(history_id=rank_idx, code=i['code'], name=i['name'], price_at_signal=i['price'])
+                # 발급받은 무결성 고유 ID를 주입하여 관계형 매핑 수행
+                register_signal_outcome(actual_history_id, i['code'], i['name'], i['price'])
                 
         except Exception:
             import traceback
