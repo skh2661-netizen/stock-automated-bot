@@ -2,18 +2,25 @@ import os
 import requests
 import asyncio
 
+# GitHub Secrets 또는 환경 변수에서 토큰 호출
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 async def send_message(text):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return False
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
+        print("⚠️ 텔레그램 토큰(TELEGRAM_TOKEN) 또는 방 번호(TELEGRAM_CHAT_ID)가 설정되지 않았습니다.")
+        return False
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+    
     try:
         response = await asyncio.to_thread(requests.post, url, json=payload, timeout=10)
         response.raise_for_status()
         return True
-    except Exception: return False
+    except Exception as e: 
+        print(f"❌ 텔레그램 메세지 전송 실패: {e}")
+        return False
 
 def format_scan_messages(run_type, result):
     if not result or "candidates" not in result: return ["⚠️ 데이터 추출 실패"]
@@ -25,7 +32,7 @@ def format_scan_messages(run_type, result):
     max_obj = market.get("max_level_obj", {})
     
     msg_list = []
-    header = f"🎯 <b>V8.8.29 DAILY QUANT REPORT</b>\n\n"
+    header = f"🎯 <b>V8.8.30 DAILY QUANT REPORT</b>\n\n"
     
     header += f"📌 <b>오늘 투자 결론</b>\n\n"
     header += f"시장: <b>{regime}</b>\n{direction}\n\n"
@@ -54,20 +61,36 @@ def format_scan_messages(run_type, result):
         rs_str = "시장 대비 압도적인 상승 모멘텀" if rs_val >= 30 else ("최근 20일 시장보다 강한 상승 흐름" if rs_val > 0 else "시장 대비 상대적 약세 흐름 (주의)")
         conv_str = "강력한 거래량 및 매수 주체 확인" if conv_val >= 65 else ("기본적인 수급 유입 확인됨" if conv_val >= 50 else "뚜렷한 수급 주체 및 폭발력 부족")
         
-        block += f"왜 선정?\n"
         block += f"상대강도(RS20D): {'+' if rs_val>0 else ''}{rs_val}%\n"
         block += f"해석: {rs_str}\n\n"
         
         block += f"수급확신도: {conv_val}점\n"
         block += f"해석: {conv_str}\n\n"
         
+        # [패치] 기계적인 데이터 나열 소거 및 UX 기반 TOP10 지속성 브리핑 내재화
+        t10 = c['decision'].get('top10_stability', {})
+        top10_count = t10.get('top10_count', 0)
+        avg_rank = t10.get('avg_rank', 0.0)
+        
+        block += f"📌 <b>TOP10 지속성</b>\n"
+        if top10_count >= 5:
+            block += f"강한 유지력 ({top10_count}회 출현)\n"
+        elif top10_count >= 2:
+            block += f"관심 유지 ({top10_count}회 출현)\n"
+        else:
+            block += f"신규 진입 후보 ({top10_count}회 출현)\n"
+            
+        if avg_rank:
+            block += f"평균 순위: {round(avg_rank, 1)}위\n"
+        block += "\n"
+        
         ready = c['decision'].get('buy_readiness', {})
-        lvl_num = ready.get('level', 'LEVEL 0').replace("LEVEL ", "")
         
         block += f"🎯 <b>매매 판단</b>\n\n"
         block += f"<b>{ready.get('level', 'LEVEL 0')} / 4단계</b>\n"
         block += f"{ready.get('title', '상태 불명')}\n\n"
-        block += f"현재 위치:\n4단계 중 {lvl_num}단계 도달\n\n"
+        
+        # [패치] '현재 위치(중복 정보)' 블록 완전 삭제
         block += f"의미:\n{ready.get('meaning', '-')}\n\n"
         block += f"추천 행동:\n{ready.get('action', '-')}\n\n"
         
