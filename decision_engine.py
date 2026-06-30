@@ -51,8 +51,6 @@ def evaluate_candidates(scanner_output):
     kospi_1d, kosdaq_1d = market.get("kospi", 0.0), market.get("kosdaq", 0.0)
     
     regime_str, risk_level, market_direction, buy_tolerance = detect_market_regime(kospi_1d, kosdaq_1d)
-    
-    # [교정] 저장 및 조회용 마스터 시계열 포맷 강제 통일 (초 단위까지 완전 일치)
     scan_datetime = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
     
     pass1_results = []
@@ -85,15 +83,17 @@ def evaluate_candidates(scanner_output):
         
     pass1_results.sort(key=lambda x: x["base_score"], reverse=True)
     
+    # [PASS 1] 1차 랭킹 DB 저장
     for rank_idx, c in enumerate(pass1_results, 1):
         try:
             if rank_idx <= 10: save_top10_tracking(scan_datetime, c['code'], c['name'], rank_idx, c['base_score'], risk_level)
             c["history_id"] = save_candidate_history(scan_datetime, run_type, c['code'], c['name'], rank_idx, c['price'], c['chg'], c['scores']['prime_final'], c['scores']['prime_score'], c['features']['conviction'], c['features']['rs_1d'], c['features']['rs_5d'], c['features']['rs_20d'], c['features']['ma_gap'], c['features']['amount'], c['features']['amount_strength'], risk_level, 0)
-        except Exception: pass
+        except Exception as e:
+            print(f"❌ [DB SAVE ERROR] {c['code']} {c['name']} : {e}")
 
+    # [PASS 2] 방금 저장된 데이터 포함하여 지속성 재조회
     final_results = []
     for c in pass1_results:
-        # [신규] TOP10 강제 디버그 출력
         debug_top10(c["code"])
         
         mem = get_signal_persistence(c["code"])
