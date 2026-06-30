@@ -24,7 +24,7 @@ def format_scan_messages(run_type, result):
     direction = market.get("direction", "🟢 시장 안정")
     
     msg_list = []
-    header = f"🎯 <b>V8.8.22 DAILY QUANT REPORT</b>\n\n"
+    header = f"🎯 <b>V8.8.25 DAILY QUANT REPORT</b>\n\n"
     
     header += f"📌 <b>투자 판단 요약</b>\n"
     header += f"시장 상태: {regime} ({direction})\n"
@@ -38,7 +38,8 @@ def format_scan_messages(run_type, result):
     for idx, c in enumerate(candidates[:10], 1):
         is_leader = c["decision"].get("is_prime_leader", False)
         
-        icon = f"👑 <b>[PRIME WATCH] ({idx}위)</b>" if is_leader else f"🔹 {idx}위"
+        # [패치] 우량 리더 명칭 직관화
+        icon = f"👑 <b>[PRIME LEADER] ({idx}위)</b>" if is_leader else f"🔹 {idx}위"
         
         block = f"{icon}\n<b>{c['name']}</b> ({c['code']})\n"
         block += f"판단: {c['decision']['action']}\n"
@@ -50,7 +51,8 @@ def format_scan_messages(run_type, result):
         block += f"최근 출현 일수: {t10.get('recent_days', 0)}일\n"
         block += f"평균 순위: {t10.get('avg_rank', 0.0)}위\n\n"
         
-        block += f"🎯 <b>매매 준비도</b>\n"
+        # [패치] 타이밍 판단 명칭 직관화
+        block += f"🎯 <b>TRADE READY (매매 준비도)</b>\n"
         block += f"상태: {c['decision'].get('buy_readiness', '👀 LEVEL 0: 관찰')}\n"
         
         next_conds = c['decision'].get('next_conditions', [])
