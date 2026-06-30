@@ -3,41 +3,40 @@ import pytz
 from database import save_candidate_history, get_signal_persistence, register_signal_outcome, get_signal_quality, get_top10_stability, save_top10_tracking, debug_history, debug_top10
 
 def detect_market_regime(kospi, kosdaq):
-    if kospi >= 1.0 and kosdaq >= 1.0: return "BULL", 0, "🟢 위험선호 증가 (초강세장)", "85%"
-    elif kospi >= 1.0: return "BULL", 0, "🟢 대형주 주도 강세", "70%"
-    elif kosdaq >= 2.0: return "ROTATION", 1, "🔵 특정 섹터 쏠림 (순환매)", "60%"
-    elif kospi <= -3.0: return "CRASH", 3, "🔴 위험회피 (폭락장)", "10% 미만"
-    elif kospi <= -1.0: return "WARNING", 2, "🟡 보수적 관망 (조정장)", "20%"
-    elif abs(kospi) < 1.0 and kosdaq >= 1.0: return "ROTATION", 1, "🔵 섹터 순환매 (차별화)", "60%"
-    else: return "SIDEWAYS", 1, "⚪ 박스권 횡보 (방향성 탐색)", "40%"
+    if kospi >= 1.0 and kosdaq >= 1.0: return "BULL", 0, "🟢 위험선호 증가 (초강세장)", "85점 / 100점"
+    elif kospi >= 1.0: return "BULL", 0, "🟢 대형주 주도 강세", "70점 / 100점"
+    elif kosdaq >= 2.0: return "ROTATION", 1, "🔵 특정 섹터 쏠림 (순환매)", "60점 / 100점"
+    elif kospi <= -3.0: return "CRASH", 3, "🔴 위험회피 (폭락장)", "10점 / 100점"
+    elif kospi <= -1.0: return "WARNING", 2, "🟡 보수적 관망 (조정장)", "20점 / 100점"
+    elif abs(kospi) < 1.0 and kosdaq >= 1.0: return "ROTATION", 1, "🔵 섹터 순환매 (차별화)", "60점 / 100점"
+    else: return "SIDEWAYS", 1, "⚪ 박스권 횡보 (방향성 탐색)", "40점 / 100점"
 
-# [신규] LEVEL별 해설 및 행동 지침 매핑 엔진
 def get_level_comment(level_key, next_conds=None):
     if next_conds is None: next_conds = []
     comments = {
         "LEVEL 0": {
             "title": "🔴 매수 금지",
             "meaning": "추세 또는 시장 환경이 좋지 않아 신규 진입 위험",
-            "action": "관망 유지"
+            "action": "관망 유지 및 현금 확보"
         },
         "LEVEL 1": {
             "title": "⚪ 관찰 단계",
             "meaning": "가능성은 있으나 매수 조건 부족",
-            "action": "추세 변화 확인"
+            "action": "추세 변화 및 수급 유입 확인"
         },
         "LEVEL 2": {
             "title": "🟡 관심 구간",
             "meaning": "우량 후보지만 아직 확실한 매수 타이밍 부족",
-            "action": "조건 충족 대기"
+            "action": "조건 충족 대기 (관심종목 편입)"
         },
         "LEVEL 3": {
             "title": "🟢 분할 매수 구간",
             "meaning": "상승 조건과 수급 흐름 확인, 단계적 진입 가능",
-            "action": "1차 분할 접근 검토"
+            "action": "1차 분할 접근 (30~40%) 검토"
         },
         "LEVEL 4": {
             "title": "🚀 적극 매수 구간",
-            "meaning": "강한 추세와 수급이 동시에 확인된 상태",
+            "meaning": "강한 추세와 수급이 동시에 확인된 확률적 우위 상태",
             "action": "적극 편입 검토"
         }
     }
@@ -53,11 +52,11 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     recent_days = top10["days"]
     
     if regime_str == "CRASH" or rs < -10:
-        return get_level_comment("LEVEL 0", ["✔ 추세 복구(RS20D -10% 이상) 및 시장 안정 필요"])
+        return get_level_comment("LEVEL 0", ["✔ 추세 복구(RS20D -10% 이상) 및 시장 하락 진정"])
         
     next_conds = []
-    
     is_fast_track = False
+    
     if rs >= 35 and conv >= 65:
         is_fast_track = True
     elif t10_count < 2 and recent_days < 1:
@@ -89,10 +88,8 @@ def evaluate_candidates(scanner_output):
     scan_datetime = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
     
     pass1_results = []
-    
     for raw in raw_candidates:
         feats, scores = raw["features"], raw["scores"]
-        
         if scores["prime_score"] < 50 or feats["conviction"] < 40: continue
         if risk_level < 3 and feats["rs_20d"] < -5: continue
         
@@ -113,7 +110,7 @@ def evaluate_candidates(scanner_output):
         pass1_results.append({
             "code": str(raw["code"]).zfill(6), "name": raw["name"], "price": raw["price"], "chg": raw["chg"],
             "features": feats, "scores": scores, "base_score": scores["prime_final"] + rank_bonus,
-            "decision": {"action": action, "is_prime_leader": False}
+            "decision": {"action": action, "is_trade_leader": False}
         })
         
     pass1_results.sort(key=lambda x: x["base_score"], reverse=True)
@@ -134,48 +131,37 @@ def evaluate_candidates(scanner_output):
         t10_count = top10["top10_count"]
         t10_bonus = 15 if t10_count >= 6 else (10 if t10_count >= 4 else (5 if t10_count >= 2 else 0))
         
-        win_rate = stats.get("win_rate", 0.0) / 100.0
-        confidence = win_rate * min(stats.get("match_count", 0) / 20.0, 1.0)
-        memory_score = min((mem["five_days_days"] * 0.25) + (confidence * 0.65 * 100) + t10_bonus, 25)
-        
-        if regime_str == "CRASH": leader_score = (feats["rs_20d"] * 1.5) + (feats["conviction"] * 0.5)
-        elif regime_str == "BULL": leader_score = (c["scores"]["prime_final"] * 0.8) + (feats["rs_20d"] * 0.7)
-        else: leader_score = c["scores"]["prime_final"]
-            
-        final_score = c["base_score"] + memory_score
-        
-        # [패치] dict 형태로 구조화된 매수 판단 객체 반환
         ready_obj = calculate_buy_readiness(c, regime_str, top10, mem, stats)
         
-        c["decision"]["final_score"] = final_score
-        c["decision"]["leader_score"] = leader_score
+        # [신규] 매매 랭킹 산출용 Trade Score 공식
+        lvl_num = int(ready_obj["level"].replace("LEVEL ", ""))
+        trade_score = (lvl_num * 1000) + (feats["rs_20d"] * 2) + feats["conviction"] + (t10_count * 10)
+            
+        c["decision"]["trade_score"] = trade_score
         c["decision"]["buy_readiness"] = ready_obj
         c["decision"]["top10_stability"] = {"top10_count": t10_count, "recent_days": top10["days"], "avg_rank": top10["avg_rank"]}
         
         final_results.append(c)
         
-    final_results.sort(key=lambda x: x["decision"]["final_score"], reverse=True)
+    # [수정] 점수(품질)가 아닌 실제 매매 적합도(Trade Score)를 최우선 기준으로 정렬
+    final_results.sort(key=lambda x: x["decision"]["trade_score"], reverse=True)
     
-    max_lvl, max_lvl_code, recommended_action = "LEVEL 0", "없음", "관망 및 현금 대기"
+    max_lvl_obj = {"level": "LEVEL 0", "title": "🔴 매수 금지", "action": "관망 유지"}
+    max_lvl_code = "없음"
+    
     if final_results:
-        prime_leader = max(final_results, key=lambda x: x["decision"]["leader_score"])
+        final_results[0]["decision"]["is_trade_leader"] = True
+        
         for c in final_results:
-            if c["code"] == prime_leader["code"]:
-                c["decision"]["is_prime_leader"] = True
-                break
-                
-        for c in final_results:
-            # dict 추출 호환
             lvl_val = c["decision"]["buy_readiness"]["level"]
-            
-            if "LEVEL 4" in lvl_val: max_lvl, max_lvl_code, recommended_action = "LEVEL 4", c["name"], "조건부 적극 편입 검토"; break
-            elif "LEVEL 3" in lvl_val and max_lvl not in ["LEVEL 4"]: max_lvl, max_lvl_code, recommended_action = "LEVEL 3", c["name"], "핵심 후보 분할 매수 접근"
-            elif "LEVEL 2" in lvl_val and max_lvl not in ["LEVEL 4", "LEVEL 3"]: max_lvl, max_lvl_code, recommended_action = "LEVEL 2", c["name"], "관심 종목군 편입"
-            elif "LEVEL 1" in lvl_val and max_lvl not in ["LEVEL 4", "LEVEL 3", "LEVEL 2"]: max_lvl, max_lvl_code = "LEVEL 1", c["name"]
+            if "LEVEL 4" in lvl_val: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]; break
+            elif "LEVEL 3" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
+            elif "LEVEL 2" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
+            elif "LEVEL 1" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3", "LEVEL 2"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
             
             if "LEVEL 3" in lvl_val or "LEVEL 4" in lvl_val:
                 try: register_signal_outcome(c.get("history_id"), c['code'], c['name'], c['price'], regime_str)
                 except Exception: pass
                 
-    market.update({"regime": regime_str, "direction": market_direction, "buy_tolerance": buy_tolerance, "max_level": max_lvl, "max_level_code": max_lvl_code, "recommended_action": recommended_action})
+    market.update({"regime": regime_str, "direction": market_direction, "buy_tolerance": buy_tolerance, "max_level_obj": max_lvl_obj, "max_level_code": max_lvl_code})
     return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": final_results}
