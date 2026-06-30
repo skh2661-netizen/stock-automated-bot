@@ -1,9 +1,8 @@
 from datetime import datetime
 import pytz
-from database import save_candidate_history, get_signal_persistence, register_signal_outcome, get_signal_quality, get_top10_stability, save_top10_tracking
+from database import save_candidate_history, get_signal_persistence, register_signal_outcome, get_signal_quality, get_top10_stability, save_top10_tracking, debug_history
 
 def detect_market_regime(kospi, kosdaq):
-    # [수정] 지수 착시 방지: KOSPI/KOSDAQ 동반 상승 시에만 강력한 BULL 선언
     if kospi >= 1.0 and kosdaq >= 1.0: return "BULL", 0, "🟢 위험선호 증가 (초강세장)", "85%"
     elif kospi >= 1.0: return "BULL", 0, "🟢 대형주 주도 강세", "70%"
     elif kosdaq >= 2.0: return "ROTATION", 1, "🔵 특정 섹터 쏠림 (순환매)", "60%"
@@ -18,19 +17,25 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     t10_count = top10["top10_count"]
     recent_days = mem["five_days_days"]
     
-    # [수정] LEVEL 0 조건 완화: RS < 0 이 아닌 RS < -10 으로 하향하여 눌림목/매집 포착
     if regime_str == "CRASH" or rs < -10:
         return "❌ LEVEL 0: 매수 금지 (시장/추세 붕괴)", ["✔ 추세 복구(RS20D -10% 이상) 및 시장 안정 필요"]
         
     next_conds = []
-    if t10_count < 2 and recent_days < 1: next_conds.append("✔ 장중 TOP10 2회 이상 또는 최근 출현 이력 필요")
+    
+    # [수정] 융통성(Fast-Track) 부여: 압도적 수치(RS>=30, Conv>=60)라면 1회차에도 LEVEL UP 허용
+    if t10_count < 2 and recent_days < 1:
+        if rs >= 30 and conv >= 60:
+            pass # 패스트 트랙 통과
+        else:
+            next_conds.append("✔ 장중 TOP10 지속성 추가 확인 필요")
+            
     if rs < 10: next_conds.append("✔ 상대강도(RS20D) +10% 이상 돌파 필요")
     if conv < 50: next_conds.append("✔ Conviction 50 이상 수급 유입 필요")
     
     if not next_conds:
         if regime_str == "BULL" and rs >= 25 and conv >= 70 and (t10_count >= 3 or recent_days >= 2) and stats.get("win_rate", 0) >= 60:
             return "🚀 LEVEL 4: 적극 매수 구간 (확률 우위)", []
-        elif regime_str in ["BULL", "ROTATION", "NORMAL"] and rs >= 20 and conv >= 60 and (t10_count >= 2 or recent_days >= 1):
+        elif regime_str in ["BULL", "ROTATION", "NORMAL"] and rs >= 20 and conv >= 60 and (t10_count >= 2 or recent_days >= 1 or rs >= 30):
             return "🟢 LEVEL 3: 분할 매수 가능", []
         elif rs >= 10 and conv >= 50:
             return "🟡 LEVEL 2: 관심 편입", ["✔ TOP10 지속성 추가 확인 시 LEVEL 3 진입"]
@@ -79,12 +84,19 @@ def evaluate_candidates(scanner_output):
     for rank_idx, c in enumerate(pass1_results, 1):
         try:
             if rank_idx <= 10: save_top10_tracking(scan_datetime, c['code'], c['name'], rank_idx, c['base_score'], risk_level)
-            # [수정] amount와 amount_strength를 정확히 복구하여 DB 오염 방지
             c["history_id"] = save_candidate_history(scan_datetime, run_type, c['code'], c['name'], rank_idx, c['price'], c['chg'], c['scores']['prime_final'], c['scores']['prime_score'], c['features']['conviction'], c['features']['rs_1d'], c['features']['rs_5d'], c['features']['rs_20d'], c['features']['ma_gap'], c['features']['amount'], c['features']['amount_strength'], risk_level, 0)
-        except Exception: pass
+            
+            # [수정] Silent Failure 제거: 성공 로고 출력
+            print(f"✅ [DB SAVE SUCCESS] {c['code']} {c['name']} (ID: {c.get('history_id')})")
+        except Exception as e: 
+            # [수정] Silent Failure 제거: 에러 추적 강제화
+            print(f"❌ [DB SAVE ERROR] {c['code']} {c['name']} : {e}")
 
     final_results = []
     for c in pass1_results:
+        # [수정] DB 조회 직전 디버그 함수를 실행하여 데이터 존재 여부 터미널 확인
+        debug_history(c["code"])
+        
         mem = get_signal_persistence(c["code"])
         top10 = get_top10_stability(c["code"])
         stats = get_signal_quality(regime_str, c["features"]["rs_20d"], c["features"]["conviction"])
@@ -94,7 +106,6 @@ def evaluate_candidates(scanner_output):
         confidence = win_rate * min(stats.get("match_count", 0) / 20.0, 1.0)
         memory_score = min((mem["five_days_days"] * 0.25) + (confidence * 0.65 * 100) + (mem["leader_count"] * 0.10 * 100), 25)
         
-        # [수정] PRIME WATCH 선정을 위한 leader_score를 국면별로 차등 공식 적용
         if regime_str == "CRASH": leader_score = (feats["rs_20d"] * 1.5) + (feats["conviction"] * 0.5)
         elif regime_str == "BULL": leader_score = (c["scores"]["prime_final"] * 0.8) + (feats["rs_20d"] * 0.7)
         else: leader_score = c["scores"]["prime_final"]
@@ -114,7 +125,6 @@ def evaluate_candidates(scanner_output):
     
     max_lvl, max_lvl_code, recommended_action = "LEVEL 0", "없음", "관망 및 현금 대기"
     if final_results:
-        # [수정] 최종 랭킹(final_score)과 무관하게 leader_score 1위 종목을 PRIME WATCH로 선정
         prime_leader = max(final_results, key=lambda x: x["decision"]["leader_score"])
         for c in final_results:
             if c["code"] == prime_leader["code"]:
@@ -128,7 +138,6 @@ def evaluate_candidates(scanner_output):
             elif "LEVEL 2" in lvl and max_lvl not in ["LEVEL 4", "LEVEL 3"]: max_lvl, max_lvl_code, recommended_action = "LEVEL 2", c["name"], "관심 종목군 편입"
             elif "LEVEL 1" in lvl and max_lvl not in ["LEVEL 4", "LEVEL 3", "LEVEL 2"]: max_lvl, max_lvl_code = "LEVEL 1", c["name"]
             
-            # [수정] 무분별한 성적표 생성을 막기 위해 LEVEL 3 이상 도달 시에만 Outcome(평가 대상)으로 DB 등록
             if "LEVEL 3" in lvl or "LEVEL 4" in lvl:
                 try: register_signal_outcome(c.get("history_id"), c['code'], c['name'], c['price'], regime_str)
                 except Exception: pass
