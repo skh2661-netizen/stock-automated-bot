@@ -1,6 +1,6 @@
 from datetime import datetime
 import pytz
-from database import save_candidate_history, get_signal_persistence, register_signal_outcome, get_signal_quality, get_top10_stability, save_top10_tracking, debug_history
+from database import save_candidate_history, get_signal_persistence, register_signal_outcome, get_signal_quality, get_top10_stability, save_top10_tracking, debug_history, debug_top10
 
 def detect_market_regime(kospi, kosdaq):
     if kospi >= 1.0 and kosdaq >= 1.0: return "BULL", 0, "🟢 위험선호 증가 (초강세장)", "85%"
@@ -15,14 +15,13 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     rs = c["features"]["rs_20d"]
     conv = c["features"]["conviction"]
     t10_count = top10["top10_count"]
-    recent_days = mem["five_days_days"]
+    recent_days = top10["days"]
     
     if regime_str == "CRASH" or rs < -10:
         return "❌ LEVEL 0: 매수 금지 (시장/추세 붕괴)", ["✔ 추세 복구(RS20D -10% 이상) 및 시장 안정 필요"]
         
     next_conds = []
     
-    # [패치] Fast-Track 정밀 조준: RS 35 & Conv 65 이상일 때만 지속성 무시 승격
     is_fast_track = False
     if rs >= 35 and conv >= 65:
         is_fast_track = True
@@ -32,18 +31,14 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     if rs < 10: next_conds.append("✔ 상대강도(RS20D) +10% 이상 돌파 필요")
     if conv < 50: next_conds.append("✔ Conviction 50 이상 수급 유입 필요")
     
-    # [패치] 확률 우위(LEVEL 4) 조건에 RS 50 & Conv 80 무조건 돌파(시장 관계없이) 추가
     if rs >= 50 and conv >= 80:
         return "🚀 LEVEL 4: 적극 매수 구간 (초강력 수급 돌파)", []
         
     if not next_conds or is_fast_track:
         if regime_str == "BULL" and rs >= 25 and conv >= 70 and (t10_count >= 3 or recent_days >= 2) and stats.get("win_rate", 0) >= 60:
             return "🚀 LEVEL 4: 적극 매수 구간 (확률 우위)", []
-            
-        # [패치] Fast-Track A(즉시 LEVEL3)와 B(지속성 필요) 완벽 분리
         elif (regime_str in ["BULL", "ROTATION", "SIDEWAYS", "NORMAL"] and rs >= 20 and conv >= 60 and (t10_count >= 2 or recent_days >= 2)) or is_fast_track:
             return "🟢 LEVEL 3: 분할 매수 가능", []
-            
         elif rs >= 10 and conv >= 50:
             return "🟡 LEVEL 2: 관심 편입", ["✔ TOP10 지속성 2회 이상 달성 시 LEVEL 3 진입"]
             
@@ -56,6 +51,8 @@ def evaluate_candidates(scanner_output):
     kospi_1d, kosdaq_1d = market.get("kospi", 0.0), market.get("kosdaq", 0.0)
     
     regime_str, risk_level, market_direction, buy_tolerance = detect_market_regime(kospi_1d, kosdaq_1d)
+    
+    # [교정] 저장 및 조회용 마스터 시계열 포맷 강제 통일 (초 단위까지 완전 일치)
     scan_datetime = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
     
     pass1_results = []
@@ -96,19 +93,19 @@ def evaluate_candidates(scanner_output):
 
     final_results = []
     for c in pass1_results:
+        # [신규] TOP10 강제 디버그 출력
+        debug_top10(c["code"])
+        
         mem = get_signal_persistence(c["code"])
         top10 = get_top10_stability(c["code"])
         stats = get_signal_quality(regime_str, c["features"]["rs_20d"], c["features"]["conviction"])
         feats = c["features"]
         
-        # [패치] TOP10 지속성 횟수에 따른 0~15점 가중치 계단식 부여
         t10_count = top10["top10_count"]
         t10_bonus = 15 if t10_count >= 6 else (10 if t10_count >= 4 else (5 if t10_count >= 2 else 0))
         
         win_rate = stats.get("win_rate", 0.0) / 100.0
         confidence = win_rate * min(stats.get("match_count", 0) / 20.0, 1.0)
-        
-        # 가중치 통합
         memory_score = min((mem["five_days_days"] * 0.25) + (confidence * 0.65 * 100) + t10_bonus, 25)
         
         if regime_str == "CRASH": leader_score = (feats["rs_20d"] * 1.5) + (feats["conviction"] * 0.5)
@@ -122,7 +119,7 @@ def evaluate_candidates(scanner_output):
         c["decision"]["leader_score"] = leader_score
         c["decision"]["buy_readiness"] = readiness
         c["decision"]["next_conditions"] = next_conds
-        c["decision"]["top10_stability"] = {"top10_count": t10_count, "recent_days": mem["five_days_days"], "avg_rank": mem["avg_rank"]}
+        c["decision"]["top10_stability"] = {"top10_count": t10_count, "recent_days": top10["days"], "avg_rank": top10["avg_rank"]}
         
         final_results.append(c)
         
