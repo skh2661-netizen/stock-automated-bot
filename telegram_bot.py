@@ -1,3 +1,29 @@
+import os
+import requests
+import asyncio
+
+# GitHub Secrets 또는 환경 변수에서 토큰 호출
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+# [복구] main.py가 호출하는 비동기 메세지 발송 엔진
+async def send_message(text):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
+        print("⚠️ 텔레그램 토큰(TELEGRAM_TOKEN) 또는 방 번호(TELEGRAM_CHAT_ID)가 설정되지 않았습니다.")
+        return False
+        
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+    
+    try:
+        response = await asyncio.to_thread(requests.post, url, json=payload, timeout=10)
+        response.raise_for_status()
+        return True
+    except Exception as e: 
+        print(f"❌ 텔레그램 메세지 전송 실패: {e}")
+        return False
+
+# [유지] V8.8.26 렌더링 (TOP10 누적 5일 표기법 적용본)
 def format_scan_messages(run_type, result):
     if not result or "candidates" not in result: return ["⚠️ 데이터 추출 실패"]
     
@@ -30,7 +56,6 @@ def format_scan_messages(run_type, result):
         t10 = c['decision'].get('top10_stability', {})
         block += f"📌 <b>지속성 분석</b>\n"
         block += f"오늘 장중 포착: {t10.get('top10_count', 0)}회\n"
-        # [패치] 신뢰도를 높이는 5일 누적 표기법 적용
         block += f"TOP10 누적: {t10.get('recent_days', 0)}/5일\n"
         block += f"평균 순위: {t10.get('avg_rank', 0.0)}위\n\n"
         
