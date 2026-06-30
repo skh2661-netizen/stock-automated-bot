@@ -7,8 +7,8 @@ DB_PATH = "quant_data.db"
 
 def migrate_db():
     tables = {
-        "candidates": {"engine_version": "TEXT DEFAULT 'V8.8.22'"},
-        "candidate_history": {"engine_version": "TEXT DEFAULT 'V8.8.22'"},
+        "candidates": {"engine_version": "TEXT DEFAULT 'V8.8.23'"},
+        "candidate_history": {"engine_version": "TEXT DEFAULT 'V8.8.23'"},
         "signal_outcome": {"market_regime": "TEXT DEFAULT 'NORMAL'"}
     }
     conn = sqlite3.connect(DB_PATH)
@@ -28,8 +28,8 @@ def migrate_db():
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, run_type TEXT, code TEXT, name TEXT, score INTEGER, buy_p INTEGER, target_1 INTEGER, target_2 INTEGER, stop_p INTEGER, price INTEGER, chg REAL, ma_gap REAL, prime_score INTEGER, final_rank REAL, conviction INTEGER, amount_strength REAL, rs_1d REAL, rs_5d REAL, rs_20d REAL, defense INTEGER, risk_level INTEGER, sent_telegram INTEGER DEFAULT 0, engine_version TEXT DEFAULT 'V8.8.22')''')
-    c.execute('''CREATE TABLE IF NOT EXISTS candidate_history (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_datetime TEXT, run_type TEXT, code TEXT, name TEXT, rank_position INTEGER, price INTEGER, chg REAL, prime_final REAL, prime_score REAL, conviction REAL, rs_1d REAL, rs_5d REAL, rs_20d REAL, ma_gap REAL, amount INTEGER, amount_strength REAL, risk_level INTEGER, is_leader INTEGER DEFAULT 0, created_at TEXT, engine_version TEXT DEFAULT 'V8.8.22')''')
+    c.execute('''CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, run_type TEXT, code TEXT, name TEXT, score INTEGER, buy_p INTEGER, target_1 INTEGER, target_2 INTEGER, stop_p INTEGER, price INTEGER, chg REAL, ma_gap REAL, prime_score INTEGER, final_rank REAL, conviction INTEGER, amount_strength REAL, rs_1d REAL, rs_5d REAL, rs_20d REAL, defense INTEGER, risk_level INTEGER, sent_telegram INTEGER DEFAULT 0, engine_version TEXT DEFAULT 'V8.8.23')''')
+    c.execute('''CREATE TABLE IF NOT EXISTS candidate_history (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_datetime TEXT, run_type TEXT, code TEXT, name TEXT, rank_position INTEGER, price INTEGER, chg REAL, prime_final REAL, prime_score REAL, conviction REAL, rs_1d REAL, rs_5d REAL, rs_20d REAL, ma_gap REAL, amount INTEGER, amount_strength REAL, risk_level INTEGER, is_leader INTEGER DEFAULT 0, created_at TEXT, engine_version TEXT DEFAULT 'V8.8.23')''')
     c.execute('''CREATE TABLE IF NOT EXISTS signal_outcome (id INTEGER PRIMARY KEY AUTOINCREMENT, history_id INTEGER, code TEXT, name TEXT, signal_date TEXT, price_at_signal INTEGER, after_1d_chg REAL DEFAULT 0.0, after_3d_chg REAL DEFAULT 0.0, after_5d_chg REAL DEFAULT 0.0, max_gain REAL DEFAULT 0.0, max_drawdown REAL DEFAULT 0.0, evaluation_status TEXT DEFAULT 'PENDING', market_regime TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS top10_tracking (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_datetime TEXT, code TEXT, name TEXT, rank_position INTEGER, final_score REAL, risk_level INTEGER)''')
     conn.commit()
@@ -37,6 +37,16 @@ def init_db():
     migrate_db()
 
 init_db()
+
+# [신규] DB 저장 상태를 터미널에서 즉시 검증하기 위한 디버그 로직
+def debug_history(code):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT id, scan_datetime, code, name, rank_position FROM candidate_history WHERE code=? ORDER BY id DESC LIMIT 5""", (str(code).zfill(6),))
+    rows = c.fetchall()
+    for r in rows:
+        print("🔍 [DEBUG HISTORY]:", r)
+    conn.close()
 
 def get_signal_persistence(code):
     safe_code = str(code).zfill(6)
@@ -83,7 +93,7 @@ def save_candidate_history(scan_datetime, run_type, code, name, rank_position, p
     safe_code = str(code).zfill(6)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''INSERT INTO candidate_history (scan_datetime, run_type, code, name, rank_position, price, chg, prime_final, prime_score, conviction, rs_1d, rs_5d, rs_20d, ma_gap, amount, amount_strength, risk_level, is_leader, created_at, engine_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'V8.8.22')''',
+    c.execute('''INSERT INTO candidate_history (scan_datetime, run_type, code, name, rank_position, price, chg, prime_final, prime_score, conviction, rs_1d, rs_5d, rs_20d, ma_gap, amount, amount_strength, risk_level, is_leader, created_at, engine_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'V8.8.23')''',
               (scan_datetime, run_type, safe_code, name, rank_position, price, chg, prime_final, prime_score, conviction, rs_1d, rs_5d, rs_20d, ma_gap, amount, amount_strength, risk_level, is_leader, datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     inserted_id = c.lastrowid
