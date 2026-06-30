@@ -78,90 +78,125 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
             
     return get_level_comment("LEVEL 1", next_conds)
 
-def evaluate_candidates(scanner_output):
-    market = scanner_output.get("market", {})
-    raw_candidates = scanner_output.get("raw_data", [])
-    run_type = market.get("mode", "OPEN_SCAN")
-    kospi_1d, kosdaq_1d = market.get("kospi", 0.0), market.get("kosdaq", 0.0)
-    
-    regime_str, risk_level, market_direction, buy_tolerance = detect_market_regime(kospi_1d, kosdaq_1d)
-    scan_datetime = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
-    
-    pass1_results = []
-    for raw in raw_candidates:
-        feats, scores = raw["features"], raw["scores"]
-        if scores["prime_score"] < 50 or feats["conviction"] < 40: continue
-        if risk_level < 3 and feats["rs_20d"] < -5: continue
+# [신규] 실전 매매 계획 자동 산출
+def calculate_trade_plan(price, ma_gap, risk_level):
+    if risk_level >= 3:
+        buy_p = int(price * 0.85)
+        stop_p = int(buy_p * 0.90)
+    elif ma_gap > 20:
+        buy_p = int(price * 0.90)
+        stop_p = int(buy_p * 0.92)
+    elif ma_gap > 10:
+        buy_p = int(price * 0.95)
+        stop_p = int(buy_p * 0.95)
+    else:
+        buy_p = int(price * 0.98)
+        stop_p = int(buy_p * 0.95)
         
-        action, rank_bonus = "👀 관망", 0
-        if regime_str == "CRASH":
-            if feats["rs_20d"] > 15 and feats["conviction"] >= 60: action, rank_bonus = "🔥 폭락장 방어 리더", 20
-            elif feats["rs_20d"] > 10: action, rank_bonus = "🛡 생존 감시 대상", 5
-        elif regime_str == "BULL":
-            if scores["prime_score"] >= 80 and feats["rs_20d"] > 10: action, rank_bonus = "🔥 상승 추세 리더", 25
-            elif scores["score"] >= 60: action, rank_bonus = "🟢 적극 진입 후보", 10
-        elif regime_str == "ROTATION":
-            if feats["rs_20d"] > 5 and feats["conviction"] >= 60: action, rank_bonus = "🟡 순환매 주도주", 15
-            else: action, rank_bonus = "👀 순환매 관심주", 5
-        else:
-            if scores["prime_score"] >= 75 and feats["ma_gap"] < 15: action, rank_bonus = "🔥 최우선 관찰", 20
-            elif scores["score"] >= 55: action, rank_bonus = "🟢 진입 후보", 5
-            
-        pass1_results.append({
-            "code": str(raw["code"]).zfill(6), "name": raw["name"], "price": raw["price"], "chg": raw["chg"],
-            "features": feats, "scores": scores, "base_score": scores["prime_final"] + rank_bonus,
-            "decision": {"action": action, "is_trade_leader": False}
-        })
-        
-    pass1_results.sort(key=lambda x: x["base_score"], reverse=True)
-    
-    for rank_idx, c in enumerate(pass1_results, 1):
-        try:
-            if rank_idx <= 10: save_top10_tracking(scan_datetime, c['code'], c['name'], rank_idx, c['base_score'], risk_level)
-            c["history_id"] = save_candidate_history(scan_datetime, run_type, c['code'], c['name'], rank_idx, c['price'], c['chg'], c['scores']['prime_final'], c['scores']['prime_score'], c['features']['conviction'], c['features']['rs_1d'], c['features']['rs_5d'], c['features']['rs_20d'], c['features']['ma_gap'], c['features']['amount'], c['features']['amount_strength'], risk_level, 0)
-        except Exception: pass
+    return {
+        "entry": f"현재가 기준 {round((price-buy_p)/price*100, 1)}% 조정 시 (약 {buy_p}원)",
+        "stop_loss": f"진입가 대비 {round((buy_p-stop_p)/buy_p*100, 1)}% 하락 시 (약 {stop_p}원)",
+        "target1": f"진입가 대비 +10% (약 {int(buy_p * 1.10)}원)",
+        "target2": f"진입가 대비 +20% (약 {int(buy_p * 1.20)}원)"
+    }
 
-    final_results = []
-    for c in pass1_results:
-        mem = get_signal_persistence(c["code"])
-        top10 = get_top10_stability(c["code"])
-        stats = get_signal_quality(regime_str, c["features"]["rs_20d"], c["features"]["conviction"])
-        feats = c["features"]
+def evaluate_candidates(scanner_output):
+    import traceback
+    try:
+        market = scanner_output.get("market", {})
+        raw_candidates = scanner_output.get("raw_data", [])
+        run_type = market.get("mode", "OPEN_SCAN")
+        kospi_1d, kosdaq_1d = market.get("kospi", 0.0), market.get("kosdaq", 0.0)
         
-        t10_count = top10["top10_count"]
-        t10_bonus = 15 if t10_count >= 6 else (10 if t10_count >= 4 else (5 if t10_count >= 2 else 0))
+        regime_str, risk_level, market_direction, buy_tolerance = detect_market_regime(kospi_1d, kosdaq_1d)
+        scan_datetime = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
         
-        ready_obj = calculate_buy_readiness(c, regime_str, top10, mem, stats)
-        
-        # [신규] 매매 랭킹 산출용 Trade Score 공식
-        lvl_num = int(ready_obj["level"].replace("LEVEL ", ""))
-        trade_score = (lvl_num * 1000) + (feats["rs_20d"] * 2) + feats["conviction"] + (t10_count * 10)
+        pass1_results = []
+        for raw in raw_candidates:
+            feats, scores = raw["features"], raw["scores"]
+            if scores["prime_score"] < 50 or feats["conviction"] < 40: continue
+            if risk_level < 3 and feats["rs_20d"] < -5: continue
             
-        c["decision"]["trade_score"] = trade_score
-        c["decision"]["buy_readiness"] = ready_obj
-        c["decision"]["top10_stability"] = {"top10_count": t10_count, "recent_days": top10["days"], "avg_rank": top10["avg_rank"]}
-        
-        final_results.append(c)
-        
-    # [수정] 점수(품질)가 아닌 실제 매매 적합도(Trade Score)를 최우선 기준으로 정렬
-    final_results.sort(key=lambda x: x["decision"]["trade_score"], reverse=True)
-    
-    max_lvl_obj = {"level": "LEVEL 0", "title": "🔴 매수 금지", "action": "관망 유지"}
-    max_lvl_code = "없음"
-    
-    if final_results:
-        final_results[0]["decision"]["is_trade_leader"] = True
-        
-        for c in final_results:
-            lvl_val = c["decision"]["buy_readiness"]["level"]
-            if "LEVEL 4" in lvl_val: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]; break
-            elif "LEVEL 3" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
-            elif "LEVEL 2" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
-            elif "LEVEL 1" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3", "LEVEL 2"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
-            
-            if "LEVEL 3" in lvl_val or "LEVEL 4" in lvl_val:
-                try: register_signal_outcome(c.get("history_id"), c['code'], c['name'], c['price'], regime_str)
-                except Exception: pass
+            action, rank_bonus = "👀 관망", 0
+            if regime_str == "CRASH":
+                if feats["rs_20d"] > 15 and feats["conviction"] >= 60: action, rank_bonus = "🔥 폭락장 방어 리더", 20
+                elif feats["rs_20d"] > 10: action, rank_bonus = "🛡 생존 감시 대상", 5
+            elif regime_str == "BULL":
+                if scores["prime_score"] >= 80 and feats["rs_20d"] > 10: action, rank_bonus = "🔥 상승 추세 리더", 25
+                elif scores["score"] >= 60: action, rank_bonus = "🟢 적극 진입 후보", 10
+            elif regime_str == "ROTATION":
+                if feats["rs_20d"] > 5 and feats["conviction"] >= 60: action, rank_bonus = "🟡 순환매 주도주", 15
+                else: action, rank_bonus = "👀 순환매 관심주", 5
+            else:
+                if scores["prime_score"] >= 75 and feats["ma_gap"] < 15: action, rank_bonus = "🔥 최우선 관찰", 20
+                elif scores["score"] >= 55: action, rank_bonus = "🟢 진입 후보", 5
                 
-    market.update({"regime": regime_str, "direction": market_direction, "buy_tolerance": buy_tolerance, "max_level_obj": max_lvl_obj, "max_level_code": max_lvl_code})
-    return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": final_results}
+            pass1_results.append({
+                "code": str(raw["code"]).zfill(6), "name": raw["name"], "price": raw["price"], "chg": raw["chg"],
+                "features": feats, "scores": scores, "base_score": scores["prime_final"] + rank_bonus,
+                "decision": {"action": action, "is_trade_leader": False}
+            })
+            
+        pass1_results.sort(key=lambda x: x["base_score"], reverse=True)
+        
+        for rank_idx, c in enumerate(pass1_results, 1):
+            try:
+                if rank_idx <= 10: save_top10_tracking(scan_datetime, c['code'], c['name'], rank_idx, c['base_score'], risk_level)
+                c["history_id"] = save_candidate_history(scan_datetime, run_type, c['code'], c['name'], rank_idx, c['price'], c['chg'], c['scores']['prime_final'], c['scores']['prime_score'], c['features']['conviction'], c['features']['rs_1d'], c['features']['rs_5d'], c['features']['rs_20d'], c['features']['ma_gap'], c['features']['amount'], c['features']['amount_strength'], risk_level, 0)
+            except Exception: pass
+
+        final_results = []
+        for c in pass1_results:
+            mem = get_signal_persistence(c["code"])
+            top10 = get_top10_stability(c["code"])
+            stats = get_signal_quality(regime_str, c["features"]["rs_20d"], c["features"]["conviction"])
+            feats = c["features"]
+            
+            t10_count = top10["top10_count"]
+            t10_bonus = 15 if t10_count >= 6 else (10 if t10_count >= 4 else (5 if t10_count >= 2 else 0))
+            
+            ready_obj = calculate_buy_readiness(c, regime_str, top10, mem, stats)
+            
+            # [교정] Trade Score 입체화: 단순 LEVEL 절대주의 타파 (모멘텀과 수급 비중 상승)
+            lvl_num = int(ready_obj["level"].replace("LEVEL ", ""))
+            momentum_score = feats["rs_20d"] * 2.5
+            quality_score = c["scores"]["prime_score"] * 0.5
+            trade_score = (lvl_num * 100) + momentum_score + feats["conviction"] + quality_score + (t10_count * 10)
+            
+            trade_plan = calculate_trade_plan(c["price"], feats["ma_gap"], risk_level)
+                
+            c["decision"]["trade_score"] = trade_score
+            c["decision"]["momentum_score"] = momentum_score
+            c["decision"]["quality_score"] = quality_score
+            c["decision"]["buy_readiness"] = ready_obj
+            c["decision"]["trade_plan"] = trade_plan
+            c["decision"]["top10_stability"] = {"top10_count": t10_count, "recent_days": top10["days"], "avg_rank": top10["avg_rank"]}
+            
+            final_results.append(c)
+            
+        final_results.sort(key=lambda x: (x["decision"]["trade_score"], x["decision"]["momentum_score"]), reverse=True)
+        
+        max_lvl_obj = {"level": "LEVEL 0", "title": "🔴 매수 금지", "action": "관망 유지", "meaning": "현재 장세 진입 불가"}
+        max_lvl_code = "없음"
+        
+        if final_results:
+            final_results[0]["decision"]["is_trade_leader"] = True
+            
+            for c in final_results:
+                # [교정] 구버전 문자열 참조 오류(TypeError) 원천 차단
+                lvl_val = c["decision"]["buy_readiness"].get("level", "LEVEL 0")
+                if "LEVEL 4" in lvl_val: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]; break
+                elif "LEVEL 3" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
+                elif "LEVEL 2" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
+                elif "LEVEL 1" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3", "LEVEL 2"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
+                
+                if "LEVEL 3" in lvl_val or "LEVEL 4" in lvl_val:
+                    try: register_signal_outcome(c.get("history_id"), c['code'], c['name'], c['price'], regime_str)
+                    except Exception: pass
+                    
+        market.update({"regime": regime_str, "direction": market_direction, "buy_tolerance": buy_tolerance, "max_level_obj": max_lvl_obj, "max_level_code": max_lvl_code})
+        return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": final_results}
+    except Exception as e:
+        print(f"🚨 [DECISION ENGINE INTERNAL ERROR] {e}")
+        traceback.print_exc()
+        return {"stats": {"data_error": True}}
