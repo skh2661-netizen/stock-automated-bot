@@ -22,56 +22,51 @@ def format_scan_messages(run_type, result):
     candidates = result.get("candidates", [])
     regime = market.get("regime", "NORMAL")
     direction = market.get("direction", "🟢 시장 안정")
+    max_obj = market.get("max_level_obj", {})
     
     msg_list = []
-    header = f"🎯 <b>V8.8.27 DAILY QUANT REPORT</b>\n\n"
+    header = f"🎯 <b>V8.8.28 DAILY QUANT REPORT</b>\n\n"
     
-    header += f"📌 <b>투자 판단 요약</b>\n"
-    header += f"시장 상태: {regime} ({direction})\n"
-    header += f"매수 허용도: <b>{market.get('buy_tolerance', '0%')}</b>\n"
-    header += f"최대 관심 후보: <b>{market.get('max_level_code', '없음')}</b>\n"
-    header += f"현재 최고 단계: <b>{market.get('max_level', 'LEVEL 0')}</b>\n"
-    header += f"추천 행동: {market.get('recommended_action', '관망')}\n"
+    # [수정] 투자자 관점의 직관적인 행동 지침 최상단 배치
+    header += f"📌 <b>오늘 투자 결론</b>\n\n"
+    header += f"시장: {regime} ({direction})\n"
+    header += f"시장 투자 환경: <b>{market.get('buy_tolerance', '0점 / 100점')}</b>\n"
+    header += f"의미: {'공격적인 매수보다 선별적 접근이 필요한 구간' if '40점' in market.get('buy_tolerance', '') or '60점' in market.get('buy_tolerance', '') else ('시장 방향성이 붕괴되어 현금 방어가 유리한 구간' if '10점' in market.get('buy_tolerance', '') or '20점' in market.get('buy_tolerance', '') else '추세가 확인되어 확률적 우위를 점할 수 있는 구간')}\n\n"
+    
+    header += f"오늘 핵심 매매 후보:\n👑 <b>{market.get('max_level_code', '없음')}</b>\n\n"
+    header += f"매매 단계:\n{max_obj.get('level', 'LEVEL 0')} {max_obj.get('title', '').split(' ')[0]}\n\n"
+    header += f"판단:\n{max_obj.get('meaning', '관망')}\n\n"
+    header += f"추천:\n{max_obj.get('action', '-')}\n"
     header += "━" * 20 + "\n\n"
     current_msg = header
     
     for idx, c in enumerate(candidates[:10], 1):
-        is_leader = c["decision"].get("is_prime_leader", False)
+        is_trade_leader = c["decision"].get("is_trade_leader", False)
         
-        # [패치] 우량 후보 직관적 타이틀 분리 및 주의 문구 추가
-        if is_leader:
-            block = f"🏆 <b>품질 1위 후보</b>\n"
-            block += f"<b>{c['name']}</b> ({c['code']})\n\n"
-            block += f"의미:\n현재 1차 필터 및 품질 평가 점수 최고치 달성\n\n주의:\n품질과 별개로 실제 매수 타이밍은 하단 '매매 판단'을 따를 것\n\n"
+        if is_trade_leader:
+            block = f"👑 <b>오늘의 매매 관심 1순위</b>\n"
         else:
-            block = f"🔹 <b>품질 {idx}위 후보</b>\n"
-            block += f"<b>{c['name']}</b> ({c['code']})\n\n"
+            block = f"📊 <b>후보 {idx}위</b>\n"
+            
+        block += f"<b>{c['name']}</b> ({c['code']})\n\n"
         
-        # [패치] 영문 지표 한글화 및 자동 해석 추가
         rs_val = c['features']['rs_20d']
         conv_val = c['features']['conviction']
         
         rs_str = "시장 대비 압도적인 상승 모멘텀" if rs_val >= 30 else ("최근 20일 시장보다 강한 상승 흐름" if rs_val > 0 else "시장 대비 상대적 약세 흐름 (주의)")
-        conv_str = "강력한 거래량 및 주도 수급 유입 확인" if conv_val >= 65 else ("기본적인 수급 유입 확인됨" if conv_val >= 50 else "뚜렷한 수급 주체 및 폭발력 부족")
+        conv_str = "강력한 거래량 및 매수 주체 확인" if conv_val >= 65 else ("기본적인 수급 유입 확인됨" if conv_val >= 50 else "뚜렷한 수급 주체 및 폭발력 부족")
         
-        block += f"📈 <b>상승 분석</b>\n"
-        block += f"상대강도: {'+' if rs_val>0 else ''}{rs_val}%\n"
+        block += f"왜 선정?\n"
+        block += f"RS20D: {'+' if rs_val>0 else ''}{rs_val}%\n"
         block += f"해석: {rs_str}\n\n"
         
         block += f"수급확신도: {conv_val}점\n"
         block += f"해석: {conv_str}\n\n"
         
-        t10 = c['decision'].get('top10_stability', {})
-        block += f"📌 <b>지속성 분석</b>\n"
-        block += f"오늘 장중 포착: {t10.get('top10_count', 0)}회\n"
-        block += f"TOP10 누적: {t10.get('recent_days', 0)}/5일\n"
-        block += f"평균 순위: {t10.get('avg_rank', 0.0)}위\n\n"
-        
-        # [패치] Dict 기반 렌더링 (매매 판단부 구조화)
         ready = c['decision'].get('buy_readiness', {})
         
         block += f"🎯 <b>매매 판단</b>\n\n"
-        block += f"{ready.get('level', 'LEVEL 0')} : {ready.get('title', '상태 불명')}\n\n"
+        block += f"{ready.get('level', 'LEVEL 0')} {ready.get('title', '상태 불명')}\n\n"
         block += f"의미:\n{ready.get('meaning', '-')}\n\n"
         block += f"추천 행동:\n{ready.get('action', '-')}\n\n"
         
