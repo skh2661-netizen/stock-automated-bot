@@ -38,7 +38,6 @@ def init_db():
 
 init_db()
 
-# [신규] TOP10 저장 데이터 강제 색출 로직
 def debug_top10(code):
     safe_code = str(code).zfill(6)
     conn = sqlite3.connect(DB_PATH)
@@ -91,7 +90,6 @@ def get_top10_stability(code):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     kst_now = datetime.now(pytz.timezone("Asia/Seoul"))
-    # [교정] 시계열 포맷(YYYY-MM-DD HH:MM:SS)을 저장 시점과 완벽히 동기화
     five_days_ago = (kst_now - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
     
     c.execute("""SELECT COUNT(*), COUNT(DISTINCT SUBSTR(scan_datetime, 1, 10)), AVG(rank_position) FROM top10_tracking WHERE code=? AND datetime(scan_datetime) >= datetime(?)""", (safe_code, five_days_ago))
