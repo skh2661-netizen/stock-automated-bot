@@ -22,22 +22,30 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
         
     next_conds = []
     
-    # 융통성(Fast-Track): RS 30 이상, Conv 60 이상이면 신규 편입도 지속성 조건 통과 취급
-    if t10_count < 2 and recent_days < 1:
-        if rs >= 30 and conv >= 60: pass
-        else: next_conds.append("✔ 장중 TOP10 지속성 추가 확인 필요")
+    # [패치] Fast-Track 정밀 조준: RS 35 & Conv 65 이상일 때만 지속성 무시 승격
+    is_fast_track = False
+    if rs >= 35 and conv >= 65:
+        is_fast_track = True
+    elif t10_count < 2 and recent_days < 1:
+        next_conds.append("✔ 장중 TOP10 2회 이상 또는 최근 2일 출현 필요")
             
     if rs < 10: next_conds.append("✔ 상대강도(RS20D) +10% 이상 돌파 필요")
     if conv < 50: next_conds.append("✔ Conviction 50 이상 수급 유입 필요")
     
-    if not next_conds:
+    # [패치] 확률 우위(LEVEL 4) 조건에 RS 50 & Conv 80 무조건 돌파(시장 관계없이) 추가
+    if rs >= 50 and conv >= 80:
+        return "🚀 LEVEL 4: 적극 매수 구간 (초강력 수급 돌파)", []
+        
+    if not next_conds or is_fast_track:
         if regime_str == "BULL" and rs >= 25 and conv >= 70 and (t10_count >= 3 or recent_days >= 2) and stats.get("win_rate", 0) >= 60:
             return "🚀 LEVEL 4: 적극 매수 구간 (확률 우위)", []
-        # [패치] SIDEWAYS(횡보장)에서도 Fast-Track 우대 조건을 통과하여 LEVEL 3(분할 매수) 진입 허용
-        elif regime_str in ["BULL", "ROTATION", "SIDEWAYS", "NORMAL"] and rs >= 20 and conv >= 60 and (t10_count >= 2 or recent_days >= 1 or rs >= 30):
+            
+        # [패치] Fast-Track A(즉시 LEVEL3)와 B(지속성 필요) 완벽 분리
+        elif (regime_str in ["BULL", "ROTATION", "SIDEWAYS", "NORMAL"] and rs >= 20 and conv >= 60 and (t10_count >= 2 or recent_days >= 2)) or is_fast_track:
             return "🟢 LEVEL 3: 분할 매수 가능", []
+            
         elif rs >= 10 and conv >= 50:
-            return "🟡 LEVEL 2: 관심 편입", ["✔ TOP10 지속성 추가 확인 시 LEVEL 3 진입"]
+            return "🟡 LEVEL 2: 관심 편입", ["✔ TOP10 지속성 2회 이상 달성 시 LEVEL 3 진입"]
             
     return "👀 LEVEL 1: 관찰", next_conds
 
@@ -84,22 +92,24 @@ def evaluate_candidates(scanner_output):
         try:
             if rank_idx <= 10: save_top10_tracking(scan_datetime, c['code'], c['name'], rank_idx, c['base_score'], risk_level)
             c["history_id"] = save_candidate_history(scan_datetime, run_type, c['code'], c['name'], rank_idx, c['price'], c['chg'], c['scores']['prime_final'], c['scores']['prime_score'], c['features']['conviction'], c['features']['rs_1d'], c['features']['rs_5d'], c['features']['rs_20d'], c['features']['ma_gap'], c['features']['amount'], c['features']['amount_strength'], risk_level, 0)
-            print(f"✅ [DB SAVE SUCCESS] {c['code']} {c['name']} (ID: {c.get('history_id')})")
-        except Exception as e: 
-            print(f"❌ [DB SAVE ERROR] {c['code']} {c['name']} : {e}")
+        except Exception: pass
 
     final_results = []
     for c in pass1_results:
-        debug_history(c["code"])
-        
         mem = get_signal_persistence(c["code"])
         top10 = get_top10_stability(c["code"])
         stats = get_signal_quality(regime_str, c["features"]["rs_20d"], c["features"]["conviction"])
         feats = c["features"]
         
+        # [패치] TOP10 지속성 횟수에 따른 0~15점 가중치 계단식 부여
+        t10_count = top10["top10_count"]
+        t10_bonus = 15 if t10_count >= 6 else (10 if t10_count >= 4 else (5 if t10_count >= 2 else 0))
+        
         win_rate = stats.get("win_rate", 0.0) / 100.0
         confidence = win_rate * min(stats.get("match_count", 0) / 20.0, 1.0)
-        memory_score = min((mem["five_days_days"] * 0.25) + (confidence * 0.65 * 100) + (mem["leader_count"] * 0.10 * 100), 25)
+        
+        # 가중치 통합
+        memory_score = min((mem["five_days_days"] * 0.25) + (confidence * 0.65 * 100) + t10_bonus, 25)
         
         if regime_str == "CRASH": leader_score = (feats["rs_20d"] * 1.5) + (feats["conviction"] * 0.5)
         elif regime_str == "BULL": leader_score = (c["scores"]["prime_final"] * 0.8) + (feats["rs_20d"] * 0.7)
@@ -112,7 +122,7 @@ def evaluate_candidates(scanner_output):
         c["decision"]["leader_score"] = leader_score
         c["decision"]["buy_readiness"] = readiness
         c["decision"]["next_conditions"] = next_conds
-        c["decision"]["top10_stability"] = {"top10_count": top10["top10_count"], "recent_days": top10["days"], "avg_rank": top10["avg_rank"]}
+        c["decision"]["top10_stability"] = {"top10_count": t10_count, "recent_days": mem["five_days_days"], "avg_rank": mem["avg_rank"]}
         
         final_results.append(c)
         
