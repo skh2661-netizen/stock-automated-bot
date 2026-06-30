@@ -21,37 +21,35 @@ def format_scan_messages(run_type, result):
     market = result.get("market", {})
     candidates = result.get("candidates", [])
     regime = market.get("regime", "NORMAL")
-    
-    survival_count = sum(1 for c in candidates if "리더" in c["decision"]["action"] or "감시" in c["decision"]["action"])
+    direction = market.get("direction", "🟢 시장 안정")
     
     msg_list = []
-    header = f"🎯 <b>V8.8.18 DAILY QUANT REPORT ({run_type})</b>\n\n"
-    header += f"📊 <b>시장 지표 ({regime} 국면)</b>\n"
-    header += f"KOSPI: {market.get('kospi', 0.0)}% | KOSDAQ: {market.get('kosdaq', 0.0)}%\n"
-    header += f"전체 스캔 후보: {len(candidates)}개\n"
-    header += f"주도(방어) 리더 포착: {survival_count}개\n"
+    header = f"🎯 <b>V8.8.19 DAILY QUANT REPORT</b>\n\n"
+    header += f"📊 <b>시장 분석 ({regime} 국면)</b>\n"
+    header += f"방향: {direction}\n"
+    header += f"KOSPI: {market.get('kospi', 0.0)}% | KOSDAQ: {market.get('kosdaq', 0.0)}%\n\n"
+    header += f"총 필터 통과 종목: {len(candidates)}개\n"
     header += "━" * 20 + "\n\n"
     current_msg = header
     
-    # [교정] 상위 10개로 출력 개수 하드 리미트
+    # [교정] 상위 10개만 슬라이싱하여 노이즈 제거
     for idx, c in enumerate(candidates[:10], 1):
         is_leader = c["decision"].get("is_prime_leader", False)
         icon = "👑 [PRIME WATCH]" if is_leader else f"🔹 {idx}위"
         
         block = f"{icon} <b>{c['name']}</b> ({c['code']})\n"
-        block += f"등급: {c['decision']['action']}\n"
-        block += f"Final: {c['scores']['prime_final']} | Prime: {c['scores']['prime_score']}\n"
+        block += f"판단: {c['decision']['action']}\n"
         block += f"RS20D: {'+' if c['features']['rs_20d']>0 else ''}{c['features']['rs_20d']}% | Conv: {c['features']['conviction']}\n\n"
         
-        # [교정] 연결이 복구된 지속성 분석 출력
         t10 = c['decision'].get('top10_stability', {})
         block += f"📌 <b>지속성 분석</b>\n"
-        block += f"오늘 누적 포착: {t10.get('top10_count', 0)}회\n"
+        block += f"오늘 장중 포착: {t10.get('top10_count', 0)}회\n"
         block += f"최근 출현 일수: {t10.get('recent_days', 0)}일\n"
         block += f"평균 순위: {t10.get('avg_rank', 0.0)}위\n\n"
         
         block += f"🎯 <b>매매 준비도</b>\n"
         block += f"{c['decision'].get('buy_readiness', '👀 LEVEL 0: 관찰')}\n"
+        
         block += "━" * 20 + "\n\n"
         
         if len(current_msg) + len(block) > 4000:
@@ -60,6 +58,5 @@ def format_scan_messages(run_type, result):
         else:
             current_msg += block
             
-    if current_msg:
-        msg_list.append(current_msg)
+    if current_msg: msg_list.append(current_msg)
     return msg_list
