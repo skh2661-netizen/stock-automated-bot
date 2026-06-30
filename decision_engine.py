@@ -11,6 +11,41 @@ def detect_market_regime(kospi, kosdaq):
     elif abs(kospi) < 1.0 and kosdaq >= 1.0: return "ROTATION", 1, "🔵 섹터 순환매 (차별화)", "60%"
     else: return "SIDEWAYS", 1, "⚪ 박스권 횡보 (방향성 탐색)", "40%"
 
+# [신규] LEVEL별 해설 및 행동 지침 매핑 엔진
+def get_level_comment(level_key, next_conds=None):
+    if next_conds is None: next_conds = []
+    comments = {
+        "LEVEL 0": {
+            "title": "🔴 매수 금지",
+            "meaning": "추세 또는 시장 환경이 좋지 않아 신규 진입 위험",
+            "action": "관망 유지"
+        },
+        "LEVEL 1": {
+            "title": "⚪ 관찰 단계",
+            "meaning": "가능성은 있으나 매수 조건 부족",
+            "action": "추세 변화 확인"
+        },
+        "LEVEL 2": {
+            "title": "🟡 관심 구간",
+            "meaning": "우량 후보지만 아직 확실한 매수 타이밍 부족",
+            "action": "조건 충족 대기"
+        },
+        "LEVEL 3": {
+            "title": "🟢 분할 매수 구간",
+            "meaning": "상승 조건과 수급 흐름 확인, 단계적 진입 가능",
+            "action": "1차 분할 접근 검토"
+        },
+        "LEVEL 4": {
+            "title": "🚀 적극 매수 구간",
+            "meaning": "강한 추세와 수급이 동시에 확인된 상태",
+            "action": "적극 편입 검토"
+        }
+    }
+    res = comments.get(level_key, {}).copy()
+    res["level"] = level_key
+    res["conditions"] = next_conds
+    return res
+
 def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     rs = c["features"]["rs_20d"]
     conv = c["features"]["conviction"]
@@ -18,7 +53,7 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     recent_days = top10["days"]
     
     if regime_str == "CRASH" or rs < -10:
-        return "❌ LEVEL 0: 매수 금지 (시장/추세 붕괴)", ["✔ 추세 복구(RS20D -10% 이상) 및 시장 안정 필요"]
+        return get_level_comment("LEVEL 0", ["✔ 추세 복구(RS20D -10% 이상) 및 시장 안정 필요"])
         
     next_conds = []
     
@@ -29,20 +64,20 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
         next_conds.append("✔ 장중 TOP10 2회 이상 또는 최근 2일 출현 필요")
             
     if rs < 10: next_conds.append("✔ 상대강도(RS20D) +10% 이상 돌파 필요")
-    if conv < 50: next_conds.append("✔ Conviction 50 이상 수급 유입 필요")
+    if conv < 50: next_conds.append("✔ 수급확신도 50 이상 달성 필요")
     
     if rs >= 50 and conv >= 80:
-        return "🚀 LEVEL 4: 적극 매수 구간 (초강력 수급 돌파)", []
+        return get_level_comment("LEVEL 4", [])
         
     if not next_conds or is_fast_track:
         if regime_str == "BULL" and rs >= 25 and conv >= 70 and (t10_count >= 3 or recent_days >= 2) and stats.get("win_rate", 0) >= 60:
-            return "🚀 LEVEL 4: 적극 매수 구간 (확률 우위)", []
+            return get_level_comment("LEVEL 4", [])
         elif (regime_str in ["BULL", "ROTATION", "SIDEWAYS", "NORMAL"] and rs >= 20 and conv >= 60 and (t10_count >= 2 or recent_days >= 2)) or is_fast_track:
-            return "🟢 LEVEL 3: 분할 매수 가능", []
+            return get_level_comment("LEVEL 3", [])
         elif rs >= 10 and conv >= 50:
-            return "🟡 LEVEL 2: 관심 편입", ["✔ TOP10 지속성 2회 이상 달성 시 LEVEL 3 진입"]
+            return get_level_comment("LEVEL 2", ["✔ TOP10 지속성 2회 이상 달성 시 LEVEL 3 진입"])
             
-    return "👀 LEVEL 1: 관찰", next_conds
+    return get_level_comment("LEVEL 1", next_conds)
 
 def evaluate_candidates(scanner_output):
     market = scanner_output.get("market", {})
@@ -63,7 +98,7 @@ def evaluate_candidates(scanner_output):
         
         action, rank_bonus = "👀 관망", 0
         if regime_str == "CRASH":
-            if feats["rs_20d"] > 15 and feats["conviction"] >= 60: action, rank_bonus = "🔥 폭락장 상대강도 리더", 20
+            if feats["rs_20d"] > 15 and feats["conviction"] >= 60: action, rank_bonus = "🔥 폭락장 방어 리더", 20
             elif feats["rs_20d"] > 10: action, rank_bonus = "🛡 생존 감시 대상", 5
         elif regime_str == "BULL":
             if scores["prime_score"] >= 80 and feats["rs_20d"] > 10: action, rank_bonus = "🔥 상승 추세 리더", 25
@@ -83,19 +118,14 @@ def evaluate_candidates(scanner_output):
         
     pass1_results.sort(key=lambda x: x["base_score"], reverse=True)
     
-    # [PASS 1] 1차 랭킹 DB 저장
     for rank_idx, c in enumerate(pass1_results, 1):
         try:
             if rank_idx <= 10: save_top10_tracking(scan_datetime, c['code'], c['name'], rank_idx, c['base_score'], risk_level)
             c["history_id"] = save_candidate_history(scan_datetime, run_type, c['code'], c['name'], rank_idx, c['price'], c['chg'], c['scores']['prime_final'], c['scores']['prime_score'], c['features']['conviction'], c['features']['rs_1d'], c['features']['rs_5d'], c['features']['rs_20d'], c['features']['ma_gap'], c['features']['amount'], c['features']['amount_strength'], risk_level, 0)
-        except Exception as e:
-            print(f"❌ [DB SAVE ERROR] {c['code']} {c['name']} : {e}")
+        except Exception: pass
 
-    # [PASS 2] 방금 저장된 데이터 포함하여 지속성 재조회
     final_results = []
     for c in pass1_results:
-        debug_top10(c["code"])
-        
         mem = get_signal_persistence(c["code"])
         top10 = get_top10_stability(c["code"])
         stats = get_signal_quality(regime_str, c["features"]["rs_20d"], c["features"]["conviction"])
@@ -113,12 +143,13 @@ def evaluate_candidates(scanner_output):
         else: leader_score = c["scores"]["prime_final"]
             
         final_score = c["base_score"] + memory_score
-        readiness, next_conds = calculate_buy_readiness(c, regime_str, top10, mem, stats)
+        
+        # [패치] dict 형태로 구조화된 매수 판단 객체 반환
+        ready_obj = calculate_buy_readiness(c, regime_str, top10, mem, stats)
         
         c["decision"]["final_score"] = final_score
         c["decision"]["leader_score"] = leader_score
-        c["decision"]["buy_readiness"] = readiness
-        c["decision"]["next_conditions"] = next_conds
+        c["decision"]["buy_readiness"] = ready_obj
         c["decision"]["top10_stability"] = {"top10_count": t10_count, "recent_days": top10["days"], "avg_rank": top10["avg_rank"]}
         
         final_results.append(c)
@@ -134,13 +165,15 @@ def evaluate_candidates(scanner_output):
                 break
                 
         for c in final_results:
-            lvl = c["decision"]["buy_readiness"]
-            if "LEVEL 4" in lvl: max_lvl, max_lvl_code, recommended_action = "LEVEL 4", c["name"], "조건부 적극 편입 검토"; break
-            elif "LEVEL 3" in lvl and max_lvl not in ["LEVEL 4"]: max_lvl, max_lvl_code, recommended_action = "LEVEL 3", c["name"], "핵심 후보 분할 매수 접근"
-            elif "LEVEL 2" in lvl and max_lvl not in ["LEVEL 4", "LEVEL 3"]: max_lvl, max_lvl_code, recommended_action = "LEVEL 2", c["name"], "관심 종목군 편입"
-            elif "LEVEL 1" in lvl and max_lvl not in ["LEVEL 4", "LEVEL 3", "LEVEL 2"]: max_lvl, max_lvl_code = "LEVEL 1", c["name"]
+            # dict 추출 호환
+            lvl_val = c["decision"]["buy_readiness"]["level"]
             
-            if "LEVEL 3" in lvl or "LEVEL 4" in lvl:
+            if "LEVEL 4" in lvl_val: max_lvl, max_lvl_code, recommended_action = "LEVEL 4", c["name"], "조건부 적극 편입 검토"; break
+            elif "LEVEL 3" in lvl_val and max_lvl not in ["LEVEL 4"]: max_lvl, max_lvl_code, recommended_action = "LEVEL 3", c["name"], "핵심 후보 분할 매수 접근"
+            elif "LEVEL 2" in lvl_val and max_lvl not in ["LEVEL 4", "LEVEL 3"]: max_lvl, max_lvl_code, recommended_action = "LEVEL 2", c["name"], "관심 종목군 편입"
+            elif "LEVEL 1" in lvl_val and max_lvl not in ["LEVEL 4", "LEVEL 3", "LEVEL 2"]: max_lvl, max_lvl_code = "LEVEL 1", c["name"]
+            
+            if "LEVEL 3" in lvl_val or "LEVEL 4" in lvl_val:
                 try: register_signal_outcome(c.get("history_id"), c['code'], c['name'], c['price'], regime_str)
                 except Exception: pass
                 
