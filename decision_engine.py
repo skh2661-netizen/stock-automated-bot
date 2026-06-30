@@ -22,12 +22,10 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
         
     next_conds = []
     
-    # [수정] 융통성(Fast-Track) 부여: 압도적 수치(RS>=30, Conv>=60)라면 1회차에도 LEVEL UP 허용
+    # 융통성(Fast-Track): RS 30 이상, Conv 60 이상이면 신규 편입도 지속성 조건 통과 취급
     if t10_count < 2 and recent_days < 1:
-        if rs >= 30 and conv >= 60:
-            pass # 패스트 트랙 통과
-        else:
-            next_conds.append("✔ 장중 TOP10 지속성 추가 확인 필요")
+        if rs >= 30 and conv >= 60: pass
+        else: next_conds.append("✔ 장중 TOP10 지속성 추가 확인 필요")
             
     if rs < 10: next_conds.append("✔ 상대강도(RS20D) +10% 이상 돌파 필요")
     if conv < 50: next_conds.append("✔ Conviction 50 이상 수급 유입 필요")
@@ -35,7 +33,8 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     if not next_conds:
         if regime_str == "BULL" and rs >= 25 and conv >= 70 and (t10_count >= 3 or recent_days >= 2) and stats.get("win_rate", 0) >= 60:
             return "🚀 LEVEL 4: 적극 매수 구간 (확률 우위)", []
-        elif regime_str in ["BULL", "ROTATION", "NORMAL"] and rs >= 20 and conv >= 60 and (t10_count >= 2 or recent_days >= 1 or rs >= 30):
+        # [패치] SIDEWAYS(횡보장)에서도 Fast-Track 우대 조건을 통과하여 LEVEL 3(분할 매수) 진입 허용
+        elif regime_str in ["BULL", "ROTATION", "SIDEWAYS", "NORMAL"] and rs >= 20 and conv >= 60 and (t10_count >= 2 or recent_days >= 1 or rs >= 30):
             return "🟢 LEVEL 3: 분할 매수 가능", []
         elif rs >= 10 and conv >= 50:
             return "🟡 LEVEL 2: 관심 편입", ["✔ TOP10 지속성 추가 확인 시 LEVEL 3 진입"]
@@ -85,16 +84,12 @@ def evaluate_candidates(scanner_output):
         try:
             if rank_idx <= 10: save_top10_tracking(scan_datetime, c['code'], c['name'], rank_idx, c['base_score'], risk_level)
             c["history_id"] = save_candidate_history(scan_datetime, run_type, c['code'], c['name'], rank_idx, c['price'], c['chg'], c['scores']['prime_final'], c['scores']['prime_score'], c['features']['conviction'], c['features']['rs_1d'], c['features']['rs_5d'], c['features']['rs_20d'], c['features']['ma_gap'], c['features']['amount'], c['features']['amount_strength'], risk_level, 0)
-            
-            # [수정] Silent Failure 제거: 성공 로고 출력
             print(f"✅ [DB SAVE SUCCESS] {c['code']} {c['name']} (ID: {c.get('history_id')})")
         except Exception as e: 
-            # [수정] Silent Failure 제거: 에러 추적 강제화
             print(f"❌ [DB SAVE ERROR] {c['code']} {c['name']} : {e}")
 
     final_results = []
     for c in pass1_results:
-        # [수정] DB 조회 직전 디버그 함수를 실행하여 데이터 존재 여부 터미널 확인
         debug_history(c["code"])
         
         mem = get_signal_persistence(c["code"])
@@ -117,7 +112,7 @@ def evaluate_candidates(scanner_output):
         c["decision"]["leader_score"] = leader_score
         c["decision"]["buy_readiness"] = readiness
         c["decision"]["next_conditions"] = next_conds
-        c["decision"]["top10_stability"] = {"top10_count": mem["today_count"], "recent_days": mem["five_days_days"], "avg_rank": mem["avg_rank"]}
+        c["decision"]["top10_stability"] = {"top10_count": top10["top10_count"], "recent_days": top10["days"], "avg_rank": top10["avg_rank"]}
         
         final_results.append(c)
         
