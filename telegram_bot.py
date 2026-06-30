@@ -24,20 +24,23 @@ def format_scan_messages(run_type, result):
     direction = market.get("direction", "🟢 시장 안정")
     
     msg_list = []
-    header = f"🎯 <b>V8.8.19 DAILY QUANT REPORT</b>\n\n"
-    header += f"📊 <b>시장 분석 ({regime} 국면)</b>\n"
-    header += f"방향: {direction}\n"
-    header += f"KOSPI: {market.get('kospi', 0.0)}% | KOSDAQ: {market.get('kosdaq', 0.0)}%\n\n"
-    header += f"총 필터 통과 종목: {len(candidates)}개\n"
+    header = f"🎯 <b>V8.8.22 DAILY QUANT REPORT</b>\n\n"
+    
+    header += f"📌 <b>투자 판단 요약</b>\n"
+    header += f"시장 상태: {regime} ({direction})\n"
+    header += f"매수 허용도: <b>{market.get('buy_tolerance', '0%')}</b>\n"
+    header += f"최대 관심 후보: <b>{market.get('max_level_code', '없음')}</b>\n"
+    header += f"현재 최고 단계: <b>{market.get('max_level', 'LEVEL 0')}</b>\n"
+    header += f"추천 행동: {market.get('recommended_action', '관망')}\n"
     header += "━" * 20 + "\n\n"
     current_msg = header
     
-    # [교정] 상위 10개만 슬라이싱하여 노이즈 제거
     for idx, c in enumerate(candidates[:10], 1):
         is_leader = c["decision"].get("is_prime_leader", False)
-        icon = "👑 [PRIME WATCH]" if is_leader else f"🔹 {idx}위"
         
-        block = f"{icon} <b>{c['name']}</b> ({c['code']})\n"
+        icon = f"👑 <b>[PRIME WATCH] ({idx}위)</b>" if is_leader else f"🔹 {idx}위"
+        
+        block = f"{icon}\n<b>{c['name']}</b> ({c['code']})\n"
         block += f"판단: {c['decision']['action']}\n"
         block += f"RS20D: {'+' if c['features']['rs_20d']>0 else ''}{c['features']['rs_20d']}% | Conv: {c['features']['conviction']}\n\n"
         
@@ -48,9 +51,13 @@ def format_scan_messages(run_type, result):
         block += f"평균 순위: {t10.get('avg_rank', 0.0)}위\n\n"
         
         block += f"🎯 <b>매매 준비도</b>\n"
-        block += f"{c['decision'].get('buy_readiness', '👀 LEVEL 0: 관찰')}\n"
+        block += f"상태: {c['decision'].get('buy_readiness', '👀 LEVEL 0: 관찰')}\n"
         
-        block += "━" * 20 + "\n\n"
+        next_conds = c['decision'].get('next_conditions', [])
+        if next_conds:
+            block += "다음 단계 조건:\n" + "\n".join(next_conds) + "\n"
+            
+        block += "\n" + "━" * 20 + "\n\n"
         
         if len(current_msg) + len(block) > 4000:
             msg_list.append(current_msg)
