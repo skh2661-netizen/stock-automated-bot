@@ -1,20 +1,3 @@
-import os
-import requests
-import asyncio
-
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
-async def send_message(text):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
-    try:
-        response = await asyncio.to_thread(requests.post, url, json=payload, timeout=10)
-        response.raise_for_status()
-        return True
-    except Exception: return False
-
 def format_scan_messages(run_type, result):
     if not result or "candidates" not in result: return ["⚠️ 데이터 추출 실패"]
     
@@ -24,7 +7,7 @@ def format_scan_messages(run_type, result):
     direction = market.get("direction", "🟢 시장 안정")
     
     msg_list = []
-    header = f"🎯 <b>V8.8.25 DAILY QUANT REPORT</b>\n\n"
+    header = f"🎯 <b>V8.8.26 DAILY QUANT REPORT</b>\n\n"
     
     header += f"📌 <b>투자 판단 요약</b>\n"
     header += f"시장 상태: {regime} ({direction})\n"
@@ -38,7 +21,6 @@ def format_scan_messages(run_type, result):
     for idx, c in enumerate(candidates[:10], 1):
         is_leader = c["decision"].get("is_prime_leader", False)
         
-        # [패치] 우량 리더 명칭 직관화
         icon = f"👑 <b>[PRIME LEADER] ({idx}위)</b>" if is_leader else f"🔹 {idx}위"
         
         block = f"{icon}\n<b>{c['name']}</b> ({c['code']})\n"
@@ -48,10 +30,10 @@ def format_scan_messages(run_type, result):
         t10 = c['decision'].get('top10_stability', {})
         block += f"📌 <b>지속성 분석</b>\n"
         block += f"오늘 장중 포착: {t10.get('top10_count', 0)}회\n"
-        block += f"최근 출현 일수: {t10.get('recent_days', 0)}일\n"
+        # [패치] 신뢰도를 높이는 5일 누적 표기법 적용
+        block += f"TOP10 누적: {t10.get('recent_days', 0)}/5일\n"
         block += f"평균 순위: {t10.get('avg_rank', 0.0)}위\n\n"
         
-        # [패치] 타이밍 판단 명칭 직관화
         block += f"🎯 <b>TRADE READY (매매 준비도)</b>\n"
         block += f"상태: {c['decision'].get('buy_readiness', '👀 LEVEL 0: 관찰')}\n"
         
