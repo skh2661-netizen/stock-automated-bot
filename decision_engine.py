@@ -160,15 +160,11 @@ def evaluate_candidates(scanner_output):
             t10_count = top10["top10_count"]
             ready_obj = calculate_buy_readiness(c, regime_str, top10, mem, stats)
             
-            # [교정] Trade Score 정밀 비율화 (1000점 만점 기준: LEVEL 40%, 수급 25%, 모멘텀 20%, 품질 10%, 지속성 5%)
             lvl_num = int(ready_obj["level"].replace("LEVEL ", ""))
-            w_level = (lvl_num / 4.0) * 400
-            w_conv = min(feats["conviction"], 100) * 2.5
-            w_mom = min(max(feats["rs_20d"], 0), 100) * 2.0
-            w_qual = min(c["scores"]["prime_score"], 100) * 1.0
-            w_pers = min(t10_count, 10) * 5.0
+            momentum_score = feats["rs_20d"] * 2.5
+            quality_score = c["scores"]["prime_score"] * 0.5
+            trade_score = (lvl_num * 100) + momentum_score + feats["conviction"] + quality_score + (t10_count * 10)
             
-            trade_score = w_level + w_conv + w_mom + w_qual + w_pers
             trade_plan = calculate_trade_plan(c["price"], feats["ma_gap"], risk_level)
                 
             c["decision"]["trade_score"] = trade_score
@@ -185,25 +181,20 @@ def evaluate_candidates(scanner_output):
         max_lvl_reason = "조건을 충족하는 유효 후보군 없음"
         
         if final_results:
+            # [수정] 무조건 종합 연산 정렬 1등을 오늘의 대표 리더로 강제 동기화
             final_results[0]["decision"]["is_trade_leader"] = True
+            max_lvl_obj = final_results[0]["decision"]["buy_readiness"]
+            max_lvl_code = final_results[0]["name"]
             
-            for c in final_results:
-                lvl_val = c["decision"]["buy_readiness"].get("level", "LEVEL 0")
-                if "LEVEL 4" in lvl_val: 
-                    max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
-                    max_lvl_reason = "LEVEL 4 최상위 확률 우위 확정 + 수급 및 추세 완전 정렬"
-                    break
-                elif "LEVEL 3" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4"]: 
-                    max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
-                    max_lvl_reason = "LEVEL 3 실전 진입 허용 + 수급확신도 및 모멘텀 임계점 동시 충족"
-                elif "LEVEL 2" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3"]: 
-                    max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
-                    max_lvl_reason = "우량 품질 자격은 갖추었으나, 실전 매수 타이밍(지속성/수급) 일부 대기 상태"
-                elif "LEVEL 1" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3", "LEVEL 2"]: 
-                    max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
-                    max_lvl_reason = "단기적 관심 후보이나 실전 매매 연동 조건 대폭 미달"
+            lvl_val = max_lvl_obj.get("level", "LEVEL 0")
+            if "LEVEL 4" in lvl_val: max_lvl_reason = "LEVEL 4 최상위 확률 우위 확정 + 수급 및 추세 완전 정렬"
+            elif "LEVEL 3" in lvl_val: max_lvl_reason = "LEVEL 3 실전 진입 허용 + 수급확신도 및 모멘텀 임계점 동시 충족"
+            elif "LEVEL 2" in lvl_val: max_lvl_reason = "우량 품질 자격은 갖추었으나 수급 및 지속성 검증 단계"
+            else: max_lvl_reason = "단기적 관심 후보이나 실전 매매 연동 조건 대폭 미달"
                 
-                if "LEVEL 3" in lvl_val or "LEVEL 4" in lvl_val:
+            for c in final_results:
+                c_lvl = c["decision"]["buy_readiness"].get("level", "LEVEL 0")
+                if "LEVEL 3" in c_lvl or "LEVEL 4" in c_lvl:
                     try: register_signal_outcome(c.get("history_id"), c['code'], c['name'], c['price'], regime_str)
                     except Exception: pass
                     
