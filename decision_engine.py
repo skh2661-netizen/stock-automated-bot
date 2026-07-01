@@ -60,10 +60,17 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     if rs >= 35 and conv >= 65:
         is_fast_track = True
     elif t10_count < 2 and recent_days < 1:
-        next_conds.append("✔ 장중 TOP10 2회 이상 또는 최근 2일 출현 필요")
+        # [교정] 조건 미달 시 구체적 가이드라인 명시화
+        next_conds.extend([
+            "✔ 장중 TOP10 지속성 2회 이상 유지",
+            "✔ 수급확신도 60점 이상 확보",
+            "✔ 현재 상승 모멘텀 유지"
+        ])
             
-    if rs < 10: next_conds.append("✔ 상대강도(RS20D) +10% 이상 돌파 필요")
-    if conv < 50: next_conds.append("✔ 수급확신도 50 이상 달성 필요")
+    if rs < 10 and "✔ 현재 상승 모멘텀 유지" not in next_conds: 
+        next_conds.append("✔ 상대강도(RS20D) +10% 이상 돌파 필요")
+    if conv < 50 and "✔ 수급확신도 60점 이상 확보" not in next_conds: 
+        next_conds.append("✔ 수급확신도 50 이상 달성 필요")
     
     if rs >= 50 and conv >= 80:
         return get_level_comment("LEVEL 4", [])
@@ -74,24 +81,23 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
         elif (regime_str in ["BULL", "ROTATION", "SIDEWAYS", "NORMAL"] and rs >= 20 and conv >= 60 and (t10_count >= 2 or recent_days >= 2)) or is_fast_track:
             return get_level_comment("LEVEL 3", [])
         elif rs >= 10 and conv >= 50:
-            return get_level_comment("LEVEL 2", ["✔ TOP10 지속성 2회 이상 달성 시 LEVEL 3 진입"])
+            return get_level_comment("LEVEL 2", [
+                "✔ TOP10 지속성 2회 이상 유지",
+                "✔ 수급확신도 60점 이상 확보",
+                "✔ 현재 상승 모멘텀 유지"
+            ])
             
     return get_level_comment("LEVEL 1", next_conds)
 
-# [신규] 실전 매매 계획 자동 산출
 def calculate_trade_plan(price, ma_gap, risk_level):
     if risk_level >= 3:
-        buy_p = int(price * 0.85)
-        stop_p = int(buy_p * 0.90)
+        buy_p = int(price * 0.85); stop_p = int(buy_p * 0.90)
     elif ma_gap > 20:
-        buy_p = int(price * 0.90)
-        stop_p = int(buy_p * 0.92)
+        buy_p = int(price * 0.90); stop_p = int(buy_p * 0.92)
     elif ma_gap > 10:
-        buy_p = int(price * 0.95)
-        stop_p = int(buy_p * 0.95)
+        buy_p = int(price * 0.95); stop_p = int(buy_p * 0.95)
     else:
-        buy_p = int(price * 0.98)
-        stop_p = int(buy_p * 0.95)
+        buy_p = int(price * 0.98); stop_p = int(buy_p * 0.95)
         
     return {
         "entry": f"현재가 기준 {round((price-buy_p)/price*100, 1)}% 조정 시 (약 {buy_p}원)",
@@ -157,7 +163,6 @@ def evaluate_candidates(scanner_output):
             
             ready_obj = calculate_buy_readiness(c, regime_str, top10, mem, stats)
             
-            # [교정] Trade Score 입체화: 단순 LEVEL 절대주의 타파 (모멘텀과 수급 비중 상승)
             lvl_num = int(ready_obj["level"].replace("LEVEL ", ""))
             momentum_score = feats["rs_20d"] * 2.5
             quality_score = c["scores"]["prime_score"] * 0.5
@@ -178,23 +183,35 @@ def evaluate_candidates(scanner_output):
         
         max_lvl_obj = {"level": "LEVEL 0", "title": "🔴 매수 금지", "action": "관망 유지", "meaning": "현재 장세 진입 불가"}
         max_lvl_code = "없음"
+        max_lvl_reason = "조건을 충족하는 유효 후보군 없음"
         
         if final_results:
             final_results[0]["decision"]["is_trade_leader"] = True
             
             for c in final_results:
-                # [교정] 구버전 문자열 참조 오류(TypeError) 원천 차단
                 lvl_val = c["decision"]["buy_readiness"].get("level", "LEVEL 0")
-                if "LEVEL 4" in lvl_val: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]; break
-                elif "LEVEL 3" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
-                elif "LEVEL 2" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
-                elif "LEVEL 1" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3", "LEVEL 2"]: max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
+                if "LEVEL 4" in lvl_val: 
+                    max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
+                    max_lvl_reason = "LEVEL 4 최상위 확률 우위 확정 + 수급 및 추세 완전 정렬"
+                    break
+                elif "LEVEL 3" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4"]: 
+                    max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
+                    max_lvl_reason = "LEVEL 3 실전 진입 허용 + 수급확신도 및 모멘텀 임계점 동시 충족"
+                elif "LEVEL 2" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3"]: 
+                    max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
+                    max_lvl_reason = "우량 품질 자격은 갖추었으나, 실전 매수 타이밍(지속성/수급) 일부 대기 상태"
+                elif "LEVEL 1" in lvl_val and max_lvl_obj["level"] not in ["LEVEL 4", "LEVEL 3", "LEVEL 2"]: 
+                    max_lvl_obj = c["decision"]["buy_readiness"]; max_lvl_code = c["name"]
+                    max_lvl_reason = "단기적 관심 후보이나 실전 매매 연동 조건 대폭 미달"
                 
                 if "LEVEL 3" in lvl_val or "LEVEL 4" in lvl_val:
                     try: register_signal_outcome(c.get("history_id"), c['code'], c['name'], c['price'], regime_str)
                     except Exception: pass
                     
-        market.update({"regime": regime_str, "direction": market_direction, "buy_tolerance": buy_tolerance, "max_level_obj": max_lvl_obj, "max_level_code": max_lvl_code})
+        market.update({
+            "regime": regime_str, "direction": market_direction, "buy_tolerance": buy_tolerance, 
+            "max_level_obj": max_lvl_obj, "max_level_code": max_lvl_code, "max_lvl_reason": max_lvl_reason
+        })
         return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": final_results}
     except Exception as e:
         print(f"🚨 [DECISION ENGINE INTERNAL ERROR] {e}")
