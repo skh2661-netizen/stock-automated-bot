@@ -17,17 +17,17 @@ def get_level_comment(level_key, next_conds=None):
         "LEVEL 0": {
             "title": "🔴 매수 금지",
             "meaning": "추세 또는 시장 환경이 좋지 않아 신규 진입 위험",
-            "action": "관망 유지 및 현금 확보"
+            "action": "조건 충족 전 관망 유지"
         },
         "LEVEL 1": {
             "title": "⚪ 관찰 단계",
             "meaning": "가능성은 있으나 매수 조건 부족",
-            "action": "추세 변화 및 수급 유입 확인"
+            "action": "조건 충족 전 추세 변화 관찰"
         },
         "LEVEL 2": {
             "title": "🟡 관심 구간",
             "meaning": "우량 후보지만 아직 확실한 매수 타이밍 부족",
-            "action": "조건 충족 대기 (관심종목 편입)"
+            "action": "조건 충족 전 관심 유지"
         },
         "LEVEL 3": {
             "title": "🟢 분할 매수 구간",
@@ -60,7 +60,6 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     if rs >= 35 and conv >= 65:
         is_fast_track = True
     elif t10_count < 2 and recent_days < 1:
-        # [교정] 조건 미달 시 구체적 가이드라인 명시화
         next_conds.extend([
             "✔ 장중 TOP10 지속성 2회 이상 유지",
             "✔ 수급확신도 60점 이상 확보",
@@ -159,29 +158,29 @@ def evaluate_candidates(scanner_output):
             feats = c["features"]
             
             t10_count = top10["top10_count"]
-            t10_bonus = 15 if t10_count >= 6 else (10 if t10_count >= 4 else (5 if t10_count >= 2 else 0))
-            
             ready_obj = calculate_buy_readiness(c, regime_str, top10, mem, stats)
             
+            # [교정] Trade Score 정밀 비율화 (1000점 만점 기준: LEVEL 40%, 수급 25%, 모멘텀 20%, 품질 10%, 지속성 5%)
             lvl_num = int(ready_obj["level"].replace("LEVEL ", ""))
-            momentum_score = feats["rs_20d"] * 2.5
-            quality_score = c["scores"]["prime_score"] * 0.5
-            trade_score = (lvl_num * 100) + momentum_score + feats["conviction"] + quality_score + (t10_count * 10)
+            w_level = (lvl_num / 4.0) * 400
+            w_conv = min(feats["conviction"], 100) * 2.5
+            w_mom = min(max(feats["rs_20d"], 0), 100) * 2.0
+            w_qual = min(c["scores"]["prime_score"], 100) * 1.0
+            w_pers = min(t10_count, 10) * 5.0
             
+            trade_score = w_level + w_conv + w_mom + w_qual + w_pers
             trade_plan = calculate_trade_plan(c["price"], feats["ma_gap"], risk_level)
                 
             c["decision"]["trade_score"] = trade_score
-            c["decision"]["momentum_score"] = momentum_score
-            c["decision"]["quality_score"] = quality_score
             c["decision"]["buy_readiness"] = ready_obj
             c["decision"]["trade_plan"] = trade_plan
             c["decision"]["top10_stability"] = {"top10_count": t10_count, "recent_days": top10["days"], "avg_rank": top10["avg_rank"]}
             
             final_results.append(c)
             
-        final_results.sort(key=lambda x: (x["decision"]["trade_score"], x["decision"]["momentum_score"]), reverse=True)
+        final_results.sort(key=lambda x: x["decision"]["trade_score"], reverse=True)
         
-        max_lvl_obj = {"level": "LEVEL 0", "title": "🔴 매수 금지", "action": "관망 유지", "meaning": "현재 장세 진입 불가"}
+        max_lvl_obj = {"level": "LEVEL 0", "title": "🔴 매수 금지", "action": "관망 유지"}
         max_lvl_code = "없음"
         max_lvl_reason = "조건을 충족하는 유효 후보군 없음"
         
