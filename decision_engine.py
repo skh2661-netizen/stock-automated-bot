@@ -105,6 +105,23 @@ def calculate_trade_plan(price, ma_gap, risk_level):
         "target2": f"진입가 대비 +20% (약 {int(buy_p * 1.20)}원)"
     }
 
+# [신규] 형님이 정립하신 3단계 알림 가드레일 레이어
+def should_send_alert(c):
+    ready = c["decision"]["buy_readiness"]
+    lvl_val = ready.get("level", "LEVEL 0")
+    conv = c["features"]["conviction"]
+    t10_count = c["decision"]["top10_stability"]["top10_count"]
+    
+    # 1단계 알림 가드: LEVEL 3, 4 무조건 실시간 전송
+    if lvl_val in ["LEVEL 3", "LEVEL 4"]:
+        return True
+    # 2단계 알림 가드: LEVEL 2 중 수급 임계치 돌파 및 장중 2회 이상 검증 대상 승격 보고
+    if lvl_val == "LEVEL 2":
+        if conv >= 70 and t10_count >= 2:
+            return True
+    # 3단계 알림 가드: LEVEL 0, 1 및 단순 LEVEL 2는 DB ONLY (False 반환)
+    return False
+
 def evaluate_candidates(scanner_output):
     import traceback
     try:
@@ -144,6 +161,7 @@ def evaluate_candidates(scanner_output):
             
         pass1_results.sort(key=lambda x: x["base_score"], reverse=True)
         
+        # [데이터 광범위 수집] 그물에 걸린 모든 우량주 데이터를 DB에 무결 커밋
         for rank_idx, c in enumerate(pass1_results, 1):
             try:
                 if rank_idx <= 10: save_top10_tracking(scan_datetime, c['code'], c['name'], rank_idx, c['base_score'], risk_level)
@@ -181,7 +199,6 @@ def evaluate_candidates(scanner_output):
         max_lvl_reason = "조건을 충족하는 유효 후보군 없음"
         
         if final_results:
-            # [수정] 무조건 종합 연산 정렬 1등을 오늘의 대표 리더로 강제 동기화
             final_results[0]["decision"]["is_trade_leader"] = True
             max_lvl_obj = final_results[0]["decision"]["buy_readiness"]
             max_lvl_code = final_results[0]["name"]
@@ -197,12 +214,15 @@ def evaluate_candidates(scanner_output):
                 if "LEVEL 3" in c_lvl or "LEVEL 4" in c_lvl:
                     try: register_signal_outcome(c.get("history_id"), c['code'], c['name'], c['price'], regime_str)
                     except Exception: pass
+        
+        # [핵심 교정] 알림 가드레일 통과 차량만 텔레그램 풀로 가공 송출
+        alert_candidates = [c for c in final_results if should_send_alert(c)]
                     
         market.update({
             "regime": regime_str, "direction": market_direction, "buy_tolerance": buy_tolerance, 
             "max_level_obj": max_lvl_obj, "max_level_code": max_lvl_code, "max_lvl_reason": max_lvl_reason
         })
-        return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": final_results}
+        return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": alert_candidates}
     except Exception as e:
         print(f"🚨 [DECISION ENGINE INTERNAL ERROR] {e}")
         traceback.print_exc()
