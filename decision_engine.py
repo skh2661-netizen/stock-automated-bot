@@ -105,21 +105,18 @@ def calculate_trade_plan(price, ma_gap, risk_level):
         "target2": f"진입가 대비 +20% (약 {int(buy_p * 1.20)}원)"
     }
 
-# [신규] 형님이 정립하신 3단계 알림 가드레일 레이어
+# [수정] 텔레그램 송출 가드레일 허들 현실화 (RS>=25, Conv>=65)
 def should_send_alert(c):
     ready = c["decision"]["buy_readiness"]
     lvl_val = ready.get("level", "LEVEL 0")
     conv = c["features"]["conviction"]
-    t10_count = c["decision"]["top10_stability"]["top10_count"]
+    rs = c["features"]["rs_20d"]
     
-    # 1단계 알림 가드: LEVEL 3, 4 무조건 실시간 전송
     if lvl_val in ["LEVEL 3", "LEVEL 4"]:
         return True
-    # 2단계 알림 가드: LEVEL 2 중 수급 임계치 돌파 및 장중 2회 이상 검증 대상 승격 보고
     if lvl_val == "LEVEL 2":
-        if conv >= 70 and t10_count >= 2:
+        if conv >= 65 and rs >= 25:
             return True
-    # 3단계 알림 가드: LEVEL 0, 1 및 단순 LEVEL 2는 DB ONLY (False 반환)
     return False
 
 def evaluate_candidates(scanner_output):
@@ -161,7 +158,6 @@ def evaluate_candidates(scanner_output):
             
         pass1_results.sort(key=lambda x: x["base_score"], reverse=True)
         
-        # [데이터 광범위 수집] 그물에 걸린 모든 우량주 데이터를 DB에 무결 커밋
         for rank_idx, c in enumerate(pass1_results, 1):
             try:
                 if rank_idx <= 10: save_top10_tracking(scan_datetime, c['code'], c['name'], rank_idx, c['base_score'], risk_level)
@@ -179,10 +175,13 @@ def evaluate_candidates(scanner_output):
             ready_obj = calculate_buy_readiness(c, regime_str, top10, mem, stats)
             
             lvl_num = int(ready_obj["level"].replace("LEVEL ", ""))
-            momentum_score = feats["rs_20d"] * 2.5
-            quality_score = c["scores"]["prime_score"] * 0.5
-            trade_score = (lvl_num * 100) + momentum_score + feats["conviction"] + quality_score + (t10_count * 10)
+            w_level = (lvl_num / 4.0) * 400
+            w_conv = min(feats["conviction"], 100) * 2.5
+            w_mom = min(max(feats["rs_20d"], 0), 100) * 2.0
+            w_qual = min(c["scores"]["prime_score"], 100) * 1.0
+            w_pers = min(t10_count, 10) * 5.0
             
+            trade_score = w_level + w_conv + w_mom + w_qual + w_pers
             trade_plan = calculate_trade_plan(c["price"], feats["ma_gap"], risk_level)
                 
             c["decision"]["trade_score"] = trade_score
@@ -194,35 +193,53 @@ def evaluate_candidates(scanner_output):
             
         final_results.sort(key=lambda x: x["decision"]["trade_score"], reverse=True)
         
-        max_lvl_obj = {"level": "LEVEL 0", "title": "🔴 매수 금지", "action": "관망 유지"}
-        max_lvl_code = "없음"
-        max_lvl_reason = "조건을 충족하는 유효 후보군 없음"
+        # [수정] 텔레그램 송출용 알림 풀 분리
+        alert_candidates = [c for c in final_results if should_send_alert(c)]
         
-        if final_results:
-            final_results[0]["decision"]["is_trade_leader"] = True
-            max_lvl_obj = final_results[0]["decision"]["buy_readiness"]
-            max_lvl_code = final_results[0]["name"]
+        max_lvl_obj = {"level": "LEVEL 0", "title": "🔴 매수 금지", "action": "관망 유지", "meaning": "현재 장세 진입 불가"}
+        max_lvl_code = "없음"
+        max_lvl_reason = "알림 조건을 충족하는 유효 후보군 없음"
+        
+        # [수정] 대표 종목 선정 논리를 전체 풀(final_results)이 아닌 '알림 풀(alert_candidates)' 기준으로 강제 동기화
+        if alert_candidates:
+            alert_candidates[0]["decision"]["is_trade_leader"] = True
+            max_lvl_obj = alert_candidates[0]["decision"]["buy_readiness"]
+            max_lvl_code = alert_candidates[0]["name"]
             
             lvl_val = max_lvl_obj.get("level", "LEVEL 0")
             if "LEVEL 4" in lvl_val: max_lvl_reason = "LEVEL 4 최상위 확률 우위 확정 + 수급 및 추세 완전 정렬"
             elif "LEVEL 3" in lvl_val: max_lvl_reason = "LEVEL 3 실전 진입 허용 + 수급확신도 및 모멘텀 임계점 동시 충족"
-            elif "LEVEL 2" in lvl_val: max_lvl_reason = "우량 품질 자격은 갖추었으나 수급 및 지속성 검증 단계"
-            else: max_lvl_reason = "단기적 관심 후보이나 실전 매매 연동 조건 대폭 미달"
+            elif "LEVEL 2" in lvl_val: max_lvl_reason = "조건부 관심 승격 (수급 및 모멘텀 돌파)"
+            else: max_lvl_reason = "단기적 관심 후보"
                 
-            for c in final_results:
-                c_lvl = c["decision"]["buy_readiness"].get("level", "LEVEL 0")
-                if "LEVEL 3" in c_lvl or "LEVEL 4" in c_lvl:
-                    try: register_signal_outcome(c.get("history_id"), c['code'], c['name'], c['price'], regime_str)
-                    except Exception: pass
+        # Signal Outcome 등록 (DB 전체 풀 대상 유지)
+        for c in final_results:
+            c_lvl = c["decision"]["buy_readiness"].get("level", "LEVEL 0")
+            if "LEVEL 3" in c_lvl or "LEVEL 4" in c_lvl:
+                try: register_signal_outcome(c.get("history_id"), c['code'], c['name'], c['price'], regime_str)
+                except Exception: pass
         
-        # [핵심 교정] 알림 가드레일 통과 차량만 텔레그램 풀로 가공 송출
-        alert_candidates = [c for c in final_results if should_send_alert(c)]
+        # [신규] 형님 지시사항: 데이터 증발 지점 원천 추적 디버그 로그 강제 출력
+        print("="*50)
+        print(f"📊 [PIPELINE DATA FLOW DEBUG]")
+        print(f"▶ 1. RAW 수신   : {len(raw_candidates)} 개")
+        print(f"▶ 2. PASS1 통과 : {len(pass1_results)} 개")
+        print(f"▶ 3. FINAL 산출 : {len(final_results)} 개")
+        print(f"▶ 4. ALERT 추출 : {len(alert_candidates)} 개")
+        print("-" * 50)
+        print("[FINAL 상위 10개 평가 내역]")
+        for c in final_results[:10]:
+            print(f" {c['name']:<10} | {c['decision']['buy_readiness']['level']} | RS: {c['features']['rs_20d']:>6.1f} | Conv: {c['features']['conviction']:>3} | T10: {c['decision']['top10_stability']['top10_count']}")
+        print("="*50)
                     
         market.update({
             "regime": regime_str, "direction": market_direction, "buy_tolerance": buy_tolerance, 
             "max_level_obj": max_lvl_obj, "max_level_code": max_lvl_code, "max_lvl_reason": max_lvl_reason
         })
-        return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": alert_candidates}
+        
+        # [교정] 텔레그램 모듈(candidates)에는 정제된 alert_candidates만 전송하여 오작동(모순) 원천 차단
+        return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": alert_candidates, "database_candidates": final_results}
+    
     except Exception as e:
         print(f"🚨 [DECISION ENGINE INTERNAL ERROR] {e}")
         traceback.print_exc()
