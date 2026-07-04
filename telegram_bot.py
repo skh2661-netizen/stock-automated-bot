@@ -19,89 +19,55 @@ def format_scan_messages(run_type, result):
     if not result or "candidates" not in result: return ["⚠️ 데이터 추출 실패"]
     
     market = result.get("market", {})
-    candidates = result.get("candidates", [])
+    candidates = result.get("candidates", []) # 디버그 모드: 전체 후보 수신
+    alert_candidates = result.get("alert_candidates", [])
+    alert_codes = [c['code'] for c in alert_candidates]
+    
     regime = market.get("regime", "NORMAL")
     direction = market.get("direction", "🟢 시장 안정")
     max_obj = market.get("max_level_obj", {})
     
+    if not candidates: return []
+        
     msg_list = []
-    header = f"🎯 <b>V8.8.33 DAILY QUANT REPORT</b>\n\n"
+    header = f"🛠️ <b>[DEBUG MODE] V8.8.34 TRANSPARENT AUDIT</b>\n\n"
+    header += f"📌 <b>파이프라인 통과 현황</b>\n"
+    header += f"전체 DB 기록: {len(candidates)}개\n"
+    header += f"알림 조건 통과: {len(alert_candidates)}개\n\n"
     
     header += f"📌 <b>오늘 투자 결론</b>\n\n"
     header += f"시장: <b>{regime}</b>\n{direction}\n\n"
-    header += f"시장 투자 환경: <b>{market.get('buy_tolerance', '0점 / 100점')}</b>\n"
-    header += f"의미: {'방향성이 약해 공격적인 매수보다 선별적 접근 필요' if '40점' in market.get('buy_tolerance', '') or '60점' in market.get('buy_tolerance', '') else ('하방 리스크가 커 신규 매수 금지' if '10점' in market.get('buy_tolerance', '') or '20점' in market.get('buy_tolerance', '') else '추세가 살아있어 조건 부합 시 매수 유리')}\n\n"
-    
     header += f"오늘 핵심 매매 후보:\n👑 <b>{market.get('max_level_code', '없음')}</b>\n"
-    header += f"선정 이유: {market.get('max_lvl_reason', '-')}\n\n"
     header += f"매매 단계: {max_obj.get('level', 'LEVEL 0')} {max_obj.get('title', '').split(' ')[0]}\n"
-    header += f"추천: {max_obj.get('action', '-')}\n"
     header += "━" * 20 + "\n\n"
     current_msg = header
     
-    # [신규 방어 코드] 필터링 결과 매수 진입 시그널이 전혀 없는 세션 처리
-    if not candidates:
-        block = "🔔 <b>장중 실시간 알림 필터 작동</b>\n\n"
-        block += "현재 세션 기준 실전 진입선(LEVEL 3 이상) 또는 조건부 승격 기준에 부합하는 타겟 종목이 감지되지 않았습니다.\n\n"
-        block += "※ 분석된 모든 잠재적 후보군 데이터는 향후 자가 학습 및 승률 보정을 위해 시스템 데이터베이스(candidate_history)에 100% 무결하게 정상 영구 기록되었습니다.\n"
+    for idx, c in enumerate(candidates[:10], 1):
+        is_alert = c['code'] in alert_codes
+        badge = "🔔 [필터 통과]" if is_alert else "🔇 [필터 차단]"
+        
+        block = f"📊 <b>순위 {idx}위</b> {badge}\n"
+        block += f"<b>{c['name']}</b> ({c['code']})\n\n"
+        
+        rs_val = c['features']['rs_20d']
+        conv_val = c['features']['conviction']
+        
+        block += f"상대강도(RS20D): {'+' if rs_val>0 else ''}{rs_val}%\n"
+        block += f"수급확신도: {conv_val}점\n\n"
+        
+        t10 = c['decision'].get('top10_stability', {})
+        block += f"📌 <b>TOP10 상태</b>\n"
+        block += f"{t10.get('top10_count', 0)}회 출현 / 평균 {round(t10.get('avg_rank', 0.0), 1)}위\n\n"
+        
+        ready = c['decision'].get('buy_readiness', {})
+        block += f"🎯 <b>매매 판단: {ready.get('level', 'LEVEL 0')}</b>\n"
+        
+        if ready.get("conditions"):
+            block += "다음 단계 조건:\n"
+            block += "\n".join(ready["conditions"]) + "\n\n"
+            
         block += "━" * 20 + "\n\n"
-        current_msg += block
-    else:
-        for idx, c in enumerate(candidates, 1):
-            is_trade_leader = c["decision"].get("is_trade_leader", False)
-            
-            if is_trade_leader: block = f"👑 <b>오늘의 매매 관심 1순위</b>\n"
-            else: block = f"📊 <b>매매 후보군 {idx}위</b>\n"
-                
-            block += f"<b>{c['name']}</b> ({c['code']})\n\n"
-            
-            rs_val = c['features']['rs_20d']
-            conv_val = c['features']['conviction']
-            rs_str = "시장 대비 압도적인 상승 모멘텀" if rs_val >= 30 else ("최근 20일 시장보다 강한 상승 흐름" if rs_val > 0 else "시장 대비 상대적 약세 흐름 (주의)")
-            conv_str = "강력한 거래량 및 매수 주체 확인" if conv_val >= 65 else ("기본적인 수급 유입 확인됨" if conv_val >= 50 else "뚜렷한 수급 주체 및 폭발력 부족")
-            
-            block += f"상대강도(RS20D): {'+' if rs_val>0 else ''}{rs_val}%\n"
-            block += f"{rs_str}\n\n"
-            
-            block += f"수급확신도: {conv_val}점\n"
-            block += f"{conv_str}\n\n"
-            
-            t10 = c['decision'].get('top10_stability', {})
-            top10_count = t10.get('top10_count', 0)
-            avg_rank = t10.get('avg_rank', 0.0)
-            
-            block += f"📌 <b>TOP10 상태</b>\n"
-            if top10_count >= 5: block += f"강한 유지력 ({top10_count}회 출현 / 평균 {round(avg_rank, 1)}위)\n"
-            elif top10_count >= 2: block += f"관심 유지 ({top10_count}회 출현 / 평균 {round(avg_rank, 1)}위)\n"
-            elif avg_rank <= 3.0 and top10_count == 1: block += f"신규 포착\n상위권 진입 유지력 확인 ({top10_count}회 출현 / 평균 {round(avg_rank, 1)}위)\n"
-            else: block += f"신규 진입 후보 ({top10_count}회 출현 / 평균 {round(avg_rank, 1)}위)\n"
-            block += "\n"
-            
-            ready = c['decision'].get('buy_readiness', {})
-            
-            block += f"🎯 <b>매매 판단</b>\n\n"
-            block += f"<b>{ready.get('level', 'LEVEL 0')} / 4단계</b>\n"
-            block += f"{ready.get('title', '상태 불명')}\n\n"
-            block += f"추천: {ready.get('action', '-')}\n\n"
-            
-            if ready.get("conditions"):
-                block += "다음 단계 조건:\n"
-                block += "\n".join(ready["conditions"]) + "\n\n"
-                
-            if ready.get("level") in ["LEVEL 3", "LEVEL 4"]:
-                plan = c['decision'].get('trade_plan', {})
-                if plan:
-                    block += f"💰 <b>예상 매매 계획</b>\n"
-                    block += f"진입: {plan.get('entry', '-')}\n"
-                    block += f"손절: {plan.get('stop_loss', '-')}\n"
-                    block += f"1차 목표: {plan.get('target1', '-')}\n"
-                    block += f"2차 목표: {plan.get('target2', '-')}\n\n"
-            elif ready.get("level") == "LEVEL 2":
-                block += f"📌 <b>관찰 계획</b>\n"
-                block += f"조건 충족 시 매매 계획 공개\n\n"
-                
-            block += "━" * 20 + "\n\n"
-            
+        
         if len(current_msg) + len(block) > 4000:
             msg_list.append(current_msg)
             current_msg = block
