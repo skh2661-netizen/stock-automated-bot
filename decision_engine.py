@@ -90,9 +90,23 @@ def evaluate_candidates(scanner_output):
         regime_str, risk_level, market_direction, buy_tolerance = detect_market_regime(kospi_1d, kosdaq_1d)
         scan_datetime = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
         
+        # [신규] 형님이 명하신 원인 판정용 하드웨어 디버그 로그 강제 주입
+        print("\n" + "="*25 + " PASS1 AUDIT DEBUG " + "="*25)
+        if not raw_candidates:
+            print("⚠️ [DEBUG ALERT] scanner로부터 수신된 raw_candidates가 0개입니다. 업스트림 통신 차단 가능성.")
+        for idx, raw in enumerate(raw_candidates[:20], 1):
+            r_name = raw.get("name", "알수없음")
+            r_prime = raw.get("scores", {}).get("prime_score", -1)
+            r_conv = raw.get("features", {}).get("conviction", -1)
+            r_rs20 = raw.get("features", {}).get("rs_20d", -999.0)
+            print(f"[{idx:02d}] {r_name:<10} | PrimeScore: {r_prime:>3} | Conviction: {r_conv:>3} | RS20D: {r_rs20:>6.1f}")
+        print("="*69 + "\n")
+        
         pass1_results = []
         for raw in raw_candidates:
             feats, scores = raw["features"], raw["scores"]
+            
+            # 입구 3대 컷 가드레일
             if scores["prime_score"] < 50 or feats["conviction"] < 40: continue
             if risk_level < 3 and feats["rs_20d"] < -5: continue
             
@@ -137,24 +151,14 @@ def evaluate_candidates(scanner_output):
         max_lvl_code = "없음"
         max_lvl_reason = "조건을 충족하는 유효 후보군 없음"
         
-        # [패치] 테스트를 위해 대표 종목을 '전체 풀(final_results)' 1위로 강제 복구
         if final_results:
             final_results[0]["decision"]["is_trade_leader"] = True
             max_lvl_obj = final_results[0]["decision"]["buy_readiness"]
             max_lvl_code = final_results[0]["name"]
             max_lvl_reason = "전체 후보군 중 종합 점수 1위 (디버그 모드)"
-                
-        print("="*50)
-        print(f"📊 [PIPELINE AUDIT DEBUG]")
-        print(f"▶ 1. RAW 수신   : {len(raw_candidates)} 개")
-        print(f"▶ 2. PASS1 통과 : {len(pass1_results)} 개")
-        print(f"▶ 3. FINAL 산출 : {len(final_results)} 개")
-        print(f"▶ 4. ALERT 필터 : {len(alert_candidates)} 개 통과")
-        print("="*50)
                     
         market.update({"regime": regime_str, "direction": market_direction, "buy_tolerance": buy_tolerance, "max_level_obj": max_lvl_obj, "max_level_code": max_lvl_code, "max_lvl_reason": max_lvl_reason})
         
-        # [패치] telegram_bot에 전체 풀(final_results)을 그대로 전달하여 민낯 강제 노출
         return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": final_results, "alert_candidates": alert_candidates}
     
     except Exception as e:
