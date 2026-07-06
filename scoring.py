@@ -51,28 +51,25 @@ def get_conviction_score(rs, amount, vr, risk_level, ma_gap, cp):
     normalized = int(max(score, 0) * 100 / 38)
     return min(normalized, 100)
 
-# [수정] decision_engine과 정렬된 새로운 Prime Score (100점 만점)
-def get_prime_score(rs20, conviction, amount, vr, ma_gap):
+# [교정] scanner.py의 기존 인자(rs1, rs5, rs20, amt_s, defense)를 그대로 수용하여 
+# PASS1 허들(50점)을 현실적으로 돌파할 수 있도록 스케일링을 상향 조정한 버전
+def get_prime_score(rs1, rs5, rs20, amount_strength, defense_passed):
     score = 0
+    # 1. 단기 강도 (가중치 상향)
+    if rs1 > 0: score += min(rs1 * 3, 20)
+    if rs5 > 0: score += min(rs5 * 2, 15)
     
-    # 1. RS20 (30%)
+    # 2. 중기 추세 강도 (가중치 대폭 상향)
     if rs20 >= 20: score += 30
     elif rs20 >= 10: score += 20
     elif rs20 >= 5: score += 10
     elif rs20 >= 0: score += 5
     
-    # 2. Conviction (25%)
-    score += min(conviction * 0.25, 25)
+    # 3. 거래대금 회전 유지력
+    score += min(amount_strength * 20, 25)
     
-    # 3. Amount (20%) - money_score(max 25) * 0.8 = 20
-    score += min(money_score(amount) * 0.8, 20)
-    
-    # 4. VR (15%) - volume_score(max 20) * 0.75 = 15
-    score += min(volume_score(vr) * 0.75, 15)
-    
-    # 5. MA Gap (10%) - 정배열 초입(밀집) 가점
-    if 0 <= ma_gap <= 10: score += 10
-    elif 10 < ma_gap <= 20: score += 5
+    # 4. 방어력 검증
+    if defense_passed: score += 10
     
     return min(max(int(score), 0), 100)
 
