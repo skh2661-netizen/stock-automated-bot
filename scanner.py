@@ -34,7 +34,6 @@ def remove_bad_targets(df):
     pattern = r'스팩|ETF|ETN|우$|우[A-Z]$|[0-9]+우[A-Z]?$|제[0-9]+호'
     return df[~df['Name'].astype(str).str.contains(pattern, regex=True, na=False)]
 
-# [교정] 5일 상대강도 산출을 위해 kp_5d 데이터 수집 추가
 def get_market_indices():
     try:
         kst = pytz.timezone("Asia/Seoul")
@@ -61,7 +60,6 @@ async def generate_raw_candidates(run_type="OPEN_SCAN"):
         scan_datetime = datetime.datetime.now(kst).strftime("%Y-%m-%d %H:%M")
         start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
         
-        # 언패킹 인자 4개로 확장
         kp_1d, kd_1d, kp_5d, kp_20d = get_market_indices()
         
         risk_level = 3 if kp_1d <= -3.0 else (2 if kp_1d <= -1.0 else 1)
@@ -91,7 +89,6 @@ async def generate_raw_candidates(run_type="OPEN_SCAN"):
             stock_20d_return = ((curr['Close'] / hist['Close'].iloc[-21]) - 1) * 100
             rs_20d = round(stock_20d_return - kp_20d, 2)
             
-            # [교정 1] 실제 5일 상대강도(RS5D) 연산 추가
             stock_5d_return = ((curr['Close'] / hist['Close'].iloc[-6]) - 1) * 100
             rs_5d = round(stock_5d_return - kp_5d, 2)
             
@@ -99,20 +96,20 @@ async def generate_raw_candidates(run_type="OPEN_SCAN"):
             
             amt_s = min(round((hist['Amt'].tail(6).iloc[:-1].mean() / (hist['Amt'].iloc[-21:-1].mean() + 1)), 2), 5.0)
             
-            # [교정 2] VR (Volume Ratio) 계산 - 최근 20일 평균 거래량 대비 당일 거래량 배수
             avg_vol_20d = hist['Volume'].rolling(20).mean().iloc[-2]
             vr = round(curr['Volume'] / avg_vol_20d, 2) if avg_vol_20d > 0 else 1.0
             
-            # [교정 3] CP (Close Position) 계산 - 20일 고저점 대비 당일 종가의 백분위 위치 (0~100)
             high_20d = hist['High'].rolling(20).max().iloc[-1]
             low_20d = hist['Low'].rolling(20).min().iloc[-1]
             cp = round(((curr['Close'] - low_20d) / (high_20d - low_20d)) * 100, 1) if high_20d > low_20d else 50.0
             
-            # [적용] 더미 데이터(0, 1) 소거 및 팩트 기반 데이터 주입
             ps = get_prime_score(rs_1d, rs_5d, rs_20d, amt_s, True)
             score = calculate_close_score(row['Amount'], vr, changes, 0, 0, cp, rs_1d, risk_level, ma_gap)
             conv = get_conviction_score(rs_1d, row['Amount'], vr, risk_level, ma_gap, cp)
             prime_final = round((ps * 0.35 + score * 0.30 + conv * 0.15 + max(0, 100 - (ma_gap * 2)) * 0.20), 1)
+            
+            # [신규] 형님이 요청하신 핵심 수치 컴포넌트 강제 출력 로그
+            print(f"📊 [SCANNER AUDIT] {row['Name']:<10} | PS={ps:<3} | Score={score:<3} | Conv={conv:<3} | Final={prime_final:<5} | RS20={rs_20d:<6.2f} | VR={vr:<5.2f} | CP={cp:<5.1f}")
             
             raw_results.append({
                 "code": code, "name": row['Name'], "price": int(curr['Close']), "chg": round(changes, 2),
