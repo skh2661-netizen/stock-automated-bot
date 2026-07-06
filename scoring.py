@@ -8,8 +8,8 @@ def money_score(amount):
     return 0
 
 def volume_score(vr):
-    if vr >= 3: return 20
-    elif vr >= 2: return 15
+    if vr >= 3.0: return 20
+    elif vr >= 2.0: return 15
     elif vr >= 1.5: return 10
     return 0
 
@@ -51,13 +51,29 @@ def get_conviction_score(rs, amount, vr, risk_level, ma_gap, cp):
     normalized = int(max(score, 0) * 100 / 38)
     return min(normalized, 100)
 
-def get_prime_score(rs1, rs5, rs20, amount_strength, defense_passed):
+# [수정] decision_engine과 정렬된 새로운 Prime Score (100점 만점)
+def get_prime_score(rs20, conviction, amount, vr, ma_gap):
     score = 0
-    score += min(math.log1p(max(rs1, 0)) * 6.5, 20)
-    score += min(math.log1p(max(rs5, 0)) * 6.5, 20)
-    score += min(amount_strength * 15, 30)
-    if defense_passed: score += 20
-    if rs20 >= 0: score += 10
+    
+    # 1. RS20 (30%)
+    if rs20 >= 20: score += 30
+    elif rs20 >= 10: score += 20
+    elif rs20 >= 5: score += 10
+    elif rs20 >= 0: score += 5
+    
+    # 2. Conviction (25%)
+    score += min(conviction * 0.25, 25)
+    
+    # 3. Amount (20%) - money_score(max 25) * 0.8 = 20
+    score += min(money_score(amount) * 0.8, 20)
+    
+    # 4. VR (15%) - volume_score(max 20) * 0.75 = 15
+    score += min(volume_score(vr) * 0.75, 15)
+    
+    # 5. MA Gap (10%) - 정배열 초입(밀집) 가점
+    if 0 <= ma_gap <= 10: score += 10
+    elif 10 < ma_gap <= 20: score += 5
+    
     return min(max(int(score), 0), 100)
 
 def calculate_preopen_score(amount, vr, c, s_ratio, cp, rs, risk_level):
