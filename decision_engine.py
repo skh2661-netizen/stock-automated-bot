@@ -36,12 +36,13 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     t10_count = top10["top10_count"]
     recent_days = top10["days"]
     
+    # [교정] CRASH 국면 하이브리드 필터: 소수의 진짜 리더만 선별
     if regime_str == "CRASH":
         if rs >= 60 and conv >= 85:
             return get_level_comment("LEVEL 4", [])
         elif rs >= 30 and conv >= 70:
             return get_level_comment("LEVEL 3", ["✔ 폭락장 리더 종목"])
-        elif rs >= 10 or conv >= 75:
+        elif (rs >= 30 and conv >= 55) or (rs >= 15 and conv >= 75):
             return get_level_comment("LEVEL 2", ["✔ 폭락장 예외 관찰 대상"])
         else:
             return get_level_comment("LEVEL 0", ["✔ 시장 하락 진정 및 개별 종목 추세 복구 대기"])
@@ -83,15 +84,22 @@ def calculate_trade_plan(price, ma_gap, risk_level):
         "target2": f"진입가 대비 +20% (약 {int(buy_p * 1.20)}원)"
     }
 
+# [교정] CRASH 국면 알림 필터 세분화
 def should_send_alert(c):
     ready = c["decision"]["buy_readiness"]
     lvl = ready.get("level", "LEVEL 0")
     regime = c.get("market_regime", "")
+    conv = c["features"]["conviction"]
+    rs = c["features"]["rs_20d"]
     
     if regime == "CRASH":
-        return lvl in ["LEVEL 2", "LEVEL 3", "LEVEL 4"]
+        if lvl in ["LEVEL 3", "LEVEL 4"]: return True
+        if lvl == "LEVEL 2" and (rs >= 30 or conv >= 80): return True
+        return False
     
-    return lvl in ["LEVEL 3", "LEVEL 4"]
+    if lvl in ["LEVEL 3", "LEVEL 4"]: return True
+    if lvl == "LEVEL 2" and conv >= 55 and rs >= 15: return True
+    return False
 
 def evaluate_candidates(scanner_output):
     try:
@@ -154,7 +162,6 @@ def evaluate_candidates(scanner_output):
             
             lvl_num = int(ready_obj["level"].replace("LEVEL ", ""))
             
-            # 긴 줄바꿈 처리
             w_level = (lvl_num / 4.0) * 400
             w_conv = min(feats["conviction"], 100) * 2.5
             w_mom = min(max(feats["rs_20d"], 0), 100) * 2.0
