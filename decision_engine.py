@@ -21,7 +21,7 @@ def get_level_comment(level_key, next_conds=None):
     comments = {
         "LEVEL 0": {"title": "🔴 매수 금지", "meaning": "추세 붕괴 및 폭락장 셧다운", "action": "조건 충족 전 관망 유지"},
         "LEVEL 1": {"title": "⚪ 관찰 단계", "meaning": "조건 대폭 미달", "action": "조건 충족 전 추세 변화 관찰"},
-        "LEVEL 2": {"title": "🟡 관심 구간", "meaning": "폭락장 예외 주도주 또는 타이밍 대기", "action": "조건 충족 전 관심 유지"},
+        "LEVEL 2": {"title": "🟡 관심 구간", "meaning": "타이밍 대기", "action": "조건 충족 전 관심 유지"},
         "LEVEL 3": {"title": "🟢 분할 매수 구간", "meaning": "진입 가능", "action": "1차 분할 접근 (30~40%) 검토"},
         "LEVEL 4": {"title": "🚀 적극 매수 구간", "meaning": "확률적 우위", "action": "적극 편입 검토"}
     }
@@ -36,16 +36,18 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     t10_count = top10["top10_count"]
     recent_days = top10["days"]
     
-    # [교정] CRASH 국면 하이브리드 필터: 소수의 진짜 리더만 선별
+    # [교정] 폭락장 '가짜 리더' 원천 차단: 양방향 동시 충족(AND) 가드레일 확립
     if regime_str == "CRASH":
         if rs >= 60 and conv >= 85:
             return get_level_comment("LEVEL 4", [])
-        elif rs >= 30 and conv >= 70:
-            return get_level_comment("LEVEL 3", ["✔ 폭락장 리더 종목"])
-        elif (rs >= 30 and conv >= 55) or (rs >= 15 and conv >= 75):
-            return get_level_comment("LEVEL 2", ["✔ 폭락장 예외 관찰 대상"])
+        elif rs >= 35 and conv >= 75:
+            return get_level_comment("LEVEL 3", ["✔ 폭락장 예외 리더 종목"])
+        elif rs >= 20 and conv >= 65:
+            # 파마리서치(RS 28/Conv 71) 수준만 LEVEL 2 생존 허용 (텔레그램은 미발송)
+            return get_level_comment("LEVEL 2", ["✔ 폭락장 방어 관찰 대상"])
         else:
-            return get_level_comment("LEVEL 0", ["✔ 시장 하락 진정 및 개별 종목 추세 복구 대기"])
+            # 서산, 하이브, 금호건설 등 불균형 종목 전부 LEVEL 0 격하
+            return get_level_comment("LEVEL 0", ["✔ 수급 또는 모멘텀 붕괴 (관찰 제외)"])
         
     if rs < -10:
         return get_level_comment("LEVEL 0", ["✔ 추세 복구(RS20D -10% 이상)"])
@@ -84,7 +86,7 @@ def calculate_trade_plan(price, ma_gap, risk_level):
         "target2": f"진입가 대비 +20% (약 {int(buy_p * 1.20)}원)"
     }
 
-# [교정] CRASH 국면 알림 필터 세분화
+# [교정] 텔레그램 송출 필터 이원화: 폭락장 LEVEL 2 발송 원천 셧다운
 def should_send_alert(c):
     ready = c["decision"]["buy_readiness"]
     lvl = ready.get("level", "LEVEL 0")
@@ -92,13 +94,14 @@ def should_send_alert(c):
     conv = c["features"]["conviction"]
     rs = c["features"]["rs_20d"]
     
+    # 폭락장: LEVEL 3, LEVEL 4만 발송 (LEVEL 2는 절대 미발송)
     if regime == "CRASH":
-        if lvl in ["LEVEL 3", "LEVEL 4"]: return True
-        if lvl == "LEVEL 2" and (rs >= 30 or conv >= 80): return True
-        return False
+        return lvl in ["LEVEL 3", "LEVEL 4"]
     
+    # 평상시: LEVEL 3~4 발송, 및 완화된 승격 요건 만족 LEVEL 2만 발송
     if lvl in ["LEVEL 3", "LEVEL 4"]: return True
     if lvl == "LEVEL 2" and conv >= 55 and rs >= 15: return True
+    
     return False
 
 def evaluate_candidates(scanner_output):
