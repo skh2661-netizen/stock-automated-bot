@@ -35,40 +35,53 @@ def rs_score(rs):
     elif rs >= 5: return 5
     return 0
 
+# [교정] 수급확신도(Conviction)의 입력 변수 임계치 구간 세분화 및 현실화
 def get_conviction_score(rs, amount, vr, risk_level, ma_gap, cp):
     score = 0
+    
+    # 1. 당일 지수 대비 상대강도 (최대 15점)
     if risk_level >= 2 and rs >= 10: score += 5
     if rs >= 10: score += 10
     elif rs >= 7: score += 7
     elif rs >= 5: score += 5
-    if amount >= 100_000_000_000: score += 10
-    elif amount >= 50_000_000_000: score += 5
-    if vr >= 5: score += 5
-    if 3 <= ma_gap <= 12: score += 5
-    if ma_gap >= 20: score -= 10
-    if cp >= 80: score += 3
+    elif rs >= 2: score += 2  # 미세 주도 세션 보정
     
+    # 2. 당일 거래대금 체급 (최대 10점)
+    if amount >= 100_000_000_000: score += 10
+    elif amount >= 50_000_000_000: score += 7
+    elif amount >= 15_000_000_000: score += 4  # 최소 금액 충족선 가점
+    
+    # 3. 거래량 폭발 강도 (VR 구간화 - 최대 5점)
+    if vr >= 4.0: score += 5
+    elif vr >= 2.5: score += 4
+    elif vr >= 1.5: score += 3  # 평소 대비 1.5배 이상 유의미한 거래 증가 포용
+    elif vr >= 1.0: score += 1
+    
+    # 4. 이격 안정성 및 매수 영역 정렬 (최대 5점)
+    if 0 <= ma_gap <= 12: score += 5
+    elif 12 < ma_gap <= 18: score += 2
+    elif ma_gap >= 25: score -= 10  # 과열권 패널티 유지
+    
+    # 5. 종가 마감 위치 우위성 (CP 구간화 - 최대 3점)
+    if cp >= 75: score += 3
+    elif cp >= 55: score += 2  # 박스권 중간값 상단 안착 인정
+    elif cp >= 40: score += 1
+    
+    # 정규화 연산 (분모 38점 기준 백분율 정렬 유지)
     normalized = int(max(score, 0) * 100 / 38)
     return min(normalized, 100)
 
-# [교정] scanner.py의 기존 인자(rs1, rs5, rs20, amt_s, defense)를 그대로 수용하여 
-# PASS1 허들(50점)을 현실적으로 돌파할 수 있도록 스케일링을 상향 조정한 버전
 def get_prime_score(rs1, rs5, rs20, amount_strength, defense_passed):
     score = 0
-    # 1. 단기 강도 (가중치 상향)
     if rs1 > 0: score += min(rs1 * 3, 20)
     if rs5 > 0: score += min(rs5 * 2, 15)
     
-    # 2. 중기 추세 강도 (가중치 대폭 상향)
     if rs20 >= 20: score += 30
     elif rs20 >= 10: score += 20
     elif rs20 >= 5: score += 10
     elif rs20 >= 0: score += 5
     
-    # 3. 거래대금 회전 유지력
     score += min(amount_strength * 20, 25)
-    
-    # 4. 방어력 검증
     if defense_passed: score += 10
     
     return min(max(int(score), 0), 100)
