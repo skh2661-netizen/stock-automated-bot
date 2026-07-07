@@ -32,10 +32,14 @@ def calculate_buy_readiness(c, regime_str, top10, mem, stats):
     t10_count = top10["top10_count"]
     recent_days = top10["days"]
     
-    # [교정] 폭락장(CRASH) 예외 가드레일 시스템 이식
+    # [교정] 폭락장 예외 조건 세분화 및 OR 조건 개방
     if regime_str == "CRASH":
-        if rs >= 30.0 and conv >= 80:
-            return get_level_comment("LEVEL 2", ["✔ 폭락장 속 비정상적 대량 대금 지속성 확인", "✔ 장중 분할 매수 결단선 승격 대기"])
+        if rs >= 60 and conv >= 85:
+            return get_level_comment("LEVEL 4", [])
+        elif rs >= 30 and conv >= 70:
+            return get_level_comment("LEVEL 3", ["✔ 폭락장 리더 종목"])
+        elif rs >= 10 or conv >= 75:
+            return get_level_comment("LEVEL 2", ["✔ 폭락장 예외 관찰 대상"])
         else:
             return get_level_comment("LEVEL 0", ["✔ 시장 하락 진정 및 개별 종목 추세 복구 대기"])
         
@@ -76,15 +80,16 @@ def calculate_trade_plan(price, ma_gap, risk_level):
         "target2": f"진입가 대비 +20% (약 {int(buy_p * 1.20)}원)"
     }
 
+# [교정] 국면 인식 필터 연동
 def should_send_alert(c):
     ready = c["decision"]["buy_readiness"]
-    lvl_val = ready.get("level", "LEVEL 0")
-    conv = c["features"]["conviction"]
-    rs = c["features"]["rs_20d"]
+    lvl = ready.get("level", "LEVEL 0")
+    regime = c.get("market_regime", "")
     
-    if lvl_val in ["LEVEL 3", "LEVEL 4"]: return True
-    if lvl_val == "LEVEL 2" and conv >= 55 and rs >= 15: return True
-    return False
+    if regime == "CRASH":
+        return lvl in ["LEVEL 2", "LEVEL 3", "LEVEL 4"]
+    
+    return lvl in ["LEVEL 3", "LEVEL 4"]
 
 def evaluate_candidates(scanner_output):
     try:
@@ -102,57 +107,7 @@ def evaluate_candidates(scanner_output):
             if scores["prime_score"] < 50 or feats["conviction"] < 40: continue
             if risk_level < 3 and feats["rs_20d"] < -5: continue
             
+            # [교정] 알림 엔진이 인식할 수 있도록 국면 변수 주입
             pass1_results.append({
                 "code": str(raw["code"]).zfill(6), "name": raw["name"], "price": raw["price"], "chg": raw["chg"],
-                "features": feats, "scores": scores, "base_score": scores["prime_final"],
-                "decision": {"action": "관망", "is_trade_leader": False}
-            })
-            
-        pass1_results.sort(key=lambda x: x["base_score"], reverse=True)
-        
-        for rank_idx, c in enumerate(pass1_results, 1):
-            try:
-                if rank_idx <= 10: save_top10_tracking(scan_datetime, c['code'], c['name'], rank_idx, c['base_score'], risk_level)
-                c["history_id"] = save_candidate_history(scan_datetime, run_type, c['code'], c['name'], rank_idx, c['price'], c['chg'], c['scores']['prime_final'], c['scores']['prime_score'], c['features']['conviction'], c['features']['rs_1d'], c['features']['rs_5d'], c['features']['rs_20d'], c['features']['ma_gap'], c['features']['amount'], c['features']['amount_strength'], risk_level, 0)
-            except Exception: pass
-
-        final_results = []
-        for c in pass1_results:
-            mem = get_signal_persistence(c["code"])
-            top10 = get_top10_stability(c["code"])
-            stats = get_signal_quality(regime_str, c["features"]["rs_20d"], c["features"]["conviction"])
-            feats = c["features"]
-            
-            t10_count = top10["top10_count"]
-            ready_obj = calculate_buy_readiness(c, regime_str, top10, mem, stats)
-            
-            lvl_num = int(ready_obj["level"].replace("LEVEL ", ""))
-            trade_score = ((lvl_num / 4.0) * 400) + (min(feats["conviction"], 100) * 2.5) + (min(max(feats["rs_20d"], 0), 100) * 2.0) + (min(c["scores"]["prime_score"], 100) * 1.0) + (min(t10_count, 10) * 5.0)
-                
-            c["decision"]["trade_score"] = trade_score
-            c["decision"]["buy_readiness"] = ready_obj
-            c["decision"]["trade_plan"] = calculate_trade_plan(c["price"], feats["ma_gap"], risk_level)
-            c["decision"]["top10_stability"] = {"top10_count": t10_count, "recent_days": top10["days"], "avg_rank": top10["avg_rank"]}
-            
-            final_results.append(c)
-            
-        final_results.sort(key=lambda x: x["decision"]["trade_score"], reverse=True)
-        alert_candidates = [c for c in final_results if should_send_alert(c)]
-        
-        max_lvl_obj = {"level": "LEVEL 0", "title": "🔴 매수 금지", "action": "관망 유지"}
-        max_lvl_code = "없음"
-        max_lvl_reason = "조건을 충족하는 유효 후보군 없음"
-        
-        if final_results:
-            final_results[0]["decision"]["is_trade_leader"] = True
-            max_lvl_obj = final_results[0]["decision"]["buy_readiness"]
-            max_lvl_code = final_results[0]["name"]
-            max_lvl_reason = "전체 후보군 중 종합 점수 1위 (디버그 모드)"
-                    
-        market.update({"regime": regime_str, "direction": market_direction, "buy_tolerance": buy_tolerance, "max_level_obj": max_lvl_obj, "max_level_code": max_lvl_code, "max_lvl_reason": max_lvl_reason})
-        
-        return {"market": market, "stats": scanner_output.get("stats", {}), "candidates": final_results, "alert_candidates": alert_candidates}
-    except Exception as e:
-        print(f"🚨 [DECISION ENGINE ERROR] {e}")
-        traceback.print_exc()
-        return {"stats": {"data_error": True}}
+                "
