@@ -10,68 +10,59 @@ async def send_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
     try:
-        response = await asyncio.to_thread(requests.post, url, json=payload, timeout=10)
-        response.raise_for_status()
+        await asyncio.to_thread(requests.post, url, json=payload, timeout=10)
         return True
     except Exception: return False
 
-def format_scan_messages(run_type, result):
+def format_scan_messages(result, holdings_data=None):
     if not result or "candidates" not in result: return ["⚠️ 데이터 추출 실패"]
     
     market = result.get("market", {})
-    candidates = result.get("candidates", []) # 디버그 모드: 전체 후보 수신
+    breadth = market.get("breadth", {})
     alert_candidates = result.get("alert_candidates", [])
-    alert_codes = [c['code'] for c in alert_candidates]
     
-    regime = market.get("regime", "NORMAL")
-    direction = market.get("direction", "🟢 시장 안정")
-    max_obj = market.get("max_level_obj", {})
-    
-    if not candidates: return []
+    # ✅ [필수 수정] IndexError 완벽 방어 이중 가드
+    if not alert_candidates or len(alert_candidates) == 0:
+        return ["⚠️ 조건 충족 V9.0 종목 없음 (시스템 대기)"]
         
     msg_list = []
-    header = f"🛠️ <b>[DEBUG MODE] V8.8.34 TRANSPARENT AUDIT</b>\n\n"
-    header += f"📌 <b>파이프라인 통과 현황</b>\n"
-    header += f"전체 DB 기록: {len(candidates)}개\n"
-    header += f"알림 조건 통과: {len(alert_candidates)}개\n\n"
     
-    header += f"📌 <b>오늘 투자 결론</b>\n\n"
-    header += f"시장: <b>{regime}</b>\n{direction}\n\n"
-    header += f"오늘 핵심 매매 후보:\n👑 <b>{market.get('max_level_code', '없음')}</b>\n"
-    header += f"매매 단계: {max_obj.get('level', 'LEVEL 0')} {max_obj.get('title', '').split(' ')[0]}\n"
-    header += "━" * 20 + "\n\n"
-    current_msg = header
+    msg = f"📊 <b>V9.0 실전 퀀트 운용 보고서</b>\n\n"
+    msg += f"<b>[1] 🌐 시장 요약 ({market.get('state', 'NORMAL')})</b>\n"
+    msg += f"• 체력 추세: <b>{breadth.get('trend', 'Flat')}</b> (AD Ratio: {breadth.get('avg_ratio', 0)}%)\n"
+    msg += f"• KOSPI: 상승 {breadth.get('kp_up',0)} / 하락 {breadth.get('kp_down',0)}\n"
+    msg += f"• KOSDAQ: 상승 {breadth.get('kd_up',0)} / 하락 {breadth.get('kd_down',0)}\n"
+    msg += "━" * 16 + "\n\n"
     
-    for idx, c in enumerate(candidates[:10], 1):
-        is_alert = c['code'] in alert_codes
-        badge = "🔔 [필터 통과]" if is_alert else "🔇 [필터 차단]"
+    leader = alert_candidates[0]
+    ld = leader["decision"]
+    plan = ld["trade_plan"]
+    
+    msg += f"<b>[2] 👑 Prime Leader</b>\n"
+    msg += f"<b>{leader['name']}</b> ({leader['code']}) | {leader['chg']}%\n"
+    msg += f"▶ 전략: <b>{ld['primary_strategy']}</b> ⭐⭐⭐\n"
+    if ld.get('secondary_strategy'): msg += f"▶ 보조: {ld['secondary_strategy']}\n"
+    
+    msg += f"\n🎯 <b>[트레이드 플랜]</b>\n"
+    msg += f"• 진입: {plan['entry']:,}원\n"
+    msg += f"• 목표: {plan['target1']:,}원 (T1)\n"
+    msg += f"• 손절: {plan['stop_loss']:,}원 (ATR/Pivot)\n"
+    msg += f"• V9 확신도: <b>{ld['confidence']}점</b>\n"
+    msg += "━" * 16 + "\n\n"
+    
+    msg += f"<b>[3] 🚀 실전 운영 TOP 5</b>\n"
+    for idx, c in enumerate(alert_candidates[1:6], 2):
+        cd = c["decision"]
+        msg += f"{idx}위. <b>{c['name']}</b> | {cd['confidence']}점 | {cd['primary_strategy']}\n"
+    msg += "━" * 16 + "\n\n"
+    
+    msg += f"<b>[4] 💼 포트폴리오 및 청산 알림</b>\n"
+    if holdings_data:
+        for h in holdings_data:
+            icon = "🔴" if "청산" in h['judgment'] else "🟢"
+            msg += f"{icon} {h['name']} | 수익: {h['pnl']}% | 손절선: {h['stop_p']}\n"
+    else:
+        msg += "• 보유 종목 없음 (시스템 대기중)\n"
         
-        block = f"📊 <b>순위 {idx}위</b> {badge}\n"
-        block += f"<b>{c['name']}</b> ({c['code']})\n\n"
-        
-        rs_val = c['features']['rs_20d']
-        conv_val = c['features']['conviction']
-        
-        block += f"상대강도(RS20D): {'+' if rs_val>0 else ''}{rs_val}%\n"
-        block += f"수급확신도: {conv_val}점\n\n"
-        
-        t10 = c['decision'].get('top10_stability', {})
-        block += f"📌 <b>TOP10 상태</b>\n"
-        block += f"{t10.get('top10_count', 0)}회 출현 / 평균 {round(t10.get('avg_rank', 0.0), 1)}위\n\n"
-        
-        ready = c['decision'].get('buy_readiness', {})
-        block += f"🎯 <b>매매 판단: {ready.get('level', 'LEVEL 0')}</b>\n"
-        
-        if ready.get("conditions"):
-            block += "다음 단계 조건:\n"
-            block += "\n".join(ready["conditions"]) + "\n\n"
-            
-        block += "━" * 20 + "\n\n"
-        
-        if len(current_msg) + len(block) > 4000:
-            msg_list.append(current_msg)
-            current_msg = block
-        else: current_msg += block
-            
-    if current_msg: msg_list.append(current_msg)
+    msg_list.append(msg)
     return msg_list
