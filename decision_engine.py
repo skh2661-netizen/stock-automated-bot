@@ -13,7 +13,7 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
     print("=" * 60)
     
     for cf in features_list:
-        # ✅ 1. Trade Score 정비: RS 제거, 순수 수급(Volume/Money Flow) 추적용으로 가중치 재편
+        # 1. Base Trade Score (RS 제거, 순수 수급 추적)
         trade_score = min((cf.vol.vr_20 * 15) + (cf.vol.money_flow_ratio * 10), 100)
         
         # 2. Pattern Bonus & Breadth Bonus
@@ -27,24 +27,24 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
         else:
             breadth_bonus = 10 if breadth.get("trend") == "Improving" else (-10 if breadth.get("trend") == "Weakening" else 0)
         
-        # ✅ 3. Confidence Score: 기본 상수 대폭 하향(+15) 및 가중치 조절을 통한 분산도(Spread) 확대
+        # 3. Confidence Score (상수 낮춰 점수 분산도 극대화)
         confidence = round((trade_score * 0.5) + (pat_bonus * 0.4) + (breadth_bonus * 0.2) + 15, 1) 
         
-        # ✅ 4. Composite Rank: 제거된 RS를 서열 결정의 핵심 Key로 부활 (상한 100 캡핑 유지)
+        # 4. Composite Rank (RS 아웃라이어 상한 100 캡핑 방어 탑재)
         rs_component = min(max(cf.mom.rs_20d, 0), 100)
         composite_rank = round(confidence + (rs_component * 0.15), 2)
         
         primary, secondary = assign_strategies(cf)
         plan = generate_trade_plan(cf)
         
-        # ✅ 5. LEVEL 커트라인 하향: 흩어진 점수 분포에 맞춰 등급 획득 기준 재조정
+        # 5. LEVEL 분류 (✅ 교정완료: RS20 최소 방어선 구축)
         if m_state == "CRASH":
-            if confidence >= 65: lvl = "LEVEL 4"
-            elif confidence >= 55: lvl = "LEVEL 3" 
+            if cf.mom.rs_20d >= 10 and confidence >= 65: lvl = "LEVEL 4"
+            elif cf.mom.rs_20d >= 0 and confidence >= 55: lvl = "LEVEL 3" 
             elif confidence >= 45: lvl = "LEVEL 2" 
             else: lvl = "LEVEL 0"
         else:
-            if confidence >= 70: lvl = "LEVEL 4"
+            if cf.mom.rs_20d >= 5 and confidence >= 70: lvl = "LEVEL 4"
             elif confidence >= 55: lvl = "LEVEL 3"
             elif confidence >= 40: lvl = "LEVEL 2"
             else: lvl = "LEVEL 1"
@@ -59,10 +59,10 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
             "raw_features": cf
         })
         
-    # 복합 서열 점수(Composite Rank) 기준으로 랭킹 강제 정렬
+    # 복합 서열 점수 기준으로 정렬
     final_results.sort(key=lambda x: x["decision"]["composite_rank"], reverse=True)
     
-    # 6. 알림 필터 (LEVEL 3 이상만 발송)
+    # 6. 알림 필터
     alert_candidates = []
     for res in final_results:
         lvl = res["decision"]["level"]
@@ -74,6 +74,7 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
             if lvl in ["LEVEL 3", "LEVEL 4"]: alert_candidates.append(res)
             elif lvl == "LEVEL 2" and conf >= 45: alert_candidates.append(res)
             
+    # [디버그 뷰포트]
     print("=" * 95)
     print(f"\n[ALL CANDIDATES (Top 15 - sorted by Composite Rank)]")
     for r in final_results[:15]:
