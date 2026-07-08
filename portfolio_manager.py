@@ -14,11 +14,18 @@ class PortfolioState:
     force_reval: bool
 
 def load_holdings(filepath="holdings.json") -> list[Holding]:
+    """
+    [방어막 탑재] 파일이 없거나(비어있거나) 텍스트가 깨져서 JSON 파싱 에러가 나면 
+    서버 셧다운 대신 빈 리스트([])를 반환하여 안전하게 파이프라인을 유지합니다.
+    """
     if not os.path.exists(filepath):
         return []
-    with open(filepath, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return [Holding(**item) for item in data]
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return [Holding(**item) for item in data]
+    except json.JSONDecodeError:
+        return []
 
 def save_holdings(holdings: list[Holding], filepath="holdings.json"):
     data = [h.__dict__ for h in holdings]
@@ -30,13 +37,16 @@ def calculate_pnl_score(avg_pnl_pct: float) -> float:
     return min(max(score, 0), 100)
 
 def calculate_portfolio_health(holdings_eval: list, market: dict) -> PortfolioState:
+    """
+    원인(Conf, Comp)과 결과(PnL)를 결합하고 시장 매트릭스를 할인율로 반영하는 PHS 연산기
+    """
     if not holdings_eval:
         return PortfolioState(75.0, "NORMAL", True, True, True, False, False)
         
     sum_conf = sum(h["decision"]["confidence"] for h in holdings_eval)
     sum_comp = sum(h["decision"]["composite_rank"] for h in holdings_eval)
     
-    # 임시 PnL 보정용 
+    # 임시 PnL 보정용 (실전 연동 전 0% 기준 스코어 50점 매핑)
     pnl_score = 50.0 
     
     avg_conf = sum_conf / len(holdings_eval)
@@ -60,6 +70,7 @@ def calculate_portfolio_health(holdings_eval: list, market: dict) -> PortfolioSt
     tier = "SURVIVAL"
     allow_new_buy, allow_adding, allow_lvl2_buy, strict_swap, force_reval = False, False, False, True, True
     
+    # 5단계 생존(Survivability) 상태 머신 제어
     if final_phs >= 85:
         tier = "AGGRESSIVE"
         allow_new_buy, allow_adding, allow_lvl2_buy, strict_swap, force_reval = True, True, True, False, False
@@ -76,19 +87,23 @@ def calculate_portfolio_health(holdings_eval: list, market: dict) -> PortfolioSt
     return PortfolioState(final_phs, tier, allow_new_buy, allow_adding, allow_lvl2_buy, strict_swap, force_reval)
 
 def evaluate_time_stop(holding: Holding, current_eval: dict, market_state: str, phs_tier: str) -> bool:
+    """
+    계층별(LEVEL) 상대평가 + 절대평가 + 시장 상태 패널티가 결합된 입체적 조기 청산 엔진
+    """
     if phs_tier == "AGGRESSIVE":
         return False
         
     curr_conf = current_eval["confidence"]
     curr_comp = current_eval["composite_rank"]
     
+    # 폭락장 가산 패널티 (위험할수록 커트라인을 높여 조기 청산 유도)
     penalty = 0
     if market_state == "RISK": penalty = 5
     elif market_state == "CRASH": penalty = 10
     
     if holding.entry_level == "LEVEL 4":
         conf_drop = curr_conf <= (holding.entry_confidence - 20)
-        abs_conf = curr_conf < (55 + penalty)  
+        abs_conf = curr_conf < (55 + penalty)  # 예: CRASH면 65점 미만 시 즉시 컷
         comp_drop = curr_comp <= (holding.entry_composite - 15)
         if conf_drop and abs_conf and comp_drop: return True
             
@@ -98,7 +113,7 @@ def evaluate_time_stop(holding: Holding, current_eval: dict, market_state: str, 
         comp_drop = curr_comp <= (holding.entry_composite - 10)
         if conf_drop and abs_conf and comp_drop: return True
             
-    else: 
+    else: # LEVEL 2 (정찰병 필터: 조건 하나만 충족해도 가차 없이 절단)
         conf_drop = curr_conf <= (holding.entry_confidence - 10)
         abs_conf = curr_conf < (45 + penalty)
         if conf_drop or abs_conf: return True
