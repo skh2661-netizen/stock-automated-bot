@@ -68,6 +68,14 @@ def get_market_context():
         elif kp_1d >= 1.0 and breadth["avg_ratio"] >= 60: state = "BULL"
         else: state = "NORMAL"
         
+        # ✅ 형님 지시사항: 시장 판정 직후 변수값 실시간 출력
+        print("=" * 60)
+        print("KOSPI 1D :", round(kp_1d, 2))
+        print("Breadth  :", breadth["avg_ratio"])
+        print("Trend    :", breadth["trend"])
+        print("STATE    :", state)
+        print("=" * 60)
+        
         return {
             "state": state, "kospi_1d": round(kp_1d, 2), "kospi_5d": round(kp_5d, 2),
             "kospi_20d": round(kp_20d, 2), "breadth": breadth
