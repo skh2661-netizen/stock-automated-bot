@@ -4,6 +4,7 @@ import FinanceDataReader as fdr
 import requests
 from bs4 import BeautifulSoup
 import time
+import re
 
 _breadth_cache = {"timestamp": 0, "data": None}
 _prev_avg_ratio = 50.0
@@ -16,23 +17,41 @@ def get_realtime_breadth():
         return _breadth_cache["data"]
         
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         b_data = {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0}
         
-        res_kp = requests.get("https://finance.naver.com/sise/sise_index.naver?code=KOSPI", headers=headers, timeout=3)
+        # 코스피 크롤링 (정규식 기반 강제 추출)
+        res_kp = requests.get("https://finance.naver.com/sise/sise_index.naver?code=KOSPI", headers=headers, timeout=5)
         soup_kp = BeautifulSoup(res_kp.text, 'html.parser')
         dl_kp = soup_kp.find("dl", class_="lst_kos_info")
+        
         if dl_kp:
-            b_data["kp_up"] = int(dl_kp.find("dt", string="상승").find_next_sibling("dd").text.strip().replace(",", ""))
-            b_data["kp_down"] = int(dl_kp.find("dt", string="하락").find_next_sibling("dd").text.strip().replace(",", ""))
-            
-        res_kd = requests.get("https://finance.naver.com/sise/sise_index.naver?code=KOSDAQ", headers=headers, timeout=3)
+            for dt in dl_kp.find_all("dt"):
+                txt = dt.get_text().strip()
+                dd = dt.find_next_sibling("dd")
+                if not dd: continue
+                val_match = re.search(r'[\d,]+', dd.get_text())
+                val = int(val_match.group().replace(",", "")) if val_match else 0
+                
+                if "상승" in txt: b_data["kp_up"] = val
+                elif "하락" in txt: b_data["kp_down"] = val
+                
+        # 코스닥 크롤링 (정규식 기반 강제 추출)
+        res_kd = requests.get("https://finance.naver.com/sise/sise_index.naver?code=KOSDAQ", headers=headers, timeout=5)
         soup_kd = BeautifulSoup(res_kd.text, 'html.parser')
         dl_kd = soup_kd.find("dl", class_="lst_kos_info")
+        
         if dl_kd:
-            b_data["kd_up"] = int(dl_kd.find("dt", string="상승").find_next_sibling("dd").text.strip().replace(",", ""))
-            b_data["kd_down"] = int(dl_kd.find("dt", string="하락").find_next_sibling("dd").text.strip().replace(",", ""))
-            
+            for dt in dl_kd.find_all("dt"):
+                txt = dt.get_text().strip()
+                dd = dt.find_next_sibling("dd")
+                if not dd: continue
+                val_match = re.search(r'[\d,]+', dd.get_text())
+                val = int(val_match.group().replace(",", "")) if val_match else 0
+                
+                if "상승" in txt: b_data["kd_up"] = val
+                elif "하락" in txt: b_data["kd_down"] = val
+                
         kp_total = max(b_data["kp_up"] + b_data["kp_down"], 1)
         kd_total = max(b_data["kd_up"] + b_data["kd_down"], 1)
         
@@ -41,8 +60,8 @@ def get_realtime_breadth():
         avg_ratio = (b_data["kp_ratio"] + b_data["kd_ratio"]) / 2
         b_data["avg_ratio"] = avg_ratio
         
-        if avg_ratio > _prev_avg_ratio + 5: b_data["trend"] = "Improving"
-        elif avg_ratio < _prev_avg_ratio - 5: b_data["trend"] = "Weakening"
+        if avg_ratio > _prev_avg_ratio + 3: b_data["trend"] = "Improving"
+        elif avg_ratio < _prev_avg_ratio - 3: b_data["trend"] = "Weakening"
         else: b_data["trend"] = "Flat"
         
         _prev_avg_ratio = avg_ratio
@@ -68,7 +87,6 @@ def get_market_context():
         elif kp_1d >= 1.0 and breadth["avg_ratio"] >= 60: state = "BULL"
         else: state = "NORMAL"
         
-        # ✅ 형님 지시사항: 시장 판정 직후 변수값 실시간 출력
         print("=" * 60)
         print("KOSPI 1D :", round(kp_1d, 2))
         print("Breadth  :", breadth["avg_ratio"])
