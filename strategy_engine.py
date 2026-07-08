@@ -1,4 +1,3 @@
-# strategy_engine.py
 from models import CandidateFeature
 
 def assign_strategies(cf: CandidateFeature):
@@ -7,7 +6,8 @@ def assign_strategies(cf: CandidateFeature):
     
     is_higher_low = cf.struc.last_pivot_low_price > cf.struc.prev_pivot_low_price and cf.struc.last_pivot_low_price > 0
     
-    if cf.pat.is_gap_up and cf.pat.gap_survived and cf.vol.rvt >= 2.0:
+    # 모델명 변수 동기화 교정: rvt -> relative_vol_today
+    if cf.pat.is_gap_up and cf.pat.gap_survived and cf.vol.relative_vol_today >= 2.0:
         primary = "시초/갭돌파"
     elif cf.mom.rs_20d >= 20 and cf.struc.dist_ma20 <= 15 and cf.vol.vr_20 >= 2.0:
         primary = "맥점돌파"
@@ -19,17 +19,3 @@ def assign_strategies(cf: CandidateFeature):
     if cf.pat.is_bull_engulfing or cf.pat.is_hammer: secondary = "반전 캔들 출현"
         
     return primary, secondary
-
-# trade_plan.py
-from models import CandidateFeature
-
-def generate_trade_plan(cf: CandidateFeature):
-    entry = cf.price
-    atr_stop = int(entry - (cf.vty.atr_14 * 1.5))
-    pivot_stop = cf.struc.last_pivot_low_price if cf.struc.last_pivot_low_price > 0 else atr_stop
-    stop_loss = min(atr_stop, pivot_stop)
-    
-    target1 = int(entry + (cf.vty.atr_14 * 2.0))
-    target2 = int(entry + (cf.vty.atr_14 * 4.0))
-    
-    return {"entry": entry, "stop_loss": stop_loss, "target1": target1, "target2": target2}
