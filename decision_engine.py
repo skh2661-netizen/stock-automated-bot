@@ -27,6 +27,11 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
         # 3. Confidence Score
         confidence = round((trade_score * 0.4) + (pat_bonus * 0.2) + (breadth_bonus * 0.1) + 30, 1) 
         
+        # [V9.0 고도화] 동점자 파괴용 복합 서열 점수 (Composite Rank Key) 산출
+        # ✅ 형님 지시사항: RS20 아웃라이어 왜곡 방지용 0~100 Capping 로직 적용
+        rs_component = min(max(cf.mom.rs_20d, 0), 100)
+        composite_rank = round(confidence + (rs_component * 0.1) + (pat_bonus * 0.05), 2)
+        
         primary, secondary = assign_strategies(cf)
         plan = generate_trade_plan(cf)
         
@@ -45,16 +50,17 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
         final_results.append({
             "code": cf.code, "name": cf.name, "price": cf.price, "chg": cf.chg,
             "decision": {
-                "level": lvl, "confidence": confidence, "trade_score": round(trade_score, 1),
-                "pat_bonus": pat_bonus, "breadth_bonus": breadth_bonus,
+                "level": lvl, "confidence": confidence, "composite_rank": composite_rank,
+                "trade_score": round(trade_score, 1), "pat_bonus": pat_bonus, "breadth_bonus": breadth_bonus,
                 "primary_strategy": primary, "secondary_strategy": secondary, "trade_plan": plan
             },
             "raw_features": cf
         })
         
-    final_results.sort(key=lambda x: x["decision"]["confidence"], reverse=True)
+    # 복합 서열 점수 기준으로 정렬
+    final_results.sort(key=lambda x: x["decision"]["composite_rank"], reverse=True)
     
-    # 5. 알림 필터 (정상화: LEVEL 3 이상만 발송)
+    # 5. 알림 필터 (LEVEL 3 이상만 발송)
     alert_candidates = []
     for res in final_results:
         lvl = res["decision"]["level"]
@@ -68,8 +74,8 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
             elif lvl == "LEVEL 2" and conf >= 55 and rs >= 15: alert_candidates.append(res)
             
     # 6. [디버그 뷰포트] 모든 팩터를 해부하여 한 줄로 강제 병합 출력
-    print("=" * 80)
-    print(f"\n[ALL CANDIDATES (Top 15)]")
+    print("=" * 95)
+    print(f"\n[ALL CANDIDATES (Top 15 - sorted by Composite Rank)]")
     for r in final_results[:15]:
         dec = r["decision"]
         rs20_val = r["raw_features"].mom.rs_20d
@@ -80,6 +86,7 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
             f"Brd={dec['breadth_bonus']:>3} | "
             f"RS20={rs20_val:>6.2f} | "
             f"Conf={dec['confidence']:>4.1f} | "
+            f"Comp={dec['composite_rank']:>5.1f} | "
             f"{dec['level']:<7} | "
             f"Str={dec['primary_strategy']}"
         )
@@ -94,9 +101,10 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
             f"- {a['name']:<8} | "
             f"RS20={rs20_val:>6.2f} | "
             f"Conf={dec['confidence']:<4.1f} | "
+            f"Comp={dec['composite_rank']:<5.1f} | "
             f"{dec['level']:<7} | "
             f"Str={dec['primary_strategy']}"
         )
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 95)
             
     return {"market": market_context, "candidates": final_results, "alert_candidates": alert_candidates}
