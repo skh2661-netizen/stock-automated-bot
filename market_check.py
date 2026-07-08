@@ -20,7 +20,6 @@ def get_realtime_breadth():
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         b_data = {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0}
         
-        # 코스피 크롤링
         res_kp = requests.get("https://finance.naver.com/sise/sise_index.naver?code=KOSPI", headers=headers, timeout=5)
         soup_kp = BeautifulSoup(res_kp.text, 'html.parser')
         dl_kp = soup_kp.find("dl", class_="lst_kos_info")
@@ -36,7 +35,6 @@ def get_realtime_breadth():
                 if "상승" in txt: b_data["kp_up"] = val
                 elif "하락" in txt: b_data["kp_down"] = val
                 
-        # 코스닥 크롤링
         res_kd = requests.get("https://finance.naver.com/sise/sise_index.naver?code=KOSDAQ", headers=headers, timeout=5)
         soup_kd = BeautifulSoup(res_kd.text, 'html.parser')
         dl_kd = soup_kd.find("dl", class_="lst_kos_info")
@@ -55,7 +53,6 @@ def get_realtime_breadth():
         kp_total = b_data["kp_up"] + b_data["kp_down"]
         kd_total = b_data["kd_up"] + b_data["kd_down"]
         
-        # 팩트 교정: 상승/하락 카운트가 모두 0이면 측정 실패로 간주하고 Unknown 판정 강제
         if kp_total == 0 or kd_total == 0:
             return {
                 "kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0,
@@ -90,10 +87,15 @@ def get_market_context():
         
         breadth = get_realtime_breadth()
         
-        if kp_1d <= -3.0: state = "CRASH"
-        elif kp_1d <= -1.5: state = "RISK"
-        elif kp_1d >= 1.0 and breadth["avg_ratio"] >= 60: state = "BULL"
-        else: state = "NORMAL"
+        # ✅ 형님 지시사항: 지수와 시장 체력을 결합한 입체적 국면 판정
+        if kp_1d <= -3.0: 
+            state = "CRASH"
+        elif kp_1d <= -1.5 and breadth.get("trend") == "Weakening": 
+            state = "RISK"
+        elif kp_1d >= 1.0 and breadth.get("trend") == "Improving": 
+            state = "BULL"
+        else: 
+            state = "NORMAL" # Unknown이거나 조건 미달 시 모두 방어적 NORMAL 처리
         
         print("=" * 60)
         print("KOSPI 1D :", round(kp_1d, 2))
