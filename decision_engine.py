@@ -1,8 +1,40 @@
-# 4. LEVEL 분류 (형님 지시사항: CRASH 국면 승격 시 RS20D 필수 가드레일 결속)
+from models import CandidateFeature
+from strategy_engine import assign_strategies
+from trade_plan import generate_trade_plan
+
+def evaluate_candidates(features_list: list[CandidateFeature], market_context: dict):
+    final_results = []
+    m_state = market_context["state"]
+    breadth = market_context["breadth"]
+    
+    print("=" * 60)
+    print("MARKET STATE (Engine) :", m_state)
+    print("BREADTH (Engine)      :", breadth)
+    print("=" * 60)
+    
+    for cf in features_list:
+        # 1. Base Trade Score
+        trade_score = min((cf.mom.rs_20d * 1.5) + (cf.vol.vr_20 * 10) + (cf.vol.money_flow_ratio * 5), 100)
+        
+        # 2. Pattern Bonus & Breadth Bonus
+        pat_bonus = 0
+        if cf.struc.last_pivot_low_price > cf.struc.prev_pivot_low_price and cf.struc.last_pivot_low_price > 0: pat_bonus += 10
+        if cf.pat.gap_survived: pat_bonus += 10
+        if cf.pat.is_bull_engulfing or cf.pat.is_hammer: pat_bonus += 5
+        
+        breadth_bonus = 10 if breadth.get("trend") == "Improving" else (-10 if breadth.get("trend") == "Weakening" else 0)
+        
+        # 3. Confidence Score
+        confidence = round((trade_score * 0.4) + (pat_bonus * 0.2) + (breadth_bonus * 0.1) + 30, 1) 
+        
+        primary, secondary = assign_strategies(cf)
+        plan = generate_trade_plan(cf)
+        
+        # 4. LEVEL 분류 (CRASH 국면 승격 시 RS20D 필수 가드레일 결속)
         if m_state == "CRASH":
             if cf.mom.rs_20d >= 35 and confidence >= 80: lvl = "LEVEL 4"
-            elif cf.mom.rs_20d >= 20 and confidence >= 70: lvl = "LEVEL 3" # [교정] RS20 >= 20 가드레일 부활
-            elif cf.mom.rs_20d >= 10 and confidence >= 60: lvl = "LEVEL 2" # [교정] RS20 >= 10 가드레일 부활
+            elif cf.mom.rs_20d >= 20 and confidence >= 70: lvl = "LEVEL 3" 
+            elif cf.mom.rs_20d >= 10 and confidence >= 60: lvl = "LEVEL 2" 
             else: lvl = "LEVEL 0"
         else:
             if confidence >= 80: lvl = "LEVEL 4"
@@ -35,7 +67,7 @@
             if lvl in ["LEVEL 3", "LEVEL 4"]: alert_candidates.append(res)
             elif lvl == "LEVEL 2" and conf >= 55 and rs >= 15: alert_candidates.append(res)
             
-    # ✅ 6. [디버그 뷰포트] 형님 지시사항: 모든 팩터를 해부하여 한 줄로 강제 병합 출력
+    # 6. [디버그 뷰포트] 모든 팩터를 해부하여 한 줄로 강제 병합 출력
     print("=" * 80)
     print(f"\n[ALL CANDIDATES (Top 15)]")
     for r in final_results[:15]:
