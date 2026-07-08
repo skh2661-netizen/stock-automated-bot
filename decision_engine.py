@@ -13,8 +13,8 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
     print("=" * 60)
     
     for cf in features_list:
-        # 1. Base Trade Score
-        trade_score = min((cf.mom.rs_20d * 1.5) + (cf.vol.vr_20 * 10) + (cf.vol.money_flow_ratio * 5), 100)
+        # ✅ 1. Trade Score 정비: RS 제거, 순수 수급(Volume/Money Flow) 추적용으로 가중치 재편
+        trade_score = min((cf.vol.vr_20 * 15) + (cf.vol.money_flow_ratio * 10), 100)
         
         # 2. Pattern Bonus & Breadth Bonus
         pat_bonus = 0
@@ -22,32 +22,31 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
         if cf.pat.gap_survived: pat_bonus += 10
         if cf.pat.is_bull_engulfing or cf.pat.is_hammer: pat_bonus += 5
         
-        # 팩트 교정: 크롤러 측정 실패(Unknown) 감지 시 마켓 보너스를 강제로 0점 처리
         if breadth.get("trend") == "Unknown":
             breadth_bonus = 0
         else:
             breadth_bonus = 10 if breadth.get("trend") == "Improving" else (-10 if breadth.get("trend") == "Weakening" else 0)
         
-        # 3. Confidence Score
-        confidence = round((trade_score * 0.4) + (pat_bonus * 0.2) + (breadth_bonus * 0.1) + 30, 1) 
+        # ✅ 3. Confidence Score: 기본 상수 대폭 하향(+15) 및 가중치 조절을 통한 분산도(Spread) 확대
+        confidence = round((trade_score * 0.5) + (pat_bonus * 0.4) + (breadth_bonus * 0.2) + 15, 1) 
         
-        # 동점자 파괴용 복합 서열 점수 (아웃라이어 상한 캡핑 유지)
+        # ✅ 4. Composite Rank: 제거된 RS를 서열 결정의 핵심 Key로 부활 (상한 100 캡핑 유지)
         rs_component = min(max(cf.mom.rs_20d, 0), 100)
-        composite_rank = round(confidence + (rs_component * 0.1) + (pat_bonus * 0.05), 2)
+        composite_rank = round(confidence + (rs_component * 0.15), 2)
         
         primary, secondary = assign_strategies(cf)
         plan = generate_trade_plan(cf)
         
-        # 4. LEVEL 분류 (팩트 교정: 중복 판정 해제, 오직 계량화된 Confidence 점수선 하나로만 통제)
+        # ✅ 5. LEVEL 커트라인 하향: 흩어진 점수 분포에 맞춰 등급 획득 기준 재조정
         if m_state == "CRASH":
-            if cf.mom.rs_20d >= 35 and confidence >= 80: lvl = "LEVEL 4"
-            elif confidence >= 70: lvl = "LEVEL 3" 
-            elif confidence >= 60: lvl = "LEVEL 2" 
+            if confidence >= 65: lvl = "LEVEL 4"
+            elif confidence >= 55: lvl = "LEVEL 3" 
+            elif confidence >= 45: lvl = "LEVEL 2" 
             else: lvl = "LEVEL 0"
         else:
-            if confidence >= 80: lvl = "LEVEL 4"
-            elif confidence >= 65: lvl = "LEVEL 3"
-            elif confidence >= 50: lvl = "LEVEL 2"
+            if confidence >= 70: lvl = "LEVEL 4"
+            elif confidence >= 55: lvl = "LEVEL 3"
+            elif confidence >= 40: lvl = "LEVEL 2"
             else: lvl = "LEVEL 1"
             
         final_results.append({
@@ -60,20 +59,20 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
             "raw_features": cf
         })
         
+    # 복합 서열 점수(Composite Rank) 기준으로 랭킹 강제 정렬
     final_results.sort(key=lambda x: x["decision"]["composite_rank"], reverse=True)
     
-    # 5. 알림 필터 (LEVEL 3 이상만 발송 정책 유지)
+    # 6. 알림 필터 (LEVEL 3 이상만 발송)
     alert_candidates = []
     for res in final_results:
         lvl = res["decision"]["level"]
         conf = res["decision"]["confidence"]
-        rs = res["raw_features"].mom.rs_20d
         
         if m_state == "CRASH":
             if lvl in ["LEVEL 3", "LEVEL 4"]: alert_candidates.append(res)
         else:
             if lvl in ["LEVEL 3", "LEVEL 4"]: alert_candidates.append(res)
-            elif lvl == "LEVEL 2" and conf >= 55 and rs >= 15: alert_candidates.append(res)
+            elif lvl == "LEVEL 2" and conf >= 45: alert_candidates.append(res)
             
     print("=" * 95)
     print(f"\n[ALL CANDIDATES (Top 15 - sorted by Composite Rank)]")
