@@ -20,7 +20,7 @@ def get_realtime_breadth():
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         b_data = {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0}
         
-        # 코스피 크롤링 (정규식 기반 강제 추출)
+        # 코스피 크롤링
         res_kp = requests.get("https://finance.naver.com/sise/sise_index.naver?code=KOSPI", headers=headers, timeout=5)
         soup_kp = BeautifulSoup(res_kp.text, 'html.parser')
         dl_kp = soup_kp.find("dl", class_="lst_kos_info")
@@ -36,7 +36,7 @@ def get_realtime_breadth():
                 if "상승" in txt: b_data["kp_up"] = val
                 elif "하락" in txt: b_data["kp_down"] = val
                 
-        # 코스닥 크롤링 (정규식 기반 강제 추출)
+        # 코스닥 크롤링
         res_kd = requests.get("https://finance.naver.com/sise/sise_index.naver?code=KOSDAQ", headers=headers, timeout=5)
         soup_kd = BeautifulSoup(res_kd.text, 'html.parser')
         dl_kd = soup_kd.find("dl", class_="lst_kos_info")
@@ -52,8 +52,16 @@ def get_realtime_breadth():
                 if "상승" in txt: b_data["kd_up"] = val
                 elif "하락" in txt: b_data["kd_down"] = val
                 
-        kp_total = max(b_data["kp_up"] + b_data["kp_down"], 1)
-        kd_total = max(b_data["kd_up"] + b_data["kd_down"], 1)
+        kp_total = b_data["kp_up"] + b_data["kp_down"]
+        kd_total = b_data["kd_up"] + b_data["kd_down"]
+        
+        # 팩트 교정: 상승/하락 카운트가 모두 0이면 측정 실패로 간주하고 Unknown 판정 강제
+        if kp_total == 0 or kd_total == 0:
+            return {
+                "kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0,
+                "kp_ratio": 50.0, "kd_ratio": 50.0, "avg_ratio": 50.0,
+                "trend": "Unknown"
+            }
         
         b_data["kp_ratio"] = round((b_data["kp_up"] / kp_total) * 100, 1)
         b_data["kd_ratio"] = round((b_data["kd_up"] / kd_total) * 100, 1)
@@ -68,7 +76,7 @@ def get_realtime_breadth():
         _breadth_cache = {"timestamp": current_time, "data": b_data}
         return b_data
     except Exception:
-        return {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0, "kp_ratio": 50.0, "kd_ratio": 50.0, "avg_ratio": 50.0, "trend": "Flat"}
+        return {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0, "kp_ratio": 50.0, "kd_ratio": 50.0, "avg_ratio": 50.0, "trend": "Unknown"}
 
 def get_market_context():
     kst = pytz.timezone("Asia/Seoul")
@@ -99,4 +107,4 @@ def get_market_context():
             "kospi_20d": round(kp_20d, 2), "breadth": breadth
         }
     except Exception:
-        return {"state": "NORMAL", "kospi_1d": 0.0, "kospi_5d": 0.0, "kospi_20d": 0.0, "breadth": {"avg_ratio": 50.0, "trend": "Flat"}}
+        return {"state": "NORMAL", "kospi_1d": 0.0, "kospi_5d": 0.0, "kospi_20d": 0.0, "breadth": {"avg_ratio": 50.0, "trend": "Unknown"}}
