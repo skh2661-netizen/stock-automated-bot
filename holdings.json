@@ -1,12 +1,9 @@
-[
-  {
-    "code": "232140",
-    "name": "와이씨",
-    "entry_price": 19520,
-    "quantity": 100,
-    "entry_date": "2026-07-09",
-    "entry_level": "LEVEL 3",
-    "entry_confidence": 0.0,
-    "entry_composite": 0.0
-  }
-]
+- name: Commit changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/candidates.db holdings.json
+          git diff --quiet && git diff --staged --quiet || (
+            git commit -m "Auto-update DB & Holdings" &&
+            git push
+          )
