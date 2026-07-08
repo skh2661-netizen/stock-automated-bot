@@ -18,9 +18,10 @@ def build_features(raw_data, market_context) -> list[CandidateFeature]:
         curr, prev = hist.iloc[-1], hist.iloc[-2]
         close_s, high_s, low_s, vol_s, open_s = hist['Close'], hist['High'], hist['Low'], hist['Volume'], hist['Open']
         
-        # ✅ [필수 수정] 데이터 부족 및 신규상장주 NaN 런타임 에러 원천 차단
         vol_20_mean = vol_s.rolling(20).mean().iloc[-2]
         ma120 = close_s.rolling(120).mean().iloc[-1]
+        
+        # NaN 방어: 신규 상장주 등 데이터가 부족해 이평선이 그려지지 않으면 즉시 패스
         if pd.isna(vol_20_mean) or pd.isna(ma120):
             continue
             
@@ -28,11 +29,15 @@ def build_features(raw_data, market_context) -> list[CandidateFeature]:
         ma20 = close_s.rolling(20).mean().iloc[-1]
         ma60 = close_s.rolling(60).mean().iloc[-1]
         
+        # ✅ [필수 수정] 인덱스 아웃오브바운드 방어 로직 (배열 길이가 짧으면 0번 인덱스 사용)
+        idx_60 = -61 if len(close_s) > 60 else 0
+        idx_120 = -121 if len(close_s) > 120 else 0
+        
         rs_1d = round(chg - kp_1d, 2)
         rs_5d = round((((curr['Close'] / close_s.iloc[-6]) - 1) * 100) - kp_5d, 2)
         rs_20d = round((((curr['Close'] / close_s.iloc[-21]) - 1) * 100) - kp_20d, 2)
-        rs_60d = round((((curr['Close'] / close_s.iloc[-61]) - 1) * 100), 2)
-        rs_120d = round((((curr['Close'] / close_s.iloc[-121]) - 1) * 100), 2)
+        rs_60d = round((((curr['Close'] / close_s.iloc[idx_60]) - 1) * 100), 2)
+        rs_120d = round((((curr['Close'] / close_s.iloc[idx_120]) - 1) * 100), 2)
         ma_gap = round(((curr['Close'] - ma20) / ma20 * 100), 2) if ma20 > 0 else 0
         
         mom = Momentum(rs_1d, rs_5d, rs_20d, rs_60d, rs_120d, ma_gap)
