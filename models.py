@@ -61,7 +61,7 @@ class CandidateFeature:
     vty: Volatility
     struc: PriceStructure
 
-# [V9.0 Phase 3] 포트폴리오 관리용 데이터 스키마
+# [V9.1 Phase 3] 포트폴리오 관리용 데이터 스키마
 @dataclass
 class Holding:
     code: str
@@ -70,5 +70,4 @@ class Holding:
     quantity: int
     entry_date: str
     entry_level: str
-    entry_confidence: float
-    entry_composite: float
+    conf_history: list[float]
