@@ -88,15 +88,11 @@ def get_market_context():
         breadth = get_realtime_breadth()
         breadth_trend = breadth.get("trend", "Unknown")
         
-        # [V9.1] 국면 판정: Unknown 시 CRASH로 빠지지 않도록 RISK로 완화 캡핑
-        if kp_1d <= -3.0: 
-            state = "RISK" if breadth_trend == "Unknown" else "CRASH"
-        elif kp_1d <= -1.5 and breadth_trend == "Weakening": 
-            state = "RISK"
-        elif kp_1d >= 1.0 and breadth_trend == "Improving": 
-            state = "BULL"
-        else: 
-            state = "NORMAL"
+        # 교정: 지수 폭락이 발생하면 데이터 결측(Unknown) 여부와 무관하게 CRASH 즉각 발동
+        if kp_1d <= -3.0: state = "CRASH"
+        elif kp_1d <= -1.5: state = "RISK"
+        elif kp_1d >= 1.0 and breadth_trend == "Improving": state = "BULL"
+        else: state = "NORMAL"
         
         print("=" * 60)
         print("KOSPI 1D :", round(kp_1d, 2))
