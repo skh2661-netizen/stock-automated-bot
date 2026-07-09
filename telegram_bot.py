@@ -21,17 +21,21 @@ def format_scan_messages(result, holdings_data=None):
     breadth = market.get("breadth", {})
     alert_candidates = result.get("alert_candidates", [])
     
-    # ✅ 에러 해결: 신규 종목과 보유 종목이 모두 없을 때만 대기 모드 진입
     if (not alert_candidates or len(alert_candidates) == 0) and not holdings_data:
-        return ["⚠️ 조건 충족 V9.0 종목 없음 (시스템 대기)"]
+        return ["⚠️ 조건 충족 V9.1 종목 없음 (시스템 대기)"]
         
     msg_list = []
     
-    msg = f"📊 <b>V9.0 실전 퀀트 운용 보고서</b>\n\n"
+    msg = f"📊 <b>V9.1 실전 퀀트 운용 보고서</b>\n\n"
     msg += f"<b>[1] 🌐 시장 요약 ({market.get('state', 'NORMAL')})</b>\n"
-    msg += f"• 체력 추세: <b>{breadth.get('trend', 'Flat')}</b> (AD Ratio: {breadth.get('avg_ratio', 0)}%)\n"
-    msg += f"• KOSPI: 상승 {breadth.get('kp_up',0)} / 하락 {breadth.get('kp_down',0)}\n"
-    msg += f"• KOSDAQ: 상승 {breadth.get('kd_up',0)} / 하락 {breadth.get('kd_down',0)}\n"
+    
+    # 교정: 크롤링 실패 시 직관적인 에러 플래그 표출
+    if breadth.get('trend') == 'Unknown':
+        msg += f"• 체력 추세: <b>⚠️ 데이터 수집 실패 (Unavailable)</b>\n"
+    else:
+        msg += f"• 체력 추세: <b>{breadth.get('trend', 'Flat')}</b> (AD Ratio: {breadth.get('avg_ratio', 0)}%)\n"
+        msg += f"• KOSPI: 상승 {breadth.get('kp_up',0)} / 하락 {breadth.get('kp_down',0)}\n"
+        msg += f"• KOSDAQ: 상승 {breadth.get('kd_up',0)} / 하락 {breadth.get('kd_down',0)}\n"
     msg += "━" * 16 + "\n\n"
     
     if alert_candidates:
@@ -51,10 +55,14 @@ def format_scan_messages(result, holdings_data=None):
         msg += f"• V9 확신도: <b>{ld['confidence']}점</b>\n"
         msg += "━" * 16 + "\n\n"
         
+        # 교정: 리더를 제외한 2위~6위 후보가 실제로 존재할 때만 출력 처리
         msg += f"<b>[3] 🚀 실전 운영 TOP 5</b>\n"
-        for idx, c in enumerate(alert_candidates[1:6], 2):
-            cd = c["decision"]
-            msg += f"{idx}위. <b>{c['name']}</b> | {cd['confidence']}점 | {cd['primary_strategy']}\n"
+        if len(alert_candidates) > 1:
+            for idx, c in enumerate(alert_candidates[1:6], 2):
+                cd = c["decision"]
+                msg += f"{idx}위. <b>{c['name']}</b> | {cd['confidence']}점 | {cd['primary_strategy']}\n"
+        else:
+            msg += "• 후순위 후보 없음\n"
         msg += "━" * 16 + "\n\n"
     else:
         msg += f"<b>[2] 👑 Prime Leader</b>\n"
@@ -64,7 +72,6 @@ def format_scan_messages(result, holdings_data=None):
     msg += f"<b>[4] 💼 포트폴리오 및 청산 알림</b>\n"
     if holdings_data:
         for h in holdings_data:
-            # ✅ 에러 해결: 안전하게 래핑된 딕셔너리에서 데이터 추출
             icon = "🚨" if "청산" in h['judgment'] else "🟢"
             msg += f"{icon} {h['name']} | 수익: {h['pnl']}% | Conf: {h['conf']} | 손절: {h['stop_p']:,}원\n"
     else:
