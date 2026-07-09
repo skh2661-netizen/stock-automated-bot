@@ -3,6 +3,10 @@ import os
 from models import Holding
 from dataclasses import dataclass
 
+# 깃허브 환경 경로 꼬임 원천 차단 (절대 경로 강제 매핑)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+HOLDINGS_FILE = os.path.join(BASE_DIR, "holdings.json")
+
 @dataclass
 class PortfolioState:
     phs_score: float
@@ -13,7 +17,7 @@ class PortfolioState:
     strict_swap: bool
     force_reval: bool
 
-def load_holdings(filepath="holdings.json") -> list[Holding]:
+def load_holdings(filepath=HOLDINGS_FILE) -> list[Holding]:
     if not os.path.exists(filepath):
         return []
     try:
@@ -23,7 +27,7 @@ def load_holdings(filepath="holdings.json") -> list[Holding]:
     except json.JSONDecodeError:
         return []
 
-def save_holdings(holdings: list[Holding], filepath="holdings.json"):
+def save_holdings(holdings: list[Holding], filepath=HOLDINGS_FILE):
     data = [h.__dict__ for h in holdings]
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -78,9 +82,6 @@ def calculate_portfolio_health(holdings_eval: list, market: dict) -> PortfolioSt
     return PortfolioState(final_phs, tier, allow_new_buy, allow_adding, allow_lvl2_buy, strict_swap, force_reval)
 
 def evaluate_time_stop(holding: Holding, current_eval: dict, market_state: str, phs_tier: str) -> bool:
-    """
-    [V9.1] 최근 5일 평균 스코어(Rolling Window) 기반 모멘텀 붕괴 감지
-    """
     if phs_tier == "AGGRESSIVE":
         return False
         
