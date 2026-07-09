@@ -6,7 +6,6 @@
     "quantity": 100,
     "entry_date": "2026-07-09",
     "entry_level": "LEVEL 3",
-    "entry_confidence": 0.0,
-    "entry_composite": 0.0
+    "conf_history": []
   }
 ]
