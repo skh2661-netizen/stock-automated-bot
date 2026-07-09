@@ -1,3 +1,4 @@
+# main.py
 import asyncio
 import decision_engine
 import portfolio_manager
@@ -10,7 +11,7 @@ import datetime
 import pytz
 
 async def main():
-    print("🚀 V9.1 Phase 3 Pipeline 가동 (Rolling Time Stop 연동)...")
+    print("🚀 V9.2 Phase 3 Pipeline 가동 (Portfolio 동기화 모듈 결속)...")
     
     market_context = get_market_context()
     holdings = portfolio_manager.load_holdings()
@@ -35,25 +36,17 @@ async def main():
             holdings_eval = evaluate_candidates(holdings_features, market_context)["candidates"]
             
             p_state = portfolio_manager.calculate_portfolio_health(holdings_eval, market_context)
-            print(f"📊 [계좌 관제 결과] PHS Score: {p_state.phs_score}점 | 운영 상태: {p_state.tier}")
             
             db_update_needed = False
-            
             for h_eval in holdings_eval:
                 match_h = next((x for x in holdings if x.code == h_eval["code"]), None)
                 if match_h:
                     curr_conf = h_eval["decision"]["confidence"]
-                    
-                    # 1. 청산 판별 (오늘 데이터를 갱신하기 전의 '과거 평균'을 기준으로 대조)
                     is_stop = portfolio_manager.evaluate_time_stop(
                         match_h, h_eval["decision"], market_context["state"], p_state.tier
                     )
                     status = "청산 권고" if is_stop else "순항 중"
                     
-                    past_avg = sum(match_h.conf_history)/len(match_h.conf_history) if match_h.conf_history else curr_conf
-                    print(f"[{match_h.name}] 과거평균: {round(past_avg, 1)} | 오늘점수: {curr_conf} -> {status}")
-                    
-                    # 2. V9.1 동적 롤링: 오늘 점수 추가 후 5일 초과분 컷오프
                     match_h.conf_history.append(curr_conf)
                     if len(match_h.conf_history) > 5:
                         match_h.conf_history.pop(0)
@@ -61,13 +54,9 @@ async def main():
                     
                     pnl = round(((h_eval['price'] / match_h.entry_price) - 1) * 100, 2)
                     tele_holdings.append({
-                        "name": match_h.name,
-                        "judgment": status,
-                        "pnl": pnl,
-                        "stop_p": h_eval["decision"]["trade_plan"]["stop_loss"],
-                        "conf": curr_conf
+                        "name": match_h.name, "judgment": status, "pnl": pnl,
+                        "stop_p": h_eval["decision"]["trade_plan"]["stop_loss"], "conf": curr_conf
                     })
-            
             if db_update_needed:
                 portfolio_manager.save_holdings(holdings)
 
@@ -77,11 +66,12 @@ async def main():
         features_list = build_features(raw_data, market_context)
         final_results = evaluate_candidates(features_list, market_context)
         
-        messages = format_scan_messages(final_results, holdings_data=tele_holdings)
+        # PHS 상태 객체까지 포매터에 최종 결속 통전
+        messages = format_scan_messages(final_results, holdings_data=tele_holdings, p_state=p_state)
         for msg in messages:
             await send_message(msg)
             
-    print(f"✅ V9.1 파이프라인 완결.")
+    print(f"✅ V9.2 사이클 완료.")
 
 if __name__ == "__main__":
     asyncio.run(main())
