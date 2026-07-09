@@ -86,21 +86,22 @@ def get_market_context():
         kp_20d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-21]) - 1) * 100
         
         breadth = get_realtime_breadth()
+        breadth_trend = breadth.get("trend", "Unknown")
         
-        # ✅ 형님 지시사항: 지수와 시장 체력을 결합한 입체적 국면 판정
+        # [V9.1] 국면 판정: Unknown 시 CRASH로 빠지지 않도록 RISK로 완화 캡핑
         if kp_1d <= -3.0: 
-            state = "CRASH"
-        elif kp_1d <= -1.5 and breadth.get("trend") == "Weakening": 
+            state = "RISK" if breadth_trend == "Unknown" else "CRASH"
+        elif kp_1d <= -1.5 and breadth_trend == "Weakening": 
             state = "RISK"
-        elif kp_1d >= 1.0 and breadth.get("trend") == "Improving": 
+        elif kp_1d >= 1.0 and breadth_trend == "Improving": 
             state = "BULL"
         else: 
-            state = "NORMAL" # Unknown이거나 조건 미달 시 모두 방어적 NORMAL 처리
+            state = "NORMAL"
         
         print("=" * 60)
         print("KOSPI 1D :", round(kp_1d, 2))
         print("Breadth  :", breadth["avg_ratio"])
-        print("Trend    :", breadth["trend"])
+        print("Trend    :", breadth_trend)
         print("STATE    :", state)
         print("=" * 60)
         
