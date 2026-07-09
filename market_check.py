@@ -18,37 +18,39 @@ def get_realtime_breadth():
         
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        b_data = {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0}
+        b_data = {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0, "error_detail": None}
         
         res_kp = requests.get("https://finance.naver.com/sise/sise_index.naver?code=KOSPI", headers=headers, timeout=5)
         soup_kp = BeautifulSoup(res_kp.text, 'html.parser')
         dl_kp = soup_kp.find("dl", class_="lst_kos_info")
         
-        if dl_kp:
-            for dt in dl_kp.find_all("dt"):
-                txt = dt.get_text().strip()
-                dd = dt.find_next_sibling("dd")
-                if not dd: continue
-                val_match = re.search(r'[\d,]+', dd.get_text())
-                val = int(val_match.group().replace(",", "")) if val_match else 0
-                
-                if "상승" in txt: b_data["kp_up"] = val
-                elif "하락" in txt: b_data["kp_down"] = val
+        if not dl_kp:
+            raise ValueError("Naver KOSPI Selector Class Missing")
+            
+        for dt in dl_kp.find_all("dt"):
+            txt = dt.get_text().strip()
+            dd = dt.find_next_sibling("dd")
+            if not dd: continue
+            val_match = re.search(r'[\d,]+', dd.get_text())
+            val = int(val_match.group().replace(",", "")) if val_match else 0
+            if "상승" in txt: b_data["kp_up"] = val
+            elif "하락" in txt: b_data["kp_down"] = val
                 
         res_kd = requests.get("https://finance.naver.com/sise/sise_index.naver?code=KOSDAQ", headers=headers, timeout=5)
         soup_kd = BeautifulSoup(res_kd.text, 'html.parser')
         dl_kd = soup_kd.find("dl", class_="lst_kos_info")
         
-        if dl_kd:
-            for dt in dl_kd.find_all("dt"):
-                txt = dt.get_text().strip()
-                dd = dt.find_next_sibling("dd")
-                if not dd: continue
-                val_match = re.search(r'[\d,]+', dd.get_text())
-                val = int(val_match.group().replace(",", "")) if val_match else 0
-                
-                if "상승" in txt: b_data["kd_up"] = val
-                elif "하락" in txt: b_data["kd_down"] = val
+        if not dl_kd:
+            raise ValueError("Naver KOSDAQ Selector Class Missing")
+            
+        for dt in dl_kd.find_all("dt"):
+            txt = dt.get_text().strip()
+            dd = dt.find_next_sibling("dd")
+            if not dd: continue
+            val_match = re.search(r'[\d,]+', dd.get_text())
+            val = int(val_match.group().replace(",", "")) if val_match else 0
+            if "상승" in txt: b_data["kd_up"] = val
+            elif "하락" in txt: b_data["kd_down"] = val
                 
         kp_total = b_data["kp_up"] + b_data["kp_down"]
         kd_total = b_data["kd_up"] + b_data["kd_down"]
@@ -57,7 +59,7 @@ def get_realtime_breadth():
             return {
                 "kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0,
                 "kp_ratio": 50.0, "kd_ratio": 50.0, "avg_ratio": 50.0,
-                "trend": "Unknown"
+                "trend": "Unknown", "error_detail": "Zero Counts (Market Closed/Reset)"
             }
         
         b_data["kp_ratio"] = round((b_data["kp_up"] / kp_total) * 100, 1)
@@ -72,8 +74,12 @@ def get_realtime_breadth():
         _prev_avg_ratio = avg_ratio
         _breadth_cache = {"timestamp": current_time, "data": b_data}
         return b_data
-    except Exception:
-        return {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0, "kp_ratio": 50.0, "kd_ratio": 50.0, "avg_ratio": 50.0, "trend": "Unknown"}
+    except Exception as e:
+        return {
+            "kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0, 
+            "kp_ratio": 50.0, "kd_ratio": 50.0, "avg_ratio": 50.0, 
+            "trend": "Unknown", "error_detail": f"Exception: {type(e).__name__}"
+        }
 
 def get_market_context():
     kst = pytz.timezone("Asia/Seoul")
@@ -86,24 +92,18 @@ def get_market_context():
         kp_20d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-21]) - 1) * 100
         
         breadth = get_realtime_breadth()
-        breadth_trend = breadth.get("trend", "Unknown")
         
-        # 교정: 지수 폭락이 발생하면 데이터 결측(Unknown) 여부와 무관하게 CRASH 즉각 발동
         if kp_1d <= -3.0: state = "CRASH"
         elif kp_1d <= -1.5: state = "RISK"
-        elif kp_1d >= 1.0 and breadth_trend == "Improving": state = "BULL"
+        elif kp_1d >= 1.0 and breadth.get("trend") == "Improving": state = "BULL"
         else: state = "NORMAL"
-        
-        print("=" * 60)
-        print("KOSPI 1D :", round(kp_1d, 2))
-        print("Breadth  :", breadth["avg_ratio"])
-        print("Trend    :", breadth_trend)
-        print("STATE    :", state)
-        print("=" * 60)
         
         return {
             "state": state, "kospi_1d": round(kp_1d, 2), "kospi_5d": round(kp_5d, 2),
             "kospi_20d": round(kp_20d, 2), "breadth": breadth
         }
-    except Exception:
-        return {"state": "NORMAL", "kospi_1d": 0.0, "kospi_5d": 0.0, "kospi_20d": 0.0, "breadth": {"avg_ratio": 50.0, "trend": "Unknown"}}
+    except Exception as e:
+        return {
+            "state": "NORMAL", "kospi_1d": 0.0, "kospi_5d": 0.0, "kospi_20d": 0.0, 
+            "breadth": {"avg_ratio": 50.0, "trend": "Unknown", "error_detail": f"Index FDR Error: {str(e)}"}
+        }
