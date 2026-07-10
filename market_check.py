@@ -47,7 +47,8 @@ def get_realtime_breadth():
                     txt = dt.get_text().strip()
                     dd = dt.find_next_sibling("dd")
                     if not dd: continue
-                    val = int(re.search(r'[\d,]+', dd.get_text()).group().replace(",", "")) if re.search(r'[\d,]+', dd.get_text()) else 0
+                    val_match = re.search(r'[\d,]+', dd.get_text())
+                    val = int(val_match.group().replace(",", "")) if val_match else 0
                     if "상승" in txt: b_data["kp_up"] = val
                     elif "하락" in txt: b_data["kp_down"] = val
             
@@ -59,7 +60,8 @@ def get_realtime_breadth():
                     txt = dt.get_text().strip()
                     dd = dt.find_next_sibling("dd")
                     if not dd: continue
-                    val = int(re.search(r'[\d,]+', dd.get_text()).group().replace(",", "")) if re.search(r'[\d,]+', dd.get_text()) else 0
+                    val_match = re.search(r'[\d,]+', dd.get_text())
+                    val = int(val_match.group().replace(",", "")) if val_match else 0
                     if "상승" in txt: b_data["kd_up"] = val
                     elif "하락" in txt: b_data["kd_down"] = val
             if (b_data["kp_up"] + b_data["kp_down"]) > 0: success = True
@@ -68,7 +70,6 @@ def get_realtime_breadth():
     # [Fallback 3] KRX 정보데이터시스템 연동 (DOM 실패 시)
     if not success:
         try:
-            # KRX 실시간 등락 API 연동 구문 (FDR 우회 또는 KRX Open API)
             krx_data = fdr.StockListing('KRX')
             b_data["kp_up"] = len(krx_data[(krx_data['Market'] == 'KOSPI') & (krx_data['ChagesRatio'] > 0)])
             b_data["kp_down"] = len(krx_data[(krx_data['Market'] == 'KOSPI') & (krx_data['ChagesRatio'] < 0)])
@@ -104,12 +105,22 @@ def get_realtime_breadth():
 
 def get_market_context():
     kst = pytz.timezone("Asia/Seoul")
-    start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=40)).strftime("%Y-%m-%d")
+    # 20거래일 이상의 데이터를 안전하게 확보하기 위해 60일 전으로 연장 조회
+    start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
+    
     try:
         kospi = fdr.DataReader("KS11", start_date)
         kosdaq = fdr.DataReader("KQ11", start_date)
+        
         kp_1d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-2]) - 1) * 100
         kd_1d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-2]) - 1) * 100
+        
+        kp_5d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-6]) - 1) * 100 if len(kospi) >= 6 else 0
+        kd_5d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-6]) - 1) * 100 if len(kosdaq) >= 6 else 0
+        
+        kp_20d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-21]) - 1) * 100 if len(kospi) >= 21 else 0
+        kd_20d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-21]) - 1) * 100 if len(kosdaq) >= 21 else 0
+        
         breadth = get_realtime_breadth()
         
         if breadth.get("trend") == "Unknown" and kp_1d > -1.5: state = "UNKNOWN_HOLD" 
@@ -118,6 +129,16 @@ def get_market_context():
         elif kp_1d >= 1.0 and breadth.get("trend") == "Improving": state = "BULL"
         else: state = "NORMAL"
         
-        return {"state": state, "kospi_1d": round(kp_1d, 2), "kosdaq_1d": round(kd_1d, 2), "breadth": breadth}
+        return {
+            "state": state, 
+            "kospi_1d": round(kp_1d, 2), "kospi_5d": round(kp_5d, 2), "kospi_20d": round(kp_20d, 2),
+            "kosdaq_1d": round(kd_1d, 2), "kosdaq_5d": round(kd_5d, 2), "kosdaq_20d": round(kd_20d, 2),
+            "breadth": breadth
+        }
     except Exception as e:
-        return {"state": "UNKNOWN_ERROR", "kospi_1d": 0.0, "kosdaq_1d": 0.0, "breadth": {"avg_ratio": 50.0, "trend": "Unknown", "error_detail": f"FDR Error: {str(e)}"}}
+        return {
+            "state": "UNKNOWN_ERROR", 
+            "kospi_1d": 0.0, "kospi_5d": 0.0, "kospi_20d": 0.0,
+            "kosdaq_1d": 0.0, "kosdaq_5d": 0.0, "kosdaq_20d": 0.0,
+            "breadth": {"avg_ratio": 50.0, "trend": "Unknown", "error_detail": f"FDR Error: {str(e)}"}
+        }
