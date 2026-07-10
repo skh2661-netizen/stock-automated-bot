@@ -5,7 +5,6 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import re
-import json
 
 _breadth_cache = {"timestamp": 0, "data": None}
 _prev_avg_ratio = 50.0
@@ -65,28 +64,17 @@ def get_realtime_breadth():
                     if "상승" in txt: b_data["kd_up"] = val
                     elif "하락" in txt: b_data["kd_down"] = val
             if (b_data["kp_up"] + b_data["kp_down"]) > 0: success = True
-        except Exception: pass
-
-    # [Fallback 3] KRX 정보데이터시스템 연동 (DOM 실패 시)
-    if not success:
-        try:
-            krx_data = fdr.StockListing('KRX')
-            b_data["kp_up"] = len(krx_data[(krx_data['Market'] == 'KOSPI') & (krx_data['ChagesRatio'] > 0)])
-            b_data["kp_down"] = len(krx_data[(krx_data['Market'] == 'KOSPI') & (krx_data['ChagesRatio'] < 0)])
-            b_data["kd_up"] = len(krx_data[(krx_data['Market'] == 'KOSDAQ') & (krx_data['ChagesRatio'] > 0)])
-            b_data["kd_down"] = len(krx_data[(krx_data['Market'] == 'KOSDAQ') & (krx_data['ChagesRatio'] < 0)])
-            if (b_data["kp_up"] + b_data["kp_down"]) > 0: success = True
         except Exception as e:
-            b_data["error_detail"] = f"KRX Fallback Fail: {str(e)[:20]}"
+            b_data["error_detail"] = f"DOM Fail: {str(e)[:20]}"
 
-    # [Fallback 4] 최후의 보루: 캐시 재사용
+    # [Fallback 3] 최후의 보루: 캐시 재사용 (KRX 차단 리스크 배제)
     if not success:
         if _breadth_cache["data"] is not None:
             cached_data = _breadth_cache["data"]
-            cached_data["error_detail"] = "Using Stale Cache (All Networks Failed)"
+            cached_data["error_detail"] = "Using Stale Cache (Network/API Failed)"
             return cached_data
         else:
-            return {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0, "kp_ratio": 50.0, "kd_ratio": 50.0, "avg_ratio": 50.0, "trend": "Unknown", "error_detail": "All Systems Down"}
+            return {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0, "kp_ratio": 50.0, "kd_ratio": 50.0, "avg_ratio": 50.0, "trend": "Unknown", "error_detail": "All Scrapers Blocked"}
 
     kp_total = b_data["kp_up"] + b_data["kp_down"]
     kd_total = b_data["kd_up"] + b_data["kd_down"]
@@ -105,7 +93,6 @@ def get_realtime_breadth():
 
 def get_market_context():
     kst = pytz.timezone("Asia/Seoul")
-    # 20거래일 이상의 데이터를 안전하게 확보하기 위해 60일 전으로 연장 조회
     start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
     
     try:
