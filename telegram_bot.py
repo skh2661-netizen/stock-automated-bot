@@ -22,6 +22,9 @@ def format_scan_messages(result, holdings_data=None, p_state=None):
     alert_candidates = result.get("alert_candidates", [])
     slot_full = result.get("slot_full", False)
     
+    # 👑 누락되었던 리스트 초기화 구문 복원
+    msg_list = []
+    
     star_levels = {
         "LEVEL 4": "★★★★★ [즉시 매수 검토]",
         "LEVEL 3": "★★★★☆ [관심]",
