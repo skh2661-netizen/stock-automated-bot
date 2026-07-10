@@ -5,6 +5,10 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import re
+import logging
+
+# GitHub Actions 디버깅을 위한 로깅 레벨 세팅
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 _breadth_cache = {"timestamp": 0, "data": None}
 _prev_avg_ratio = 50.0
@@ -14,16 +18,19 @@ def get_realtime_breadth():
     current_time = time.time()
     
     if _breadth_cache["data"] is not None and (current_time - _breadth_cache["timestamp"] < 180):
-        return _breadth_cache["data"]
+        cached_data = _breadth_cache["data"]
+        cached_data["is_cached"] = True
+        cached_data["source"] = "CACHE"
+        return cached_data
         
-    b_data = {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0, "error_detail": None}
+    b_data = {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0, "error_detail": None, "is_cached": False, "source": "NONE"}
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Referer': 'https://finance.naver.com/'
     }
     success = False
     
-    # [Fallback 1] 네이버 모바일 API (JSON 직결)
+    # [Fallback 1] API
     try:
         res_kp = requests.get("https://m.stock.naver.com/api/index/KOSPI/price", headers=headers, timeout=3)
         res_kd = requests.get("https://m.stock.naver.com/api/index/KOSDAQ/price", headers=headers, timeout=3)
@@ -32,10 +39,13 @@ def get_realtime_breadth():
             b_data["kp_down"] = res_kp.json().get("riseFall", {}).get("fall", 0)
             b_data["kd_up"] = res_kd.json().get("riseFall", {}).get("rise", 0)
             b_data["kd_down"] = res_kd.json().get("riseFall", {}).get("fall", 0)
-            if (b_data["kp_up"] + b_data["kp_down"]) > 0: success = True
-    except Exception: pass
+            if (b_data["kp_up"] + b_data["kp_down"]) > 0: 
+                success = True
+                b_data["source"] = "NAVER_API"
+    except Exception as e:
+        logging.warning(f"Breadth API Fallback 1 Failed: {e}")
     
-    # [Fallback 2] 네이버 DOM 직접 파싱 (API 실패 시)
+    # [Fallback 2] DOM
     if not success:
         try:
             res_kp = requests.get("https://finance.naver.com/sise/sise_index.naver?code=KOSPI", headers=headers, timeout=5)
@@ -46,8 +56,7 @@ def get_realtime_breadth():
                     txt = dt.get_text().strip()
                     dd = dt.find_next_sibling("dd")
                     if not dd: continue
-                    val_match = re.search(r'[\d,]+', dd.get_text())
-                    val = int(val_match.group().replace(",", "")) if val_match else 0
+                    val = int(re.search(r'[\d,]+', dd.get_text()).group().replace(",", "")) if re.search(r'[\d,]+', dd.get_text()) else 0
                     if "상승" in txt: b_data["kp_up"] = val
                     elif "하락" in txt: b_data["kp_down"] = val
             
@@ -59,22 +68,28 @@ def get_realtime_breadth():
                     txt = dt.get_text().strip()
                     dd = dt.find_next_sibling("dd")
                     if not dd: continue
-                    val_match = re.search(r'[\d,]+', dd.get_text())
-                    val = int(val_match.group().replace(",", "")) if val_match else 0
+                    val = int(re.search(r'[\d,]+', dd.get_text()).group().replace(",", "")) if re.search(r'[\d,]+', dd.get_text()) else 0
                     if "상승" in txt: b_data["kd_up"] = val
                     elif "하락" in txt: b_data["kd_down"] = val
-            if (b_data["kp_up"] + b_data["kp_down"]) > 0: success = True
+            if (b_data["kp_up"] + b_data["kp_down"]) > 0: 
+                success = True
+                b_data["source"] = "NAVER_DOM"
         except Exception as e:
             b_data["error_detail"] = f"DOM Fail: {str(e)[:20]}"
+            logging.warning(f"Breadth DOM Fallback 2 Failed: {e}")
 
-    # [Fallback 3] 최후의 보루: 캐시 재사용 (KRX 차단 리스크 배제)
+    # [Fallback 3] Cache
     if not success:
         if _breadth_cache["data"] is not None:
             cached_data = _breadth_cache["data"]
-            cached_data["error_detail"] = "Using Stale Cache (Network/API Failed)"
+            cached_data["is_cached"] = True
+            cached_data["source"] = "STALE_CACHE"
+            cached_data["error_detail"] = "Using Stale Cache"
+            logging.warning("Breadth scraping failed, using stale cache.")
             return cached_data
         else:
-            return {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0, "kp_ratio": 50.0, "kd_ratio": 50.0, "avg_ratio": 50.0, "trend": "Unknown", "error_detail": "All Scrapers Blocked"}
+            logging.error("All Breadth scrapers blocked and no cache available.")
+            return {"kp_up": 0, "kp_down": 0, "kd_up": 0, "kd_down": 0, "kp_ratio": 50.0, "kd_ratio": 50.0, "avg_ratio": 50.0, "trend": "Unknown", "error_detail": "All Scrapers Blocked", "is_cached": False, "source": "NONE"}
 
     kp_total = b_data["kp_up"] + b_data["kp_down"]
     kd_total = b_data["kd_up"] + b_data["kd_down"]
@@ -95,37 +110,64 @@ def get_market_context():
     kst = pytz.timezone("Asia/Seoul")
     start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
     
+    breadth = get_realtime_breadth()
+    is_breadth_ok = breadth.get("trend") != "Unknown"
+    is_breadth_cached = breadth.get("is_cached", False)
+    
+    is_fdr_ok = False
+    fdr_error = None
+    kp_1d, kp_5d, kp_20d = 0.0, 0.0, 0.0
+    kd_1d, kd_5d, kd_20d = 0.0, 0.0, 0.0
+    
     try:
         kospi = fdr.DataReader("KS11", start_date)
         kosdaq = fdr.DataReader("KQ11", start_date)
-        
-        kp_1d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-2]) - 1) * 100
-        kd_1d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-2]) - 1) * 100
-        
-        kp_5d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-6]) - 1) * 100 if len(kospi) >= 6 else 0
-        kd_5d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-6]) - 1) * 100 if len(kosdaq) >= 6 else 0
-        
-        kp_20d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-21]) - 1) * 100 if len(kospi) >= 21 else 0
-        kd_20d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-21]) - 1) * 100 if len(kosdaq) >= 21 else 0
-        
-        breadth = get_realtime_breadth()
-        
-        if breadth.get("trend") == "Unknown" and kp_1d > -1.5: state = "UNKNOWN_HOLD" 
-        elif kp_1d <= -3.0: state = "CRASH"
+        if len(kospi) >= 2 and len(kosdaq) >= 2:
+            kp_1d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-2]) - 1) * 100
+            kd_1d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-2]) - 1) * 100
+            kp_5d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-6]) - 1) * 100 if len(kospi) >= 6 else 0
+            kd_5d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-6]) - 1) * 100 if len(kosdaq) >= 6 else 0
+            kp_20d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-21]) - 1) * 100 if len(kospi) >= 21 else 0
+            kd_20d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-21]) - 1) * 100 if len(kosdaq) >= 21 else 0
+            is_fdr_ok = True
+        else: 
+            fdr_error = "Insufficient FDR Data"
+            logging.warning("FDR DataReader returned insufficient rows.")
+    except Exception as e:
+        fdr_error = f"FDR Blocked: {str(e)[:20]}"
+        logging.error(f"FDR DataReader Failed: {e}")
+
+    # 신뢰도 세분화 (캐시 여부 엄격 적용)
+    if is_fdr_ok and is_breadth_ok and not is_breadth_cached:
+        data_conf = "HIGH"
+    elif is_fdr_ok and is_breadth_ok and is_breadth_cached:
+        data_conf = "MEDIUM (Cache)"
+    elif is_fdr_ok and not is_breadth_ok:
+        data_conf = "MEDIUM (Idx Only)"
+    elif not is_fdr_ok and is_breadth_ok:
+        data_conf = "MEDIUM (Brd Only)"
+    else:
+        data_conf = "LOW (All Failed)"
+
+    # 보수적 국면 판정 (맹목적 NORMAL 진입 차단)
+    if data_conf == "LOW (All Failed)":
+        state = "UNKNOWN_HOLD"
+    elif data_conf == "MEDIUM (Idx Only)":
+        if kp_1d <= -3.0: state = "CRASH"
+        elif kp_1d <= -1.5: state = "RISK"
+        else: state = "CAUTION" 
+    elif data_conf in ["MEDIUM (Brd Only)", "MEDIUM (Cache)"]:
+        if breadth.get("trend") == "Weakening": state = "RISK"
+        else: state = "CAUTION"
+    else:
+        if kp_1d <= -3.0: state = "CRASH"
         elif kp_1d <= -1.5: state = "RISK"
         elif kp_1d >= 1.0 and breadth.get("trend") == "Improving": state = "BULL"
         else: state = "NORMAL"
         
-        return {
-            "state": state, 
-            "kospi_1d": round(kp_1d, 2), "kospi_5d": round(kp_5d, 2), "kospi_20d": round(kp_20d, 2),
-            "kosdaq_1d": round(kd_1d, 2), "kosdaq_5d": round(kd_5d, 2), "kosdaq_20d": round(kd_20d, 2),
-            "breadth": breadth
-        }
-    except Exception as e:
-        return {
-            "state": "UNKNOWN_ERROR", 
-            "kospi_1d": 0.0, "kospi_5d": 0.0, "kospi_20d": 0.0,
-            "kosdaq_1d": 0.0, "kosdaq_5d": 0.0, "kosdaq_20d": 0.0,
-            "breadth": {"avg_ratio": 50.0, "trend": "Unknown", "error_detail": f"FDR Error: {str(e)}"}
-        }
+    return {
+        "state": state, "data_confidence": data_conf, "fdr_error": fdr_error,
+        "kospi_1d": round(kp_1d, 2), "kospi_5d": round(kp_5d, 2), "kospi_20d": round(kp_20d, 2),
+        "kosdaq_1d": round(kd_1d, 2), "kosdaq_5d": round(kd_5d, 2), "kosdaq_20d": round(kd_20d, 2),
+        "breadth": breadth
+    }
