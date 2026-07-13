@@ -1,77 +1,72 @@
-# main.py
 import asyncio
-import decision_engine
-import portfolio_manager
-from market_check import get_market_context
-from scanner import fetch_history, fetch_raw_candidates
-from feature_factory import build_features
-from decision_engine import evaluate_candidates
-from telegram_bot import send_message, format_scan_messages
-import datetime
-import pytz
+import logging
+import os
+import subprocess
+# 기존 임포트 유지
+
+def commit_holdings_to_git():
+    """GitHub Actions 환경의 영속성 보장을 위한 안전한 커밋 모듈"""
+    logging.info("Attempting to auto-commit holdings.json to GitHub repository...")
+    try:
+        subprocess.run(['git', 'config', '--global', 'user.name', 'github-actions[bot]'], check=False)
+        subprocess.run(['git', 'config', '--global', 'user.email', 'github-actions[bot]@users.noreply.github.com'], check=False)
+        subprocess.run(['git', 'add', 'holdings.json'], check=False)
+        
+        # 변경 사항 유무 검사 (Exit Code 1 붕괴 방지)
+        diff = subprocess.run(['git', 'diff', '--staged', '--quiet'], check=False)
+        if diff.returncode == 1: 
+            subprocess.run(['git', 'commit', '-m', '[Auto] Update holdings.json state'], check=False)
+            subprocess.run(['git', 'push'], check=False)
+            logging.info("Successfully pushed holdings.json to repository.")
+        else:
+            logging.info("No changes in holdings.json to commit. Skipping push.")
+    except Exception as e:
+        logging.error(f"Failed to auto-commit: {e}")
 
 async def main():
-    print("🚀 V9.2 Phase 3 Pipeline 가동 (Portfolio 동기화 모듈 결속)...")
-    
     market_context = get_market_context()
-    holdings = portfolio_manager.load_holdings()
-    holdings_eval = []
-    tele_holdings = [] 
-    p_state = portfolio_manager.PortfolioState(75.0, "NORMAL", True, True, True, False, False)
+    holdings = load_holdings()
+    
+    logging.info(f"[Portfolio I/O] Path: holdings.json | Exists: {os.path.exists('holdings.json')} | Count: {len(holdings)}")
+    if holdings:
+        # 객체 속성(h.code)으로 정확히 접근
+        logging.info(f"Loaded Codes : {[h.code for h in holdings]}")
     
     if holdings:
-        print(f"\n💼 [보유 종목 재평가 진행: {len(holdings)}종목]")
-        kst = pytz.timezone("Asia/Seoul")
-        start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=180)).strftime("%Y-%m-%d")
-        
-        raw_holdings_data = []
+        holdings_raw = []
         for h in holdings:
-            code, hist = fetch_history(h.code, start_date)
-            if hist is not None and not hist.empty:
-                chg = round(((hist['Close'].iloc[-1] / hist['Close'].iloc[-2]) - 1) * 100, 2)
-                raw_holdings_data.append({"code": h.code, "name": h.name, "chg": chg, "hist": hist})
+            try:
+                hist = fetch_history(h.code) # 단일 종목 순회 방식 복원
+                if hist is not None and not hist.empty:
+                    holdings_raw.append({'code': h.code, 'name': h.name, 'data': hist})
+            except Exception as e:
+                logging.warning(f"Failed to fetch history for holding {h.code}: {e}")
         
-        if raw_holdings_data:
-            holdings_features = build_features(raw_holdings_data, market_context)
-            holdings_eval = evaluate_candidates(holdings_features, market_context)["candidates"]
-            
-            p_state = portfolio_manager.calculate_portfolio_health(holdings_eval, market_context)
-            
-            db_update_needed = False
-            for h_eval in holdings_eval:
-                match_h = next((x for x in holdings if x.code == h_eval["code"]), None)
-                if match_h:
-                    curr_conf = h_eval["decision"]["confidence"]
-                    is_stop = portfolio_manager.evaluate_time_stop(
-                        match_h, h_eval["decision"], market_context["state"], p_state.tier
-                    )
-                    status = "청산 권고" if is_stop else "순항 중"
-                    
-                    match_h.conf_history.append(curr_conf)
-                    if len(match_h.conf_history) > 5:
-                        match_h.conf_history.pop(0)
-                    db_update_needed = True
-                    
-                    pnl = round(((h_eval['price'] / match_h.entry_price) - 1) * 100, 2)
-                    tele_holdings.append({
-                        "name": match_h.name, "judgment": status, "pnl": pnl,
-                        "stop_p": h_eval["decision"]["trade_plan"]["stop_loss"], "conf": curr_conf
-                    })
-            if db_update_needed:
-                portfolio_manager.save_holdings(holdings)
-
-    print("\n🔍 [신규 종목 스캐너 가동]")
+        if holdings_raw:
+            holdings_features = build_features(holdings_raw, market_context)
+            holdings_eval = evaluate_candidates(holdings_features, market_context, holdings_data=None, is_holding_eval=True)
+            p_state = assess_portfolio_health(holdings_eval['candidates'])
+        else:
+            p_state = assess_portfolio_health([])
+    else:
+        p_state = assess_portfolio_health([])
+        
     raw_data = fetch_raw_candidates()
-    if raw_data:
-        features_list = build_features(raw_data, market_context)
-        final_results = evaluate_candidates(features_list, market_context)
+    features_list = build_features(raw_data, market_context)
+    
+    final_results = evaluate_candidates(
+        features_list=features_list, 
+        market_context=market_context, 
+        holdings_data=holdings, 
+        p_state=p_state,
+        is_holding_eval=False
+    )
+    
+    messages = format_scan_messages(final_results, holdings_data=holdings, p_state=p_state)
+    for msg in messages:
+        await send_message(msg)
         
-        # PHS 상태 객체까지 포매터에 최종 결속 통전
-        messages = format_scan_messages(final_results, holdings_data=tele_holdings, p_state=p_state)
-        for msg in messages:
-            await send_message(msg)
-            
-    print(f"✅ V9.2 사이클 완료.")
-
+    commit_holdings_to_git()
+        
 if __name__ == "__main__":
     asyncio.run(main())
