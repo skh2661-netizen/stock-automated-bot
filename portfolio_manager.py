@@ -1,112 +1,104 @@
 import json
 import os
-from models import Holding
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
+from typing import List, Dict
 
-# 깃허브 환경 경로 꼬임 원천 차단 (절대 경로 강제 매핑)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-HOLDINGS_FILE = os.path.join(BASE_DIR, "holdings.json")
+HOLDINGS_FILE = "holdings.json"
+
+@dataclass
+class Holding:
+    code: str
+    name: str
+    entry_price: float
+    quantity: int
+    entry_date: str
+    entry_level: str
+    conf_history: List[float] = field(default_factory=list)
+    
+    # 텔레그램 관제용 실시간 매핑 변수
+    judgment: str = "🟢 보유"
+    pnl: float = 0.0
+    conf: float = 0.0
+    stop_p: float = 0.0
 
 @dataclass
 class PortfolioState:
     phs_score: float
     tier: str
     allow_new_buy: bool
-    allow_adding: bool
-    allow_lvl2_buy: bool
-    strict_swap: bool
-    force_reval: bool
 
-def load_holdings(filepath=HOLDINGS_FILE) -> list[Holding]:
-    if not os.path.exists(filepath):
+def load_holdings() -> List[Holding]:
+    if not os.path.exists(HOLDINGS_FILE):
+        logging.info(f"[{HOLDINGS_FILE}] Not found. Initiating 100% CASH state.")
         return []
+    
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(HOLDINGS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return [Holding(**item) for item in data]
-    except json.JSONDecodeError:
+        
+        holdings = []
+        for item in data:
+            holdings.append(Holding(
+                code=item.get("code", ""),
+                name=item.get("name", ""),
+                entry_price=float(item.get("entry_price", 0.0)),
+                quantity=int(item.get("quantity", 0)),
+                entry_date=item.get("entry_date", ""),
+                entry_level=item.get("entry_level", ""),
+                conf_history=item.get("conf_history", [])
+            ))
+        return holdings
+    except Exception as e:
+        logging.error(f"Portfolio Loading Failed: {e}")
         return []
 
-def save_holdings(holdings: list[Holding], filepath=HOLDINGS_FILE):
-    data = [h.__dict__ for h in holdings]
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def calculate_pnl_score(avg_pnl_pct: float) -> float:
-    score = 50 + (avg_pnl_pct * (50 / 15))
-    return min(max(score, 0), 100)
-
-def calculate_portfolio_health(holdings_eval: list, market: dict) -> PortfolioState:
-    if not holdings_eval:
-        return PortfolioState(75.0, "NORMAL", True, True, True, False, False)
+def assess_portfolio_health(holdings: List[Holding], holdings_eval: List[Dict]) -> PortfolioState:
+    """
+    실시간 재평가된 종목 데이터를 기반으로 개별 종목의 PNL/청산 판정을 업데이트하고,
+    전체 계좌 건강도(PHS)를 산출하여 신규 매수 통제 여부를 결정합니다.
+    """
+    if not holdings or not holdings_eval:
+        return PortfolioState(phs_score=100.0, tier="SURVIVAL (100% CASH)", allow_new_buy=True)
         
-    sum_conf = sum(h["decision"]["confidence"] for h in holdings_eval)
-    sum_comp = sum(h["decision"]["composite_rank"] for h in holdings_eval)
+    eval_map = {item['code']: item for item in holdings_eval}
+    total_conf = 0.0
     
-    pnl_score = 50.0 
+    for h in holdings:
+        ev = eval_map.get(h.code)
+        if ev:
+            current_price = ev.get('price', 0)
+            decision = ev.get('decision', {})
+            plan = decision.get('trade_plan', {})
+            
+            # 실시간 PNL 연산 (평단가 대비 손익)
+            if h.entry_price > 0:
+                h.pnl = round(((current_price / h.entry_price) - 1) * 100, 2)
+                
+            h.conf = decision.get('confidence', 0.0)
+            h.stop_p = plan.get('stop_loss', 0.0)
+            
+            # 👑 런타임 종목 판정 (Time Stop 및 손절가 이탈 로직)
+            if h.conf < 30.0:
+                h.judgment = "🚨 청산 (TIME STOP - 동력 상실)"
+            elif h.pnl <= -10.0:
+                h.judgment = "🚨 청산 (손절가 이탈)"
+            else:
+                h.judgment = "🟢 보유"
+                
+            total_conf += h.conf
+            
+    # 계좌 건강도(PHS) 연산 및 태세 결정
+    phs_score = round(total_conf / len(holdings), 1)
     
-    avg_conf = sum_conf / len(holdings_eval)
-    avg_comp = sum_comp / len(holdings_eval)
-    
-    base_phs = (avg_conf * 0.50) + (avg_comp * 0.30) + (pnl_score * 0.20)
-    
-    m_state = market.get("state", "NORMAL")
-    b_trend = market.get("breadth", {}).get("trend", "Unknown")
-    
-    multiplier = 1.0
-    if m_state == "BULL": multiplier = 1.05
-    elif m_state == "RISK": multiplier = 0.93
-    elif m_state == "CRASH": multiplier = 0.85
-    
-    if b_trend == "Improving": multiplier += 0.02
-    elif b_trend == "Weakening": multiplier -= 0.02
-    
-    final_phs = round(base_phs * multiplier, 1)
-    
-    tier = "SURVIVAL"
-    allow_new_buy, allow_adding, allow_lvl2_buy, strict_swap, force_reval = False, False, False, True, True
-    
-    if final_phs >= 85:
+    if phs_score >= 60.0:
         tier = "AGGRESSIVE"
-        allow_new_buy, allow_adding, allow_lvl2_buy, strict_swap, force_reval = True, True, True, False, False
-    elif final_phs >= 70:
-        tier = "NORMAL"
-        allow_new_buy, allow_adding, allow_lvl2_buy, strict_swap, force_reval = True, True, True, False, False
-    elif final_phs >= 55:
-        tier = "CAUTION"
-        allow_new_buy, allow_adding, allow_lvl2_buy, strict_swap, force_reval = True, False, True, False, False
-    elif final_phs >= 40:
+        allow_new_buy = True
+    elif phs_score >= 45.0:
         tier = "DEFENSIVE"
-        allow_new_buy, allow_adding, allow_lvl2_buy, strict_swap, force_reval = True, False, False, True, True
+        allow_new_buy = True
+    else:
+        tier = "DANGER"
+        allow_new_buy = False
         
-    return PortfolioState(final_phs, tier, allow_new_buy, allow_adding, allow_lvl2_buy, strict_swap, force_reval)
-
-def evaluate_time_stop(holding: Holding, current_eval: dict, market_state: str, phs_tier: str) -> bool:
-    if phs_tier == "AGGRESSIVE":
-        return False
-        
-    curr_conf = current_eval["confidence"]
-    
-    recent_history = holding.conf_history if holding.conf_history else [curr_conf]
-    avg_recent = sum(recent_history) / len(recent_history)
-    
-    penalty = 0
-    if market_state == "RISK": penalty = 5
-    elif market_state == "CRASH": penalty = 10
-    
-    if holding.entry_level == "LEVEL 4":
-        conf_drop = curr_conf <= (avg_recent - 15)
-        abs_conf = curr_conf < (55 + penalty)  
-        if conf_drop and abs_conf: return True
-            
-    elif holding.entry_level == "LEVEL 3":
-        conf_drop = curr_conf <= (avg_recent - 10)
-        abs_conf = curr_conf < (50 + penalty)  
-        if conf_drop and abs_conf: return True
-            
-    else: 
-        conf_drop = curr_conf <= (avg_recent - 5)
-        abs_conf = curr_conf < (45 + penalty)
-        if conf_drop or abs_conf: return True
-            
-    return False
+    return PortfolioState(phs_score=phs_score, tier=tier, allow_new_buy=allow_new_buy)
