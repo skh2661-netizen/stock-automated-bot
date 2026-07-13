@@ -1,6 +1,19 @@
 import FinanceDataReader as fdr
 import pandas as pd
 import logging
+import datetime
+import pytz
+
+def fetch_history(code: str, days: int = 100):
+    """👑 누락되었던 개별 종목 차트 로드 함수 복원"""
+    try:
+        kst = pytz.timezone("Asia/Seoul")
+        start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+        df = fdr.DataReader(code, start_date)
+        return df
+    except Exception as e:
+        logging.error(f"Failed to fetch history for {code}: {e}")
+        return None
 
 def fetch_raw_candidates():
     try:
