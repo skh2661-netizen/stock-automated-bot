@@ -23,11 +23,11 @@ def format_scan_messages(result, holdings_data=None, p_state=None):
     market = result.get("market", {})
     breadth = market.get("breadth", {})
     alert_candidates = result.get("alert_candidates", [])
-    slot_full = result.get("slot_full", False)
+    buy_blocked = result.get("buy_blocked", False)
+    block_reason = result.get("block_reason", "")
     data_conf = market.get("data_confidence", "UNKNOWN")
     fdr_err = market.get("fdr_error")
     
-    # 👑 신뢰도 별점 UI 매핑
     conf_ui = {
         "HIGH": "★★★★★ [실시간 동기화 완료]",
         "MEDIUM (Cache)": "★★★★☆ [캐시 데이터 혼합]",
@@ -46,7 +46,6 @@ def format_scan_messages(result, holdings_data=None, p_state=None):
     msg = f"━━━━━━━━━━━━━━━━\n"
     msg += f"🌐 <b>시장 모니터링 ({market.get('state', 'NORMAL')})</b>\n"
     msg += f"━━━━━━━━━━━━━━━━\n"
-    
     msg += f"• 관제 신뢰도: <b>{conf_display}</b>\n"
     msg += f"• 데이터 출처: <b>{breadth.get('source', 'NONE')}</b>\n"
     
@@ -70,15 +69,22 @@ def format_scan_messages(result, holdings_data=None, p_state=None):
         
     if holdings_data:
         for h in holdings_data:
-            h_icon = "🚨" if "청산" in h['judgment'] else "🟢"
-            msg += f"{h_icon} <b>{h['name']}</b> | 손익: {h['pnl']}% | 신뢰도: {h['conf']}점\n └ 판정: {h['judgment']} | 대피선: {h['stop_p']:,}원\n"
+            # 객체 속성 접근 방식(getattr)으로 통일
+            h_judgment = getattr(h, 'judgment', '보유')
+            h_icon = "🚨" if "청산" in h_judgment else "🟢"
+            h_pnl = getattr(h, 'pnl', 0)
+            h_conf = getattr(h, 'conf', 0)
+            h_stop_p = getattr(h, 'stop_p', 0)
+            msg += f"{h_icon} <b>{h.name}</b> | 손익: {h_pnl}% | 신뢰도: {h_conf}점\n └ 판정: {h_judgment} | 대피선: {h_stop_p:,}원\n"
     else:
         msg += "• 보유 현황: <b>등록된 보유종목 없음 (현금 100% 대기)</b>\n"
     
     msg += "\n━━━━━━━━━━━━━━━━\n👑 <b>오늘의 진입후보 (Prime Leader)</b>\n━━━━━━━━━━━━━━━━\n"
-    if slot_full:
-        msg += "• <b>⚠️ 포트폴리오 슬롯 100% 소진 (신규 매수 발굴 중단)</b>\n"
-    elif alert_candidates:
+    if buy_blocked:
+        msg += f"• <b>⚠️ {block_reason}</b>\n"
+        msg += "• <b>(아래 종목은 매수 금지 - 관찰 전용으로만 표출됩니다)</b>\n\n"
+
+    if alert_candidates:
         leader = alert_candidates[0]
         ld = leader["decision"]
         plan = ld["trade_plan"]
@@ -93,7 +99,7 @@ def format_scan_messages(result, holdings_data=None, p_state=None):
         msg += "• 당일 매수 기준 통과 종목 없음\n"
         
     msg += "\n━━━━━━━━━━━━━━━━\n🚀 <b>실시간 매수대기 TOP 4</b>\n━━━━━━━━━━━━━━━━\n"
-    if len(alert_candidates) > 1 and not slot_full:
+    if len(alert_candidates) > 1:
         for idx, c in enumerate(alert_candidates[1:5], 2):
             cd = c["decision"]
             c_star = star_levels.get(cd['level'], "⚪")
