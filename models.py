@@ -1,73 +1,40 @@
 from dataclasses import dataclass
 
 @dataclass
-class Momentum:
-    rs_1d: float
-    rs_5d: float
-    rs_20d: float
-    rs_60d: float
-    rs_120d: float
-    ma_gap: float
+class PriceStructure:
+    prev_pivot_high_price: float
+    prev_pivot_low_price: float
+    last_pivot_low_price: float
 
 @dataclass
-class Volume:
-    vr_5: float
-    vr_20: float
-    vr_60: float
-    vol_zscore: float
-    money_flow_ratio: float
-    relative_vol_today: float
-
-@dataclass
-class Pattern:
-    is_gap_up: bool
-    gap_ratio: float
-    gap_survived: bool
-    is_doji: bool
-    is_hammer: bool
-    is_shooting_star: bool
+class PricePattern:
     is_bull_engulfing: bool
-    is_bear_engulfing: bool
-    is_piercing: bool
-    is_dark_cloud: bool
+    is_hammer: bool
+    gap_survived: bool
 
 @dataclass
 class Volatility:
-    atr_14: int
-    atr_percent: float
-    atr_percentile: int
+    atr_14: float
+    natr_14: float
 
 @dataclass
-class PriceStructure:
-    box_high: int
-    box_low: int
-    dist_ma20: float
-    dist_ma60: float
-    dist_ma120: float
-    last_pivot_low_price: int
-    last_pivot_low_date: str
-    prev_pivot_low_price: int
-    prev_pivot_low_date: str
+class Momentum:
+    rs_20d: float
+    ma_20: float
+
+@dataclass
+class VolumeFlow:
+    vr_20: float
+    money_flow_ratio: float
 
 @dataclass
 class CandidateFeature:
     code: str
     name: str
-    price: int
+    price: float
     chg: float
-    mom: Momentum
-    vol: Volume
-    pat: Pattern
-    vty: Volatility
     struc: PriceStructure
-
-# [V9.1 Phase 3] 포트폴리오 관리용 데이터 스키마
-@dataclass
-class Holding:
-    code: str
-    name: str
-    entry_price: int
-    quantity: int
-    entry_date: str
-    entry_level: str
-    conf_history: list[float]
+    pat: PricePattern
+    vty: Volatility
+    mom: Momentum
+    vol: VolumeFlow
