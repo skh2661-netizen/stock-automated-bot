@@ -13,20 +13,18 @@ def build_features(raw_data_list: list, market_context: dict) -> list:
             price = float(hist['Close'].iloc[-1])
             ma_20 = float(hist['Close'].rolling(window=20).mean().iloc[-1])
             
-            # RS 20일선 및 ATR 14일선 연산
             rs_20d = float(((price / hist['Close'].iloc[-20]) - 1) * 100) if len(hist) >= 20 else 0.0
             
             high_low = hist['High'] - hist['Low']
             atr_14 = float(high_low.rolling(window=14).mean().iloc[-1]) if len(hist) >= 14 else 0.0
             
-            # 모델 객체 맵핑 및 조립
             cf = CandidateFeature(
                 code=code, name=name, price=price, chg=float(chg),
                 struc=PriceStructure(prev_pivot_high_price=0, prev_pivot_low_price=0, last_pivot_low_price=0),
-                pat=PricePattern(is_bull_engulfing=False, is_hammer=False, gap_survived=False),
+                pat=PricePattern(is_bull_engulfing=False, is_hammer=False, gap_survived=False, is_gap_up=False),
                 vty=Volatility(atr_14=atr_14, natr_14=0),
                 mom=Momentum(rs_20d=rs_20d, ma_20=ma_20),
-                vol=VolumeFlow(vr_20=100.0, money_flow_ratio=50.0)
+                vol=VolumeFlow(vr_20=100.0, money_flow_ratio=50.0, relative_vol_today=1.0)
             )
             features.append(cf)
         except Exception as e:
