@@ -17,64 +17,65 @@ async def send_message(text):
         logging.error(f"Telegram Send Failed: {e}")
         return False
 
-def format_scan_messages(result, holdings_data=None, p_state=None, runtime_stats=None):
+def format_scan_messages(result, holdings_data=None, p_state=None, p_stats=None):
     market = result.get("market", {})
     breadth = market.get("breadth", {})
-    alert_candidates = result.get("alert_candidates", [])
+    alert_cands = result.get("alert_candidates", [])
     buy_blocked = result.get("buy_blocked", False)
+    block_reason = result.get("block_reason", "")
     
-    if not runtime_stats: runtime_stats = {"pool": 0, "final": 0, "time": 0.0}
+    if not p_stats: p_stats = {"krx": 0, "filter": 0, "pool": 0, "history": 0, "feature": 0, "decision": 0, "alert": 0, "time": 0.0}
     
     msg_list = []
     
-    # 1. 🌐 시장 (단순화 및 데이터 출처 명시)
+    # 🌐 1. 시장
     msg = f"🌐 <b>시장</b>\n"
-    msg += f"신뢰도 {market.get('conf_stars', '★☆☆☆☆')}\n"
+    msg += f"데이터 품질 {market.get('data_quality', '0%')}\n"
     msg += f"출처 {breadth.get('source', 'NONE')}\n"
     msg += f"상승 {breadth.get('kp_up',0)+breadth.get('kd_up',0)} / 하락 {breadth.get('kp_down',0)+breadth.get('kd_down',0)} / 보합 {breadth.get('kp_same',0)+breadth.get('kd_same',0)}\n"
-    msg += f"Breadth {breadth.get('avg_ratio', 0)}% ({breadth.get('trend', 'Unknown')})\n\n"
+    msg += f"시장 상승비율 {breadth.get('up_ratio', 0)}% ({breadth.get('trend', 'Unknown')})\n\n"
 
-    # 2. 💼 포트폴리오
+    # 💼 2. 포트폴리오
     used_slots = len(holdings_data) if holdings_data else 0
     cash_ratio = max(100 - (used_slots * 15), 5)
-    p_score = p_state.phs_score if p_state else 100.0
-    p_tier = p_state.tier if p_state else "SURVIVAL"
+    p_tier = p_state.tier if p_state else "정상"
+    buy_status = "불가" if (not p_state.allow_new_buy if p_state else False) else "가능"
     
     msg += f"💼 <b>포트폴리오</b>\n"
-    msg += f"PHS {p_score} | Tier {p_tier} | Slots {used_slots}/5 | Cash {cash_ratio}%\n\n"
+    msg += f"계좌상태 {p_tier} | 현금 {cash_ratio}% | 보유 {used_slots}종목 | 신규매수 {buy_status}\n"
     
     if holdings_data:
         for idx, h in enumerate(holdings_data, 1):
-            h_judgment = getattr(h, 'judgment', '보유')
-            h_pnl = getattr(h, 'pnl', 0)
-            h_conf = getattr(h, 'conf', 0)
-            msg += f" {idx}⃝ {h.name} ({h_pnl}%) | Conf: {h_conf} | {h_judgment}\n"
+            h_judg = getattr(h, 'judgment', '보유')
+            msg += f" {idx}. {h.name} ({getattr(h, 'pnl', 0)}%) | Conf {getattr(h, 'conf', 0)} | {h_judg}\n"
     else:
-        msg += " 보유종목 없음\n"
+        msg += " 등록된 종목 없음\n"
     
-    # 3. 👑 Prime Leader & 📈 Observation
-    msg += f"\n👑 <b>Prime Leader</b>\n"
-    if buy_blocked or not alert_candidates:
-        msg += " 없음 (매수 차단 또는 조건 미달)\n"
-        obs_start = 0
+    msg += "\n👑 <b>Prime Leader</b>\n"
+    if buy_blocked:
+        msg += f" ⚠️ 매수 차단 ({block_reason})\n"
+        prime = None
+    elif alert_cands:
+        prime = alert_cands[0]
+        msg += f" <b>{prime['name']}</b> | {prime['price']:,}원 ({prime['chg']}%)\n"
+        msg += f" 매력도 {prime['decision']['composite_rank']} | RS {prime['decision']['rs_20d']}\n"
     else:
-        leader = alert_candidates[0]
-        msg += f" {leader['name']} | {leader['price']:,}원 ({leader['chg']}%)\n"
-        msg += f" 매력도 {leader['decision']['composite_rank']} | RS {leader['decision']['rs_20d']}\n"
-        obs_start = 1
+        msg += " 후보 없음\n"
+        prime = None
         
-    msg += f"\n📈 <b>Observation</b>\n"
-    if len(alert_candidates) > obs_start:
-        for idx, c in enumerate(alert_candidates[obs_start:4], 1):
+    msg += "\n📈 <b>Observation</b>\n"
+    obs_list = alert_cands if buy_blocked else (alert_cands[1:] if prime else alert_cands)
+    if obs_list:
+        for idx, c in enumerate(obs_list[:4], 1):
             msg += f" {idx}. {c['name']} ({c['chg']}%) | 매력도 {c['decision']['composite_rank']}\n"
     else:
-        msg += " 관찰 후보 없음\n"
+        msg += " 관찰 종목 없음\n"
         
-    # 4. 📊 Runtime Stats
+    # 📊 4. Runtime
     msg += f"\n📊 <b>Runtime</b>\n"
-    msg += f" Scanner Pool {runtime_stats['pool']}\n"
-    msg += f" 최종후보 {runtime_stats['final']}\n"
-    msg += f" Runtime {runtime_stats['time']} sec\n"
+    msg += f" KRX {p_stats['krx']} -> Filter {p_stats['filter']} -> Pool {p_stats['pool']} ->\n"
+    msg += f" Decision {p_stats['decision']} -> Alert {p_stats['alert']}\n"
+    msg += f" Runtime {p_stats['time']} sec\n"
         
     msg_list.append(msg)
     return msg_list
