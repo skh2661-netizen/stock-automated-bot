@@ -29,28 +29,21 @@ class PortfolioState:
     allow_new_buy: bool
 
 def load_holdings() -> List[Holding]:
-    logging.info(f"========== [PORTFOLIO DIAGNOSTICS] ==========")
-    logging.info(f"Target File : {os.path.abspath(HOLDINGS_FILE)}")
+    logging.info(f"[Portfolio] Path: {os.path.abspath(HOLDINGS_FILE)}")
     
     if not os.path.exists(HOLDINGS_FILE):
-        logging.warning(f"Status : MISSING. Initiating 100% Cash State.")
+        logging.error("[Portfolio] File NOT FOUND. Defaulting to empty.")
         return []
         
-    logging.info(f"Status : EXISTS")
-    
     try:
-        file_size = os.path.getsize(HOLDINGS_FILE)
-        logging.info(f"File Size : {file_size} bytes")
-        
         with open(HOLDINGS_FILE, "r", encoding="utf-8") as f:
             content = f.read()
             if not content.strip():
-                # 👑 파일이 비어있는 것은 자연스러운 현금 대기 상태이므로 Warning으로 격하
-                logging.warning("Content : EMPTY (0 chars). Assuming 100% Cash State.")
+                logging.warning("[Portfolio] File is EMPTY.")
                 return []
             
             data = json.loads(content)
-            logging.info(f"JSON Decode : SUCCESS | Items: {len(data)}")
+            logging.info(f"[Portfolio] Decode Success. Items: {len(data)}")
         
         holdings = []
         for item in data:
@@ -64,21 +57,15 @@ def load_holdings() -> List[Holding]:
                 conf_history=item.get("conf_history", [])
             )
             holdings.append(h)
-            logging.info(f"Loaded Item : {h.name} ({h.code}) | Entry: {h.entry_price}")
-            
-        logging.info(f"========== [PORTFOLIO LOAD END] ==========")
+            logging.info(f"[Portfolio] Loaded: {h.name} ({h.code})")
         return holdings
-    except json.JSONDecodeError as e:
-        # 👑 JSON 파싱 실패 시에도 시스템 붕괴 없이 현금 대기 상태로 강제 전환
-        logging.warning(f"JSON DECODE WARNING : Invalid format ({e}). Resetting to empty portfolio.")
-        return []
     except Exception as e:
-        logging.error(f"UNKNOWN ERROR : {e}")
+        logging.error(f"[Portfolio] ERROR: {e}")
         return []
 
 def assess_portfolio_health(holdings: List[Holding], holdings_eval: List[Dict]) -> PortfolioState:
     if not holdings:
-        return PortfolioState(phs_score=100.0, tier="정상 (100% 현금)", allow_new_buy=True)
+        return PortfolioState(phs_score=100.0, tier="정상", allow_new_buy=True)
         
     eval_map = {item['code']: item for item in holdings_eval} if holdings_eval else {}
     total_conf = 0.0
