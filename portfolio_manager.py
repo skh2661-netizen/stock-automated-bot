@@ -33,7 +33,7 @@ def load_holdings() -> List[Holding]:
     logging.info(f"Target File : {os.path.abspath(HOLDINGS_FILE)}")
     
     if not os.path.exists(HOLDINGS_FILE):
-        logging.error(f"Status : MISSING (File not found)")
+        logging.warning(f"Status : MISSING. Initiating 100% Cash State.")
         return []
         
     logging.info(f"Status : EXISTS")
@@ -45,7 +45,8 @@ def load_holdings() -> List[Holding]:
         with open(HOLDINGS_FILE, "r", encoding="utf-8") as f:
             content = f.read()
             if not content.strip():
-                logging.error("Content : EMPTY (0 chars)")
+                # 👑 파일이 비어있는 것은 자연스러운 현금 대기 상태이므로 Warning으로 격하
+                logging.warning("Content : EMPTY (0 chars). Assuming 100% Cash State.")
                 return []
             
             data = json.loads(content)
@@ -68,7 +69,8 @@ def load_holdings() -> List[Holding]:
         logging.info(f"========== [PORTFOLIO LOAD END] ==========")
         return holdings
     except json.JSONDecodeError as e:
-        logging.error(f"JSON DECODE ERROR : {e}")
+        # 👑 JSON 파싱 실패 시에도 시스템 붕괴 없이 현금 대기 상태로 강제 전환
+        logging.warning(f"JSON DECODE WARNING : Invalid format ({e}). Resetting to empty portfolio.")
         return []
     except Exception as e:
         logging.error(f"UNKNOWN ERROR : {e}")
