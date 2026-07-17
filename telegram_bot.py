@@ -17,96 +17,64 @@ async def send_message(text):
         logging.error(f"Telegram Send Failed: {e}")
         return False
 
-def format_scan_messages(result, holdings_data=None, p_state=None):
-    if not result or "candidates" not in result: return ["⚠️ 시스템 연산 데이터 균열 발생"]
-    
+def format_scan_messages(result, holdings_data=None, p_state=None, runtime_stats=None):
     market = result.get("market", {})
     breadth = market.get("breadth", {})
     alert_candidates = result.get("alert_candidates", [])
     buy_blocked = result.get("buy_blocked", False)
-    block_reason = result.get("block_reason", "")
-    data_conf = market.get("data_confidence", "UNKNOWN")
-    fdr_err = market.get("fdr_error")
     
-    conf_ui = {
-        "HIGH": "★★★★★ [실시간 동기화 완료]",
-        "MEDIUM (Cache)": "★★★★☆ [캐시 데이터 혼합]",
-        "MEDIUM (Brd Only)": "★★★☆☆ [시장 체력 단독 의존]",
-        "MEDIUM (Idx Only)": "★★★☆☆ [지수 단독 의존 (CAUTION)]",
-        "LOW (All Failed)": "★☆☆☆☆ [수집망 완전 붕괴]"
-    }
-    conf_display = conf_ui.get(data_conf, f"⚠️ [{data_conf}]")
+    if not runtime_stats: runtime_stats = {"pool": 0, "final": 0, "time": 0.0}
     
     msg_list = []
-    star_levels = {
-        "LEVEL 4": "★★★★★ [즉시 매수 검토]", "LEVEL 3": "★★★★☆ [관심]",
-        "LEVEL 2": "★★★☆☆ [관찰]", "LEVEL 1": "★★☆☆☆ [보류]", "LEVEL 0": "★☆☆☆☆ [불가]"
-    }
     
-    msg = f"━━━━━━━━━━━━━━━━\n"
-    msg += f"🌐 <b>시장 모니터링 ({market.get('state', 'NORMAL')})</b>\n"
-    msg += f"━━━━━━━━━━━━━━━━\n"
-    msg += f"• 관제 신뢰도: <b>{conf_display}</b>\n"
-    msg += f"• 데이터 출처: <b>{breadth.get('source', 'NONE')}</b>\n"
+    # 1. 🌐 시장 (단순화 및 데이터 출처 명시)
+    msg = f"🌐 <b>시장</b>\n"
+    msg += f"신뢰도 {market.get('conf_stars', '★☆☆☆☆')}\n"
+    msg += f"출처 {breadth.get('source', 'NONE')}\n"
+    msg += f"상승 {breadth.get('kp_up',0)+breadth.get('kd_up',0)} / 하락 {breadth.get('kp_down',0)+breadth.get('kd_down',0)} / 보합 {breadth.get('kp_same',0)+breadth.get('kd_same',0)}\n"
+    msg += f"Breadth {breadth.get('avg_ratio', 0)}% ({breadth.get('trend', 'Unknown')})\n\n"
+
+    # 2. 💼 포트폴리오
+    used_slots = len(holdings_data) if holdings_data else 0
+    cash_ratio = max(100 - (used_slots * 15), 5)
+    p_score = p_state.phs_score if p_state else 100.0
+    p_tier = p_state.tier if p_state else "SURVIVAL"
     
-    if fdr_err:
-        msg += f"• 코스피/코스닥: ⚠️ 일시 장애 ({fdr_err})\n"
-    else:
-        msg += f"• 코스피 / 코스닥: <b>{market.get('kospi_1d', 0.0)}%</b> / <b>{market.get('kosdaq_1d', 0.0)}%</b>\n"
+    msg += f"💼 <b>포트폴리오</b>\n"
+    msg += f"PHS {p_score} | Tier {p_tier} | Slots {used_slots}/5 | Cash {cash_ratio}%\n\n"
     
-    if breadth.get('trend') == 'Unknown':
-        err_msg = breadth.get('error_detail', '수집불가')
-        msg += f"• 내부 체력: ⚠️ 시장 폭 수집 실패 ({err_msg})\n"
-    else:
-        msg += f"• 내부 체력: <b>{breadth.get('trend', 'Flat')}</b> (AD비율 {breadth.get('avg_ratio', 0)}%)\n"
-        
-    msg += "\n━━━━━━━━━━━━━━━━\n💼 <b>포트폴리오 자금 관리</b>\n━━━━━━━━━━━━━━━━\n"
-    if p_state:
-        msg += f"• 계좌 건강도: <b>{p_state.phs_score}점</b> | 태세: <b>{p_state.tier}</b>\n"
-        used_slots = len(holdings_data) if holdings_data else 0
-        msg += f"• 슬롯 사용현황: <b>{used_slots} / 5 Slots</b>\n"
-        msg += f"• 자산 내 현금비중: <b>{max(100 - (used_slots * 15), 5)}%</b>\n\n"
-        
     if holdings_data:
-        for h in holdings_data:
-            # 객체 속성 접근 방식(getattr)으로 통일
+        for idx, h in enumerate(holdings_data, 1):
             h_judgment = getattr(h, 'judgment', '보유')
-            h_icon = "🚨" if "청산" in h_judgment else "🟢"
             h_pnl = getattr(h, 'pnl', 0)
             h_conf = getattr(h, 'conf', 0)
-            h_stop_p = getattr(h, 'stop_p', 0)
-            msg += f"{h_icon} <b>{h.name}</b> | 손익: {h_pnl}% | 신뢰도: {h_conf}점\n └ 판정: {h_judgment} | 대피선: {h_stop_p:,}원\n"
+            msg += f" {idx}⃝ {h.name} ({h_pnl}%) | Conf: {h_conf} | {h_judgment}\n"
     else:
-        msg += "• 보유 현황: <b>등록된 보유종목 없음 (현금 100% 대기)</b>\n"
+        msg += " 보유종목 없음\n"
     
-    msg += "\n━━━━━━━━━━━━━━━━\n👑 <b>오늘의 진입후보 (Prime Leader)</b>\n━━━━━━━━━━━━━━━━\n"
-    if buy_blocked:
-        msg += f"• <b>⚠️ {block_reason}</b>\n"
-        msg += "• <b>(아래 종목은 매수 금지 - 관찰 전용으로만 표출됩니다)</b>\n\n"
-
-    if alert_candidates:
+    # 3. 👑 Prime Leader & 📈 Observation
+    msg += f"\n👑 <b>Prime Leader</b>\n"
+    if buy_blocked or not alert_candidates:
+        msg += " 없음 (매수 차단 또는 조건 미달)\n"
+        obs_start = 0
+    else:
         leader = alert_candidates[0]
-        ld = leader["decision"]
-        plan = ld["trade_plan"]
-        star = star_levels.get(ld['level'], "⚪")
+        msg += f" {leader['name']} | {leader['price']:,}원 ({leader['chg']}%)\n"
+        msg += f" 매력도 {leader['decision']['composite_rank']} | RS {leader['decision']['rs_20d']}\n"
+        obs_start = 1
         
-        msg += f"<b>{leader['name']}</b> ({leader['code']}) | 현재가 {leader['price']:,}원 ({leader['chg']}%)\n"
-        msg += f"• 진입 등급: <b>{star}</b>\n"
-        msg += f"• 통합 매수매력도: <b>{ld['composite_rank']}점</b> | 성공확률: {ld['confidence']}점\n"
-        msg += f"• 매매 타점: 진입 {plan['entry']:,}원 | 손절 {plan['stop_loss']:,}원 | 목표 {plan['target1']:,}원\n"
-        msg += f"• <b>기대 손익비(R:R): {ld['rr_ratio']}</b> | 변동성(ATR): {ld['atr']:,}원\n"
+    msg += f"\n📈 <b>Observation</b>\n"
+    if len(alert_candidates) > obs_start:
+        for idx, c in enumerate(alert_candidates[obs_start:4], 1):
+            msg += f" {idx}. {c['name']} ({c['chg']}%) | 매력도 {c['decision']['composite_rank']}\n"
     else:
-        msg += "• 당일 매수 기준 통과 종목 없음\n"
+        msg += " 관찰 후보 없음\n"
         
-    msg += "\n━━━━━━━━━━━━━━━━\n🚀 <b>실시간 매수대기 TOP 4</b>\n━━━━━━━━━━━━━━━━\n"
-    if len(alert_candidates) > 1:
-        for idx, c in enumerate(alert_candidates[1:5], 2):
-            cd = c["decision"]
-            c_star = star_levels.get(cd['level'], "⚪")
-            msg += f"{idx}위. <b>{c['name']}</b> | {c['price']:,}원 ({c['chg']}%)\n └ {c_star}\n └ 매력도 <b>{cd['composite_rank']}</b> | 성공확률 {cd['confidence']}\n"
-    else:
-        msg += "• 후순위 매수 대기 후보 없음\n"
-    msg += "━━━━━━━━━━━━━━━━\n"
+    # 4. 📊 Runtime Stats
+    msg += f"\n📊 <b>Runtime</b>\n"
+    msg += f" Scanner Pool {runtime_stats['pool']}\n"
+    msg += f" 최종후보 {runtime_stats['final']}\n"
+    msg += f" Runtime {runtime_stats['time']} sec\n"
         
     msg_list.append(msg)
     return msg_list
