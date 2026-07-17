@@ -16,7 +16,7 @@ class Holding:
     entry_level: str
     conf_history: List[float] = field(default_factory=list)
     
-    judgment: str = "🟢 보유"
+    judgment: str = "보유"
     pnl: float = 0.0
     conf: float = 0.0
     rs: float = 0.0
@@ -29,23 +29,24 @@ class PortfolioState:
     allow_new_buy: bool
 
 def load_holdings() -> List[Holding]:
-    logging.info(f"[Portfolio Check] File target: {os.path.abspath(HOLDINGS_FILE)}")
+    logging.info(f"[Portfolio] CWD: {os.getcwd()}")
     
     if not os.path.exists(HOLDINGS_FILE):
-        logging.error(f"[{HOLDINGS_FILE}] MISSING - Cannot find file in directory.")
+        logging.error(f"[Portfolio] '{HOLDINGS_FILE}' NOT FOUND. Returning empty list.")
         return []
         
-    if not os.access(HOLDINGS_FILE, os.R_OK):
-        logging.error(f"[{HOLDINGS_FILE}] PERMISSION DENIED - Cannot read file.")
-        return []
-    
     try:
+        file_size = os.path.getsize(HOLDINGS_FILE)
+        logging.info(f"[Portfolio] File size: {file_size} bytes")
+        
         with open(HOLDINGS_FILE, "r", encoding="utf-8") as f:
             content = f.read()
             if not content.strip():
-                logging.error(f"[{HOLDINGS_FILE}] EMPTY - File exists but has no content.")
+                logging.error("[Portfolio] File is EMPTY.")
                 return []
+            
             data = json.loads(content)
+            logging.info(f"[Portfolio] JSON Decode Success. Items: {len(data)}")
         
         holdings = []
         for item in data:
@@ -58,18 +59,18 @@ def load_holdings() -> List[Holding]:
                 entry_level=item.get("entry_level", ""),
                 conf_history=item.get("conf_history", [])
             ))
-        logging.info(f"[{HOLDINGS_FILE}] LOAD SUCCESS - Loaded {len(holdings)} holdings.")
+            logging.info(f"[Portfolio] Loaded: {item.get('name')} ({item.get('code')})")
         return holdings
     except json.JSONDecodeError as e:
-        logging.error(f"[{HOLDINGS_FILE}] DECODE ERROR - Invalid JSON format: {e}")
+        logging.error(f"[Portfolio] JSON DECODE ERROR: {e}")
         return []
     except Exception as e:
-        logging.error(f"[{HOLDINGS_FILE}] UNKNOWN ERROR Loading: {e}")
+        logging.error(f"[Portfolio] UNKNOWN ERROR: {e}")
         return []
 
 def assess_portfolio_health(holdings: List[Holding], holdings_eval: List[Dict]) -> PortfolioState:
     if not holdings or not holdings_eval:
-        return PortfolioState(phs_score=100.0, tier="SURVIVAL", allow_new_buy=True)
+        return PortfolioState(phs_score=100.0, tier="정상", allow_new_buy=True)
         
     eval_map = {item['code']: item for item in holdings_eval}
     total_conf = 0.0
@@ -88,16 +89,16 @@ def assess_portfolio_health(holdings: List[Holding], holdings_eval: List[Dict]) 
             h.rs = decision.get('rs_20d', 0.0)
             h.stop_p = plan.get('stop_loss', 0.0)
             
-            if h.conf < 30.0: h.judgment = "🚨 청산 (TIME STOP)"
-            elif h.pnl <= -10.0: h.judgment = "🚨 청산 (손절 이탈)"
-            else: h.judgment = "🟢 보유"
+            if h.conf < 30.0: h.judgment = "청산 (동력상실)"
+            elif h.pnl <= -10.0: h.judgment = "청산 (손절)"
+            else: h.judgment = "보유"
                 
             total_conf += h.conf
             
     phs_score = round(total_conf / len(holdings), 1)
     
-    if phs_score >= 60.0: tier, allow_new_buy = "AGGRESSIVE", True
-    elif phs_score >= 45.0: tier, allow_new_buy = "DEFENSIVE", True
-    else: tier, allow_new_buy = "DANGER", False
+    if phs_score >= 60.0: tier, allow_new_buy = "정상", True
+    elif phs_score >= 45.0: tier, allow_new_buy = "방어", True
+    else: tier, allow_new_buy = "위험", False
         
     return PortfolioState(phs_score=phs_score, tier=tier, allow_new_buy=allow_new_buy)
