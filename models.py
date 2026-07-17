@@ -11,6 +11,7 @@ class PricePattern:
     is_bull_engulfing: bool
     is_hammer: bool
     gap_survived: bool
+    is_gap_up: bool
 
 @dataclass
 class Volatility:
@@ -26,6 +27,7 @@ class Momentum:
 class VolumeFlow:
     vr_20: float
     money_flow_ratio: float
+    relative_vol_today: float
 
 @dataclass
 class CandidateFeature:
