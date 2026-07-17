@@ -13,10 +13,12 @@ from telegram_bot import format_scan_messages, send_message
 
 async def main():
     t0 = time.time()
-    pipe_stats = {"time_market":0, "time_port":0, "time_scan":0, "time_hist":0, "time_feat":0, "time_dec":0, "krx":0, "filter":0, "history_ok":0, "feature_ok":0, "decision":0, "alert":0}
+    # 👑 누락되었던 'pool' 키 초기화 추가 완료
+    pipe_stats = {"time_market":0, "time_port":0, "time_scan":0, "time_hist":0, "time_feat":0, "time_dec":0, "krx":0, "filter":0, "pool":0, "history_ok":0, "feature_ok":0, "decision":0, "alert":0}
     
     # 1. Market Service
     market = get_market_context()
+    logging.info(f"[Main] Market Quality: {market.get('data_quality')} | Source: {market.get('breadth', {}).get('source')}")
     t1 = time.time(); pipe_stats["time_market"] = round(t1 - t0, 1)
     
     # 2. Portfolio Service
@@ -38,6 +40,7 @@ async def main():
     raw_data, scan_stats = fetch_raw_candidates()
     pipe_stats["krx"] = scan_stats.get("krx_total", 0)
     pipe_stats["filter"] = scan_stats.get("change_pass", 0)
+    pipe_stats["pool"] = scan_stats.get("final_pool", 0)
     t3 = time.time(); pipe_stats["time_scan"] = round(t3 - t2, 1)
     
     # 4. History Fetch
@@ -49,13 +52,12 @@ async def main():
     pipe_stats["history_ok"] = len(raw_with_hist)
     t4 = time.time(); pipe_stats["time_hist"] = round(t4 - t3, 1)
     
-    # 5. Feature Extraction (NaN Diagnostics)
+    # 5. Feature Extraction
     features_list = build_features(raw_with_hist, market) if raw_with_hist else []
     rs_nan = sum(1 for f in features_list if math.isnan(f.mom.rs_20d))
     atr_nan = sum(1 for f in features_list if math.isnan(f.vty.atr_14))
     logging.info(f"[Diagnostics] Feature NaN Count -> RS: {rs_nan}, ATR: {atr_nan}")
     
-    # Drop NaNs safely
     clean_features = [f for f in features_list if not (math.isnan(f.mom.rs_20d) or math.isnan(f.vty.atr_14))]
     pipe_stats["feature_ok"] = len(clean_features)
     t5 = time.time(); pipe_stats["time_feat"] = round(t5 - t4, 1)
