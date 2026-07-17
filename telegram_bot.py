@@ -19,18 +19,21 @@ def format_scan_messages(result, holdings_data=None, p_state=None, p_stats=None)
     market = result.get("market", {})
     breadth = market.get("breadth", {})
     alert_cands = result.get("alert_candidates", [])
-    drop_stats = result.get("drop_stats", {"actionable": 0, "level": 0})
+    buy_blocked = result.get("buy_blocked", False)
     
     if not p_stats: p_stats = {}
+    
+    # 👑 Validation 패스 여부에 따른 명확한 표출
+    val_pass = market.get("validation_pass", False)
+    val_text = "PASS" if val_pass else "FAIL"
+    val_score = market.get("data_quality", 0)
     
     msg_list = []
     
     # 1. 🌐 시장
-    msg = f"🌐 <b>시장</b>\n"
-    msg += f"지수 데이터 정상 : {'YES' if market.get('fdr_ok') else 'NO'}\n"
-    msg += f"상승/하락 집계 정상 : {'YES' if breadth.get('is_ok') else 'NO'}\n"
-    msg += f"출처 : {market.get('source', '알수없음')}\n"
-    msg += f"데이터 품질 : {market.get('data_quality', '0')}%\n\n"
+    msg = f"🌐 <b>시장 데이터</b>\n"
+    msg += f"시장 데이터 검증 : <b>{val_text} ({val_score}/100점)</b>\n"
+    msg += f"출처 : {market.get('source', '알수없음')}\n\n"
     
     msg += f"KOSPI : {market.get('kospi_1d', 0.0)}%\n"
     msg += f"KOSDAQ : {market.get('kosdaq_1d', 0.0)}%\n\n"
@@ -40,7 +43,7 @@ def format_scan_messages(result, holdings_data=None, p_state=None, p_stats=None)
     same_cnt = breadth.get('kp_same',0) + breadth.get('kd_same',0)
     
     msg += f"상승 {up_cnt}\n하락 {down_cnt}\n변동없음 {same_cnt}종목\n"
-    msg += f"상승 종목 비율 {breadth.get('up_ratio', 0)}% (상승종목 / 상승+하락)\n\n"
+    msg += f"시장 상승비율 : {breadth.get('up_ratio', 0)}% (상승종목 / 상승+하락)\n\n"
 
     # 2. 💼 포트폴리오
     used_slots = len(holdings_data) if holdings_data else 0
@@ -53,12 +56,20 @@ def format_scan_messages(result, holdings_data=None, p_state=None, p_stats=None)
     if holdings_data:
         for idx, h in enumerate(holdings_data, 1):
             msg += f" {idx}. {h.name} ({getattr(h, 'pnl', 0)}%) | Conf {getattr(h, 'conf', 0)} | {getattr(h, 'judgment', '보유')}\n"
+    else:
+        msg += " 등록된 보유종목 없음\n"
     
     # 3. 👑 Prime Leader & Observation
     msg += f"\n👑 <b>Prime Leader</b>\n"
-    if not alert_cands:
+    if not val_pass:
+        msg += " 🚫 <b>오늘은 종목 추천을 중단합니다.</b>\n"
+        msg += f" └ 사유: 시장 데이터 검증 실패 ({market.get('reason')})\n"
+        obs_start = 0
+    elif not alert_cands:
         msg += " 후보 없음\n"
-        msg += f" └ 사유: Actionable {drop_stats.get('actionable', 0)}개 제거, LEVEL 부족 {drop_stats.get('level', 0)}개 제거\n"
+        obs_start = 0
+    elif buy_blocked:
+        msg += f" ⚠️ 매수 차단 ({result.get('block_reason')})\n"
         obs_start = 0
     else:
         prime = alert_cands[0]
@@ -67,23 +78,25 @@ def format_scan_messages(result, holdings_data=None, p_state=None, p_stats=None)
         obs_start = 1
         
     msg += f"\n📈 <b>Observation</b>\n"
-    if len(alert_cands) > obs_start:
+    if not val_pass:
+        msg += " 시장 데이터 신뢰 불가로 관찰 생략\n"
+    elif len(alert_cands) > obs_start:
         for idx, c in enumerate(alert_cands[obs_start:5], 1):
             msg += f" {idx}. {c['name']} ({c['chg']}%) | 매력도 {c['decision']['composite_rank']}\n"
     else:
         msg += " 관찰 종목 없음\n"
         
-    # 4. 📊 Runtime (파이프라인 생존 통계)
+    # 4. 📊 Runtime
     msg += f"\n📊 <b>Runtime</b>\n"
-    msg += f" KRX {p_stats.get('krx', 0)}\n"
-    msg += f" Filter {p_stats.get('filter', 0)}\n"
-    msg += f" Pool {p_stats.get('pool', 0)}\n"
-    msg += f" History 성공 {p_stats.get('hist_ok', 0)}\n"
-    msg += f" History 실패 {p_stats.get('hist_fail', 0)}\n"
-    msg += f" Feature 성공 {p_stats.get('feat_ok', 0)}\n"
-    msg += f" Feature 실패 {p_stats.get('feat_fail', 0)}\n"
-    msg += f" Decision {p_stats.get('decision', 0)}\n"
-    msg += f" Alert {p_stats.get('alert', 0)}\n"
+    msg += f" KRX : {p_stats.get('krx', 'SKIP')}\n"
+    msg += f" Filter : {p_stats.get('filter', 'SKIP')}\n"
+    msg += f" Pool : {p_stats.get('pool', 'SKIP')}\n"
+    msg += f" History 성공 : {p_stats.get('hist_ok', 'SKIP')}\n"
+    msg += f" History 실패 : {p_stats.get('hist_fail', 'SKIP')}\n"
+    msg += f" Feature 성공 : {p_stats.get('feat_ok', 'SKIP')}\n"
+    msg += f" Feature 실패 : {p_stats.get('feat_fail', 'SKIP')}\n"
+    msg += f" Decision : {p_stats.get('decision', 0)}\n"
+    msg += f" Alert : {p_stats.get('alert', 0)}\n"
         
     msg_list.append(msg)
     return msg_list
