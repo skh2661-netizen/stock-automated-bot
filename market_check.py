@@ -26,12 +26,17 @@ def get_realtime_breadth():
     
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
-    # 1. API
+    # 1. API (리스트/딕셔너리 동적 파싱)
     try:
         res_kp = requests.get("https://m.stock.naver.com/api/index/KOSPI/price", headers=headers, timeout=3)
         res_kd = requests.get("https://m.stock.naver.com/api/index/KOSDAQ/price", headers=headers, timeout=3)
         if res_kp.status_code == 200 and res_kd.status_code == 200:
-            kp_rf, kd_rf = res_kp.json().get("riseFall", {}), res_kd.json().get("riseFall", {})
+            data_kp, data_kd = res_kp.json(), res_kd.json()
+            # 👑 네이버 API 배열 반환 버그 대응
+            if isinstance(data_kp, list) and len(data_kp) > 0: data_kp = data_kp[0]
+            if isinstance(data_kd, list) and len(data_kd) > 0: data_kd = data_kd[0]
+            
+            kp_rf, kd_rf = data_kp.get("riseFall", {}), data_kd.get("riseFall", {})
             b_data["kp_up"], b_data["kp_down"], b_data["kp_same"] = int(kp_rf.get("rise",0)), int(kp_rf.get("fall",0)), int(kp_rf.get("same",0))
             b_data["kd_up"], b_data["kd_down"], b_data["kd_same"] = int(kd_rf.get("rise",0)), int(kd_rf.get("fall",0)), int(kd_rf.get("same",0))
             if (b_data["kp_up"] + b_data["kp_down"]) > 0: 
@@ -62,14 +67,17 @@ def get_realtime_breadth():
     if not success:
         try:
             krx = fdr.StockListing('KRX')
-            b_data["kp_up"] = len(krx[(krx['Market'] == 'KOSPI') & (krx['ChangesRatio'] > 0)])
-            b_data["kp_down"] = len(krx[(krx['Market'] == 'KOSPI') & (krx['ChangesRatio'] < 0)])
-            b_data["kp_same"] = len(krx[(krx['Market'] == 'KOSPI') & (krx['ChangesRatio'] == 0)])
-            b_data["kd_up"] = len(krx[(krx['Market'] == 'KOSDAQ') & (krx['ChangesRatio'] > 0)])
-            b_data["kd_down"] = len(krx[(krx['Market'] == 'KOSDAQ') & (krx['ChangesRatio'] < 0)])
-            b_data["kd_same"] = len(krx[(krx['Market'] == 'KOSDAQ') & (krx['ChangesRatio'] == 0)])
-            if (b_data["kp_up"] + b_data["kp_down"]) > 0: 
-                success, source_used, diag["FDR"] = True, "FDR KRX", "PASS"
+            if 'ChangesRatio' not in krx.columns and 'ChagesRatio' in krx.columns:
+                krx.rename(columns={'ChagesRatio': 'ChangesRatio'}, inplace=True)
+            if 'ChangesRatio' in krx.columns:
+                b_data["kp_up"] = len(krx[(krx['Market'] == 'KOSPI') & (krx['ChangesRatio'] > 0)])
+                b_data["kp_down"] = len(krx[(krx['Market'] == 'KOSPI') & (krx['ChangesRatio'] < 0)])
+                b_data["kp_same"] = len(krx[(krx['Market'] == 'KOSPI') & (krx['ChangesRatio'] == 0)])
+                b_data["kd_up"] = len(krx[(krx['Market'] == 'KOSDAQ') & (krx['ChangesRatio'] > 0)])
+                b_data["kd_down"] = len(krx[(krx['Market'] == 'KOSDAQ') & (krx['ChangesRatio'] < 0)])
+                b_data["kd_same"] = len(krx[(krx['Market'] == 'KOSDAQ') & (krx['ChangesRatio'] == 0)])
+                if (b_data["kp_up"] + b_data["kp_down"]) > 0: 
+                    success, source_used, diag["FDR"] = True, "FDR KRX", "PASS"
         except Exception as e: logging.warning(f"Breadth FDR Fail: {e}")
 
     # 4. YAHOO & CACHE
@@ -122,7 +130,6 @@ def get_market_context():
         diag["FDR Index"] = "FAIL"
         logging.error(f"FDR Index Failed: {e}")
 
-    # 데이터 품질 산출
     quality_score = 0
     if is_fdr_ok: quality_score += 40
     if diag["API"] == "PASS" or diag["DOM"] == "PASS": quality_score += 60
