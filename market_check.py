@@ -7,12 +7,26 @@ import time
 import re
 import logging
 
+try:
+    import yfinance as yf
+    YF_AVAILABLE = True
+except ImportError:
+    YF_AVAILABLE = False
+
+_breadth_cache = {"timestamp": 0, "data": None}
+
 def get_realtime_breadth():
-    b_data = {"kp_up": 0, "kp_down": 0, "kp_same": 0, "kd_up": 0, "kd_down": 0, "kd_same": 0, "source": "NONE"}
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    global _breadth_cache
+    current_time = time.time()
+    
+    b_data = {"kp_up": 0, "kp_down": 0, "kp_same": 0, "kd_up": 0, "kd_down": 0, "kd_same": 0}
+    diag = {"API": "FAIL", "DOM": "FAIL", "FDR": "FAIL", "YAHOO": "OFF" if not YF_AVAILABLE else "FAIL", "CACHE": "NO"}
+    source_used = "NONE"
     success = False
     
-    # [Fallback 1] NAVER API
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    # 1. API
     try:
         res_kp = requests.get("https://m.stock.naver.com/api/index/KOSPI/price", headers=headers, timeout=3)
         res_kd = requests.get("https://m.stock.naver.com/api/index/KOSDAQ/price", headers=headers, timeout=3)
@@ -21,10 +35,10 @@ def get_realtime_breadth():
             b_data["kp_up"], b_data["kp_down"], b_data["kp_same"] = int(kp_rf.get("rise",0)), int(kp_rf.get("fall",0)), int(kp_rf.get("same",0))
             b_data["kd_up"], b_data["kd_down"], b_data["kd_same"] = int(kd_rf.get("rise",0)), int(kd_rf.get("fall",0)), int(kd_rf.get("same",0))
             if (b_data["kp_up"] + b_data["kp_down"]) > 0: 
-                success, b_data["source"] = True, "NAVER API"
-    except Exception as e: logging.warning(f"[Breadth] API Failed: {e}")
+                success, source_used, diag["API"] = True, "NAVER API", "PASS"
+    except Exception as e: logging.warning(f"Breadth API Fail: {e}")
     
-    # [Fallback 2] NAVER DOM
+    # 2. DOM
     if not success:
         try:
             for code, k_up, k_down, k_same in [("KOSPI", "kp_up", "kp_down", "kp_same"), ("KOSDAQ", "kd_up", "kd_down", "kd_same")]:
@@ -41,10 +55,10 @@ def get_realtime_breadth():
                         elif "하락" in txt: b_data[k_down] = val
                         elif "보합" in txt: b_data[k_same] = val
             if (b_data["kp_up"] + b_data["kp_down"]) > 0: 
-                success, b_data["source"] = True, "NAVER DOM"
-        except Exception as e: logging.warning(f"[Breadth] DOM Failed: {e}")
+                success, source_used, diag["DOM"] = True, "NAVER DOM", "PASS"
+        except Exception as e: logging.warning(f"Breadth DOM Fail: {e}")
 
-    # [Fallback 3] FDR (KRX 전체 연산)
+    # 3. FDR KRX
     if not success:
         try:
             krx = fdr.StockListing('KRX')
@@ -55,30 +69,41 @@ def get_realtime_breadth():
             b_data["kd_down"] = len(krx[(krx['Market'] == 'KOSDAQ') & (krx['ChangesRatio'] < 0)])
             b_data["kd_same"] = len(krx[(krx['Market'] == 'KOSDAQ') & (krx['ChangesRatio'] == 0)])
             if (b_data["kp_up"] + b_data["kp_down"]) > 0: 
-                success, b_data["source"] = True, "FDR KRX"
-        except Exception as e: logging.warning(f"[Breadth] FDR Failed: {e}")
+                success, source_used, diag["FDR"] = True, "FDR KRX", "PASS"
+        except Exception as e: logging.warning(f"Breadth FDR Fail: {e}")
 
-    # 상승 비율 연산
+    # 4. YAHOO & CACHE
+    if not success and YF_AVAILABLE:
+        try:
+            yf_kp = yf.Ticker("^KS11").history(period="1d")
+            if not yf_kp.empty:
+                success, source_used, diag["YAHOO"] = True, "YAHOO (Index Only)", "PASS"
+        except Exception: pass
+        
+    if not success and _breadth_cache["data"] is not None:
+        b_data = _breadth_cache["data"].copy()
+        success, source_used, diag["CACHE"] = True, "CACHE", "PASS"
+
     total_up = b_data["kp_up"] + b_data["kd_up"]
-    total_down = b_data["kp_down"] + b_data["kd_down"]
-    total_all = total_up + total_down
+    total_all = total_up + b_data["kp_down"] + b_data["kd_down"]
     b_data["up_ratio"] = round((total_up / total_all) * 100, 1) if total_all > 0 else 50.0
     
     if b_data["up_ratio"] >= 55.0: b_data["trend"] = "Improving"
     elif b_data["up_ratio"] <= 45.0: b_data["trend"] = "Weakening"
     else: b_data["trend"] = "Flat"
     
-    return b_data
+    if success: _breadth_cache = {"timestamp": current_time, "data": b_data}
+    
+    return b_data, diag, source_used
 
 def get_market_context():
     kst = pytz.timezone("Asia/Seoul")
     start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
     
-    breadth = get_realtime_breadth()
+    breadth, diag, source_used = get_realtime_breadth()
     
     is_fdr_ok = False
-    kp_1d, kp_5d, kp_20d = 0.0, 0.0, 0.0
-    kd_1d, kd_5d, kd_20d = 0.0, 0.0, 0.0
+    kp_1d, kp_5d, kp_20d, kd_1d, kd_5d, kd_20d = [0.0]*6
     
     try:
         kospi = fdr.DataReader("KS11", start_date)
@@ -91,16 +116,19 @@ def get_market_context():
             kp_20d = ((kospi['Close'].iloc[-1] / kospi['Close'].iloc[-21]) - 1) * 100
             kd_20d = ((kosdaq['Close'].iloc[-1] / kosdaq['Close'].iloc[-21]) - 1) * 100
             is_fdr_ok = True
+            diag["FDR Index"] = "PASS"
+        else: diag["FDR Index"] = "FAIL"
     except Exception as e:
-        logging.error(f"[Market] FDR Index Failed: {e}")
+        diag["FDR Index"] = "FAIL"
+        logging.error(f"FDR Index Failed: {e}")
 
     # 데이터 품질 산출
     quality_score = 0
-    if is_fdr_ok: quality_score += 50
-    if breadth["source"] in ["NAVER API", "NAVER DOM"]: quality_score += 50
-    elif breadth["source"] == "FDR KRX": quality_score += 30
+    if is_fdr_ok: quality_score += 40
+    if diag["API"] == "PASS" or diag["DOM"] == "PASS": quality_score += 60
+    elif diag["FDR"] == "PASS": quality_score += 40
+    elif diag["CACHE"] == "PASS": quality_score += 20
     
-    # 종합 시장 국면 판정
     is_crash = False
     if kp_1d <= -3.0 and breadth.get("up_ratio", 50) < 35 and kp_20d < -5.0:
         is_crash = True
@@ -108,12 +136,12 @@ def get_market_context():
     if quality_score == 0: state = "UNKNOWN_HOLD"
     elif is_crash: state = "CRASH"
     elif kp_1d <= -1.5 or breadth.get("up_ratio", 50) < 40: state = "RISK"
-    elif quality_score <= 50: state = "CAUTION"
+    elif quality_score <= 40: state = "CAUTION"
     elif kp_1d >= 1.0 and breadth.get("trend") == "Improving": state = "BULL"
     else: state = "NORMAL"
         
     return {
-        "state": state, "data_quality": f"{quality_score}%", "fdr_ok": is_fdr_ok,
+        "state": state, "data_quality": f"{quality_score}%", "diag": diag, "source": source_used,
         "kospi_1d": round(kp_1d, 2), "kospi_5d": round(kp_5d, 2), "kospi_20d": round(kp_20d, 2),
         "kosdaq_1d": round(kd_1d, 2), "kosdaq_5d": round(kd_5d, 2), "kosdaq_20d": round(kd_20d, 2),
         "breadth": breadth
