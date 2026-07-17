@@ -20,62 +20,74 @@ async def send_message(text):
 def format_scan_messages(result, holdings_data=None, p_state=None, p_stats=None):
     market = result.get("market", {})
     breadth = market.get("breadth", {})
+    diag = market.get("diag", {})
+    dec_stats = result.get("dec_stats", {})
     alert_cands = result.get("alert_candidates", [])
     buy_blocked = result.get("buy_blocked", False)
-    block_reason = result.get("block_reason", "")
-    
-    if not p_stats: p_stats = {"krx": 0, "filter": 0, "pool": 0, "history": 0, "feature": 0, "decision": 0, "alert": 0, "time": 0.0}
     
     msg_list = []
     
-    # 🌐 1. 시장
-    msg = f"🌐 <b>시장</b>\n"
-    msg += f"데이터 품질 {market.get('data_quality', '0%')}\n"
-    msg += f"출처 {breadth.get('source', 'NONE')}\n"
-    msg += f"상승 {breadth.get('kp_up',0)+breadth.get('kd_up',0)} / 하락 {breadth.get('kp_down',0)+breadth.get('kd_down',0)} / 보합 {breadth.get('kp_same',0)+breadth.get('kd_same',0)}\n"
-    msg += f"시장 상승비율 {breadth.get('up_ratio', 0)}% ({breadth.get('trend', 'Unknown')})\n\n"
+    # 1. 🌐 시장
+    msg = f"🌐 <b>시장 데이터 진단</b>\n"
+    msg += f"Index: {diag.get('FDR Index', 'FAIL')} | Breadth: {diag.get('FDR', 'FAIL')}\n"
+    msg += f"API: {diag.get('API', 'FAIL')} | DOM: {diag.get('DOM', 'FAIL')} | YAHOO: {diag.get('YAHOO', 'FAIL')}\n"
+    msg += f"데이터 품질: {market.get('data_quality', '0%')} (출처: {market.get('source', 'NONE')})\n\n"
+    
+    msg += f"KOSPI  | 상승 {breadth.get('kp_up',0)} / 하락 {breadth.get('kp_down',0)} / 보합 {breadth.get('kp_same',0)}\n"
+    msg += f"KOSDAQ | 상승 {breadth.get('kd_up',0)} / 하락 {breadth.get('kd_down',0)} / 보합 {breadth.get('kd_same',0)}\n"
+    msg += f"시장 상승비율: {breadth.get('up_ratio', 0)}% ({market.get('state', 'UNKNOWN')})\n\n"
 
-    # 💼 2. 포트폴리오
+    # 2. 💼 포트폴리오
     used_slots = len(holdings_data) if holdings_data else 0
-    cash_ratio = max(100 - (used_slots * 15), 5)
     p_tier = p_state.tier if p_state else "정상"
-    buy_status = "불가" if (not p_state.allow_new_buy if p_state else False) else "가능"
+    buy_status = "가능" if (p_state.allow_new_buy if p_state else True) else "불가"
     
     msg += f"💼 <b>포트폴리오</b>\n"
-    msg += f"계좌상태 {p_tier} | 현금 {cash_ratio}% | 보유 {used_slots}종목 | 신규매수 {buy_status}\n"
+    msg += f"계좌상태: {p_tier} | 현금: {max(100 - (used_slots * 15), 5)}% | 보유: {used_slots}종목 | 신규매수: {buy_status}\n"
     
     if holdings_data:
         for idx, h in enumerate(holdings_data, 1):
-            h_judg = getattr(h, 'judgment', '보유')
-            msg += f" {idx}. {h.name} ({getattr(h, 'pnl', 0)}%) | Conf {getattr(h, 'conf', 0)} | {h_judg}\n"
+            msg += f" {idx}. {h.name} ({getattr(h, 'pnl', 0)}%) | Conf {getattr(h, 'conf', 0)} | {getattr(h, 'judgment', '보유')}\n"
     else:
-        msg += " 등록된 종목 없음\n"
+        msg += " 등록된 보유종목 없음\n"
     
-    msg += "\n👑 <b>Prime Leader</b>\n"
-    if buy_blocked:
-        msg += f" ⚠️ 매수 차단 ({block_reason})\n"
-        prime = None
-    elif alert_cands:
+    # 3. 👑 Prime Leader & Observation
+    msg += f"\n👑 <b>Prime Leader</b>\n"
+    if not alert_cands:
+        msg += " 후보 없음\n"
+        msg += " └ 원인: "
+        if p_stats['pool'] == 0: msg += "스캐너 통과 종목 0개\n"
+        elif p_stats['history_ok'] == 0: msg += "차트 로드 전멸\n"
+        elif p_stats['decision'] == 0: msg += "엔진 필터 전멸\n"
+        else: msg += "LEVEL 3/4 도달 실패 (전부 LEVEL 1/2)\n"
+        obs_start = 0
+    elif buy_blocked:
+        msg += f" ⚠️ 매수 차단 ({result.get('block_reason')})\n"
+        obs_start = 0
+    else:
         prime = alert_cands[0]
         msg += f" <b>{prime['name']}</b> | {prime['price']:,}원 ({prime['chg']}%)\n"
         msg += f" 매력도 {prime['decision']['composite_rank']} | RS {prime['decision']['rs_20d']}\n"
-    else:
-        msg += " 후보 없음\n"
-        prime = None
+        obs_start = 1
         
-    msg += "\n📈 <b>Observation</b>\n"
-    obs_list = alert_cands if buy_blocked else (alert_cands[1:] if prime else alert_cands)
-    if obs_list:
-        for idx, c in enumerate(obs_list[:4], 1):
+    msg += f"\n📈 <b>Observation</b>\n"
+    if len(alert_cands) > obs_start:
+        for idx, c in enumerate(alert_cands[obs_start:5], 1):
             msg += f" {idx}. {c['name']} ({c['chg']}%) | 매력도 {c['decision']['composite_rank']}\n"
     else:
         msg += " 관찰 종목 없음\n"
         
-    # 📊 4. Runtime
-    msg += f"\n📊 <b>Runtime</b>\n"
-    msg += f" KRX {p_stats['krx']} -> Filter {p_stats['filter']} -> Pool {p_stats['pool']} ->\n"
-    msg += f" Decision {p_stats['decision']} -> Alert {p_stats['alert']}\n"
-    msg += f" Runtime {p_stats['time']} sec\n"
+    # 4. 📊 Runtime & Pipeline Health
+    msg += f"\n📊 <b>Pipeline Diagnostics</b>\n"
+    msg += f" KRX 전체: {p_stats['krx']}\n"
+    msg += f" Base Filter 통과: {p_stats['filter']}\n"
+    msg += f" Multi-Pool 통과: {p_stats['pool']}\n"
+    msg += f" History & Feature: {p_stats['feature_ok']}\n"
+    msg += f" 엔진 최종 판정: {p_stats['decision']} (LEVEL4: {dec_stats.get('levels',{}).get('LEVEL 4',0)}, L3: {dec_stats.get('levels',{}).get('LEVEL 3',0)})\n"
+    
+    msg += f"\n⏱ <b>소요 시간</b> (총 {round(sum(v for k,v in p_stats.items() if k.startswith('time_')), 1)}s)\n"
+    msg += f" Market {p_stats['time_market']}s | Port {p_stats['time_port']}s | Scan {p_stats['time_scan']}s\n"
+    msg += f" Hist {p_stats['time_hist']}s | Feat {p_stats['time_feat']}s | Dec {p_stats['time_dec']}s\n"
         
     msg_list.append(msg)
     return msg_list
