@@ -10,6 +10,7 @@ def fetch_history(code: str, days: int = 120):
         start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
         return fdr.DataReader(code, start_date)
     except Exception as e:
+        logging.error(f"[Scanner] History Fetch Failed ({code}): {e}")
         return None
 
 def fetch_raw_candidates():
@@ -18,7 +19,14 @@ def fetch_raw_candidates():
         krx = fdr.StockListing('KRX')
         stats["krx_total"] = len(krx)
         
-        # 👑 FDR 버그 대응: Amount 컬럼이 없거나 NaN일 경우 직접 계산
+        # 👑 FDR 고질적 오타 버그 감지 및 강제 교정 (ChagesRatio -> ChangesRatio)
+        if 'ChangesRatio' not in krx.columns and 'ChagesRatio' in krx.columns:
+            krx.rename(columns={'ChagesRatio': 'ChangesRatio'}, inplace=True)
+            
+        if 'ChangesRatio' not in krx.columns:
+            logging.error("[Scanner] CRITICAL: ChangesRatio column entirely missing from KRX.")
+            return [], stats
+        
         if 'Amount' not in krx.columns:
             krx['Amount'] = krx['Close'] * krx['Volume']
         else:
