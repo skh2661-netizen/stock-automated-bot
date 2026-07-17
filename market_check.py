@@ -1,12 +1,19 @@
 import datetime
 import pytz
 import FinanceDataReader as fdr
-import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
 import time
 import re
 import logging
+
+# 👑 모듈 임포트 예외 처리: 미설치 시 런타임 붕괴 방지 및 방어망 자동 비활성화
+try:
+    import yfinance as yf
+    YF_AVAILABLE = True
+except ImportError:
+    YF_AVAILABLE = False
+    logging.warning("yfinance module not found. Yahoo Finance fallback will be disabled.")
 
 _breadth_cache = {"timestamp": 0, "data": None}
 _prev_avg_ratio = 50.0
@@ -71,7 +78,7 @@ def get_realtime_breadth():
         except Exception as e: logging.warning(f"Breadth FDR Failed: {e}")
 
     # [Fallback 4] Yahoo Finance (지수만이라도 확인)
-    if not success:
+    if not success and YF_AVAILABLE:
         try:
             yf_kp = yf.Ticker("^KS11").history(period="1d")
             if not yf_kp.empty:
@@ -131,10 +138,10 @@ def get_market_context():
     if breadth["source"] in ["NAVER API", "NAVER DOM"]: active_sources += 3
     elif breadth["source"] == "FDR KRX": active_sources += 2
     elif breadth["source"] == "CACHE": active_sources += 1
+    elif breadth["source"] == "YAHOO (Index Only)": active_sources += 1
     
     conf_stars = "★" * active_sources + "☆" * (5 - active_sources)
     
-    # 👑 복합 CRASH 판정 (지수 + 시장폭 + 20일 추세)
     is_crash = False
     if kp_1d <= -3.0 and breadth.get("avg_ratio", 50) < 35 and kp_20d < -5.0:
         is_crash = True
