@@ -5,6 +5,7 @@ class PriceStructure:
     prev_pivot_high_price: float
     prev_pivot_low_price: float
     last_pivot_low_price: float
+    dist_ma20: float  # 👑 전략 엔진이 애타게 찾던 20일선 이격도 속성 추가
 
 @dataclass
 class PricePattern:
