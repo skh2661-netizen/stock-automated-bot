@@ -1,28 +1,25 @@
 from models import CandidateFeature
 from strategy_engine import assign_strategies
 from trade_plan import generate_trade_plan
-import logging
 
 def evaluate_candidates(features_list: list[CandidateFeature], market_context: dict, holdings_data: list = None, p_state = None, is_holding_eval: bool = False):
     m_state = market_context.get("state", "UNKNOWN")
     holding_codes = {h.code for h in holdings_data} if holdings_data else set()
     
     buy_blocked = False
-    block_reason = ""
-    
-    # 디버깅용 컷오프 트래커
-    dec_stats = {"total_in": len(features_list), "holding_drop": 0, "atr_drop": 0, "ma20_drop": 0, "levels": {"LEVEL 4": 0, "LEVEL 3": 0, "LEVEL 2": 0, "LEVEL 1": 0}}
     
     if not is_holding_eval:
-        if m_state == "CRASH": buy_blocked, block_reason = True, "CRASH 국면"
-        elif p_state and not p_state.allow_new_buy: buy_blocked, block_reason = True, "계좌 위험"
-        elif len(holding_codes) >= 5: buy_blocked, block_reason = True, "슬롯 소진"
+        if m_state == "CRASH": buy_blocked = True
+        elif p_state and not p_state.allow_new_buy: buy_blocked = True
+        elif len(holding_codes) >= 5: buy_blocked = True
 
     final_results = []
     
+    # 👑 탈락 사유 추적기
+    drop_stats = {"actionable": 0, "level": 0}
+    
     for cf in features_list:
         if not is_holding_eval and cf.code in holding_codes:
-            dec_stats["holding_drop"] += 1
             continue
 
         cf.mom.rs_20d = min(max(cf.mom.rs_20d, -50), 100)
@@ -30,14 +27,11 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
         
         atr_pct = (cf.vty.atr_14 / cf.price * 100) if cf.price > 0 else 0
         chg_limit = max(6.0, atr_pct * 2.5)
-        
-        if not is_holding_eval and (cf.chg >= chg_limit or cf.price >= plan["target1"]):
-            dec_stats["atr_drop"] += 1
-            continue
-            
         is_ma20_far = (cf.price / cf.mom.ma_20 - 1)*100 > 15.0 if cf.mom.ma_20 > 0 else False
-        if not is_holding_eval and is_ma20_far:
-            dec_stats["ma20_drop"] += 1
+        
+        # 👑 Actionable Filter (추격매수, 갭, 타겟도달)
+        if not is_holding_eval and (cf.chg >= chg_limit or cf.price >= plan["target1"] or is_ma20_far):
+            drop_stats["actionable"] += 1
             continue
 
         trade_score = min((cf.vol.vr_20 * 15) + (cf.vol.money_flow_ratio * 10), 100)
@@ -56,7 +50,9 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
         elif confidence >= 40: lvl = "LEVEL 2"
         else: lvl = "LEVEL 1"
         
-        dec_stats["levels"][lvl] += 1
+        # 👑 Level 부족 추적
+        if not is_holding_eval and lvl in ["LEVEL 1", "LEVEL 2"]:
+            drop_stats["level"] += 1
             
         final_results.append({
             "code": cf.code, "name": cf.name, "price": cf.price, "chg": cf.chg,
@@ -73,5 +69,5 @@ def evaluate_candidates(features_list: list[CandidateFeature], market_context: d
     return {
         "market": market_context, "candidates": final_results, 
         "alert_candidates": alert_candidates, 
-        "buy_blocked": buy_blocked, "block_reason": block_reason, "dec_stats": dec_stats
+        "buy_blocked": buy_blocked, "drop_stats": drop_stats
     }
