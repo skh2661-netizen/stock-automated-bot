@@ -3,3 +3,6 @@ pandas
 numpy
 pytz
 python-telegram-bot
+yfinance
+requests
+beautifulsoup4
