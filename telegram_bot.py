@@ -25,6 +25,12 @@ def format_scan_messages(result, holdings_data=None, p_state=None, p_stats=None)
     alert_cands = result.get("alert_candidates", [])
     buy_blocked = result.get("buy_blocked", False)
     
+    # KeyError 완벽 차단을 위한 get 메서드 활용
+    if not p_stats: p_stats = {}
+    stat_pool = p_stats.get('pool', 0)
+    stat_hist = p_stats.get('history_ok', 0)
+    stat_dec = p_stats.get('decision', 0)
+    
     msg_list = []
     
     # 1. 🌐 시장
@@ -56,9 +62,9 @@ def format_scan_messages(result, holdings_data=None, p_state=None, p_stats=None)
     if not alert_cands:
         msg += " 후보 없음\n"
         msg += " └ 원인: "
-        if p_stats['pool'] == 0: msg += "스캐너 통과 종목 0개\n"
-        elif p_stats['history_ok'] == 0: msg += "차트 로드 전멸\n"
-        elif p_stats['decision'] == 0: msg += "엔진 필터 전멸\n"
+        if stat_pool == 0: msg += "스캐너 통과 종목 0개\n"
+        elif stat_hist == 0: msg += "차트 로드 전멸\n"
+        elif stat_dec == 0: msg += "엔진 필터 전멸\n"
         else: msg += "LEVEL 3/4 도달 실패 (전부 LEVEL 1/2)\n"
         obs_start = 0
     elif buy_blocked:
@@ -79,15 +85,15 @@ def format_scan_messages(result, holdings_data=None, p_state=None, p_stats=None)
         
     # 4. 📊 Runtime & Pipeline Health
     msg += f"\n📊 <b>Pipeline Diagnostics</b>\n"
-    msg += f" KRX 전체: {p_stats['krx']}\n"
-    msg += f" Base Filter 통과: {p_stats['filter']}\n"
-    msg += f" Multi-Pool 통과: {p_stats['pool']}\n"
-    msg += f" History & Feature: {p_stats['feature_ok']}\n"
-    msg += f" 엔진 최종 판정: {p_stats['decision']} (LEVEL4: {dec_stats.get('levels',{}).get('LEVEL 4',0)}, L3: {dec_stats.get('levels',{}).get('LEVEL 3',0)})\n"
+    msg += f" KRX 전체: {p_stats.get('krx', 0)}\n"
+    msg += f" Base Filter 통과: {p_stats.get('filter', 0)}\n"
+    msg += f" Multi-Pool 통과: {stat_pool}\n"
+    msg += f" History & Feature: {p_stats.get('feature_ok', 0)}\n"
+    msg += f" 엔진 최종 판정: {stat_dec} (LEVEL4: {dec_stats.get('levels',{}).get('LEVEL 4',0)}, L3: {dec_stats.get('levels',{}).get('LEVEL 3',0)})\n"
     
     msg += f"\n⏱ <b>소요 시간</b> (총 {round(sum(v for k,v in p_stats.items() if k.startswith('time_')), 1)}s)\n"
-    msg += f" Market {p_stats['time_market']}s | Port {p_stats['time_port']}s | Scan {p_stats['time_scan']}s\n"
-    msg += f" Hist {p_stats['time_hist']}s | Feat {p_stats['time_feat']}s | Dec {p_stats['time_dec']}s\n"
+    msg += f" Market {p_stats.get('time_market', 0)}s | Port {p_stats.get('time_port', 0)}s | Scan {p_stats.get('time_scan', 0)}s\n"
+    msg += f" Hist {p_stats.get('time_hist', 0)}s | Feat {p_stats.get('time_feat', 0)}s | Dec {p_stats.get('time_dec', 0)}s\n"
         
     msg_list.append(msg)
     return msg_list
