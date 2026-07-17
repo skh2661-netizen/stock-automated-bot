@@ -32,14 +32,14 @@ def load_holdings() -> List[Holding]:
     logging.info(f"[Portfolio] Path: {os.path.abspath(HOLDINGS_FILE)}")
     
     if not os.path.exists(HOLDINGS_FILE):
-        logging.error("[Portfolio] File NOT FOUND. Defaulting to empty.")
+        logging.info("[Portfolio] File NOT FOUND. Defaulting to empty (100% Cash).")
         return []
         
     try:
         with open(HOLDINGS_FILE, "r", encoding="utf-8") as f:
             content = f.read()
             if not content.strip():
-                logging.warning("[Portfolio] File is EMPTY.")
+                logging.info("[Portfolio] File is EMPTY. Defaulting to empty (100% Cash).")
                 return []
             
             data = json.loads(content)
@@ -59,8 +59,12 @@ def load_holdings() -> List[Holding]:
             holdings.append(h)
             logging.info(f"[Portfolio] Loaded: {h.name} ({h.code})")
         return holdings
+    except json.JSONDecodeError as e:
+        # 에러 레벨 억제: 빈 파일은 장애가 아닌 포지션 '0' 상태일 뿐이므로 파이프라인 전진
+        logging.info(f"[Portfolio] JSON Decode Exception (Assuming 100% Cash). Details: {e}")
+        return []
     except Exception as e:
-        logging.error(f"[Portfolio] ERROR: {e}")
+        logging.error(f"[Portfolio] UNEXPECTED ERROR: {e}")
         return []
 
 def assess_portfolio_health(holdings: List[Holding], holdings_eval: List[Dict]) -> PortfolioState:
