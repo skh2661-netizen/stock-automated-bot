@@ -6,317 +6,427 @@ from bs4 import BeautifulSoup
 import time
 import re
 import logging
+import copy
+import atexit
+import threading
+from collections import deque, Counter
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED, ALL_COMPLETED
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-try:
-    import yfinance as yf
-    YF_AVAILABLE = True
-except ImportError:
-    YF_AVAILABLE = False
-
+_cache_lock = threading.Lock()
 _breadth_cache = {"timestamp": 0, "data": None}
+BREADTH_THRESHOLD = 700
+
+# Health Monitor & Circuit Breaker
+_health_history = deque(maxlen=100)
+_cb_lock = threading.Lock()
+_circuit_breakers = {
+    "API": {"fails": 0, "blocked_until": 0},
+    "DOM": {"fails": 0, "blocked_until": 0},
+    "FDR": {"fails": 0, "blocked_until": 0}
+}
+CB_THRESHOLD = 5
+CB_BASE_PENALTY = 1800  # 30분 기본 페널티
+
+_req_session = requests.Session()
+_req_session.headers.update({'User-Agent': 'Mozilla/5.0'})
+atexit.register(_req_session.close)
+
+_retry_strategy = Retry(
+    total=3, connect=3, read=3, allowed_methods=["GET"], backoff_factor=1,
+    status_forcelist=[500, 502, 503, 504],
+)
+_adapter = HTTPAdapter(max_retries=_retry_strategy)
+_req_session.mount("https://", _adapter)
+_req_session.mount("http://", _adapter)
+
+def _get_dynamic_ttl():
+    kst = pytz.timezone("Asia/Seoul")
+    now = datetime.datetime.now(kst)
+    if now.weekday() >= 5: return 600
+    market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return 60 if market_open <= now <= market_close else 600
+
+def _check_cb(source_key):
+    with _cb_lock:
+        if time.time() < _circuit_breakers[source_key]["blocked_until"]:
+            return False
+        return True
+
+def _update_cb(source_key, success):
+    with _cb_lock:
+        if success:
+            _circuit_breakers[source_key]["fails"] = max(0, _circuit_breakers[source_key]["fails"] - 1)
+            _circuit_breakers[source_key]["blocked_until"] = 0
+        else:
+            _circuit_breakers[source_key]["fails"] += 1
+            fails = _circuit_breakers[source_key]["fails"]
+            if fails >= CB_THRESHOLD:
+                power = max(0, (fails // CB_THRESHOLD) - 1)
+                penalty = min(CB_BASE_PENALTY * (2 ** power), 14400)
+                _circuit_breakers[source_key]["blocked_until"] = time.time() + penalty
+                logging.error(f"[Circuit Breaker] {source_key} BLOCKED for {penalty//60} mins (Fails: {fails})")
 
 def load_index():
     kst = pytz.timezone("Asia/Seoul")
     start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
-    
     idx_data = {
-        "success": False, "error": None,
+        "success": False, "partial": False, "error": None,
         "kp_today": 0.0, "kp_prev": 0.0, "kp_1d": 0.0, "kp_5d": 0.0, "kp_20d": 0.0,
         "kd_today": 0.0, "kd_prev": 0.0, "kd_1d": 0.0, "kd_5d": 0.0, "kd_20d": 0.0,
     }
     
+    kp, kd = None, None
+    executor = ThreadPoolExecutor(max_workers=2)
     try:
-        kospi = fdr.DataReader("KS11", start_date)
-        kosdaq = fdr.DataReader("KQ11", start_date)
+        f_kp = executor.submit(fdr.DataReader, "KS11", start_date)
+        f_kd = executor.submit(fdr.DataReader, "KQ11", start_date)
         
-        if len(kospi) >= 21 and len(kosdaq) >= 21:
-            idx_data["kp_today"] = float(kospi['Close'].iloc[-1])
-            idx_data["kp_prev"] = float(kospi['Close'].iloc[-2])
-            idx_data["kp_1d"] = round(((idx_data["kp_today"] / idx_data["kp_prev"]) - 1) * 100, 2)
-            idx_data["kp_5d"] = round(((idx_data["kp_today"] / kospi['Close'].iloc[-6]) - 1) * 100, 2)
-            idx_data["kp_20d"] = round(((idx_data["kp_today"] / kospi['Close'].iloc[-21]) - 1) * 100, 2)
-
-            idx_data["kd_today"] = float(kosdaq['Close'].iloc[-1])
-            idx_data["kd_prev"] = float(kosdaq['Close'].iloc[-2])
-            idx_data["kd_1d"] = round(((idx_data["kd_today"] / idx_data["kd_prev"]) - 1) * 100, 2)
-            idx_data["kd_5d"] = round(((idx_data["kd_today"] / kosdaq['Close'].iloc[-6]) - 1) * 100, 2)
-            idx_data["kd_20d"] = round(((idx_data["kd_today"] / kosdaq['Close'].iloc[-21]) - 1) * 100, 2)
+        done, not_done = wait([f_kp, f_kd], timeout=15, return_when=ALL_COMPLETED)
+        
+        for f in not_done: f.cancel()
+        
+        if f_kp in done:
+            try: kp = f_kp.result()
+            except Exception as e: 
+                idx_data["error"] = f"KOSPI: {type(e).__name__} {str(e)[:80]}"
+                logging.error(f"[Market] KOSPI Index Error: {e}")
+        else: idx_data["error"] = "KOSPI: Timeout"
             
-            idx_data["success"] = True
+        if f_kd in done:
+            try: kd = f_kd.result()
+            except Exception as e:
+                err_msg = f"KOSDAQ: {type(e).__name__} {str(e)[:80]}"
+                idx_data["error"] = idx_data["error"] + " | " + err_msg if idx_data["error"] else err_msg
+                logging.error(f"[Market] KOSDAQ Index Error: {e}")
         else:
-            idx_data["error"] = "데이터 행 부족 (21일 미만)"
-    except Exception as e:
-        idx_data["error"] = f"{type(e).__name__}: {str(e)[:30]}"
+            err_msg = "KOSDAQ: Timeout"
+            idx_data["error"] = idx_data["error"] + " | " + err_msg if idx_data["error"] else err_msg
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    kp_ok = kp is not None and len(kp) >= 21
+    kd_ok = kd is not None and len(kd) >= 21
+
+    if kp_ok:
+        idx_data["kp_today"], idx_data["kp_prev"] = float(kp['Close'].iloc[-1]), float(kp['Close'].iloc[-2])
+        idx_data["kp_1d"] = round(((idx_data["kp_today"] / idx_data["kp_prev"]) - 1) * 100, 2)
+        idx_data["kp_5d"] = round(((idx_data["kp_today"] / kp['Close'].iloc[-6]) - 1) * 100, 2)
+        idx_data["kp_20d"] = round(((idx_data["kp_today"] / kp['Close'].iloc[-21]) - 1) * 100, 2)
+        
+    if kd_ok:
+        idx_data["kd_today"], idx_data["kd_prev"] = float(kd['Close'].iloc[-1]), float(kd['Close'].iloc[-2])
+        idx_data["kd_1d"] = round(((idx_data["kd_today"] / idx_data["kd_prev"]) - 1) * 100, 2)
+        idx_data["kd_5d"] = round(((idx_data["kd_today"] / kd['Close'].iloc[-6]) - 1) * 100, 2)
+        idx_data["kd_20d"] = round(((idx_data["kd_today"] / kd['Close'].iloc[-21]) - 1) * 100, 2)
+        
+    idx_data["success"] = kp_ok or kd_ok
+    idx_data["partial"] = kp_ok != kd_ok
+    
+    if idx_data["partial"]: logging.warning(f"[Market] Partial Index Loaded (KOSPI={kp_ok}, KOSDAQ={kd_ok})")
+    if not idx_data["success"] and not idx_data["error"]: idx_data["error"] = "데이터 행 부족 (21일 미만)"
         
     return idx_data
 
+def _fetch_api():
+    st = time.time()
+    res = {"success": False, "source": "NAVER API", "error": "", "data": {}, "elapsed": 0.0}
+    try:
+        r_kp = _req_session.get("https://m.stock.naver.com/api/index/KOSPI/price", timeout=(3, 7))
+        r_kd = _req_session.get("https://m.stock.naver.com/api/index/KOSDAQ/price", timeout=(3, 7))
+        
+        r_kp.raise_for_status(); r_kd.raise_for_status()
+        
+        kp_j, kd_j = r_kp.json(), r_kd.json()
+        d_kp, d_kd = (kp_j[0] if isinstance(kp_j, list) else kp_j), (kd_j[0] if isinstance(kd_j, list) else kd_j)
+        
+        kp_rf, kd_rf = d_kp.get("riseFall", {}), d_kd.get("riseFall", {})
+        kp_up, kp_down, kp_same = int(kp_rf.get("rise",0)), int(kp_rf.get("fall",0)), int(kp_rf.get("same",0))
+        kd_up, kd_down, kd_same = int(kd_rf.get("rise",0)), int(kd_rf.get("fall",0)), int(kd_rf.get("same",0))
+        
+        if (kp_up + kp_down + kp_same) >= BREADTH_THRESHOLD and (kd_up + kd_down + kd_same) >= BREADTH_THRESHOLD:
+            res["success"] = True
+            res["data"] = {"kp_up": kp_up, "kp_down": kp_down, "kp_same": kp_same, "kd_up": kd_up, "kd_down": kd_down, "kd_same": kd_same}
+        else: res["error"] = "Insufficient Data"
+    except Exception as e: res["error"] = f"Err: {str(e)[:70]}"
+    res["elapsed"] = round(time.time() - st, 3)
+    return res
+
+def _parse_dom_market(code):
+    r = _req_session.get(f"https://finance.naver.com/sise/sise_index.naver?code={code}", timeout=(3, 7))
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, 'html.parser')
+    dl = soup.select_one("dl.lst_kos_info")
+    up, down, same = 0, 0, 0
+    if dl:
+        for dt in dl.select("dt"):
+            txt, dd = dt.get_text().strip(), dt.find_next_sibling("dd")
+            if not dd: continue
+            val_match = re.search(r'[\d,]+', dd.get_text())
+            val = int(val_match.group().replace(",", "")) if val_match else 0
+            if "상승" in txt: up = val
+            elif "하락" in txt: down = val
+            elif "보합" in txt: same = val
+    return up, down, same
+
+def _fetch_dom():
+    st = time.time()
+    res = {"success": False, "source": "NAVER DOM", "error": "", "data": {}, "elapsed": 0.0}
+    try:
+        kp_up, kp_down, kp_same = _parse_dom_market("KOSPI")
+        kd_up, kd_down, kd_same = _parse_dom_market("KOSDAQ")
+        
+        if (kp_up + kp_down + kp_same) >= BREADTH_THRESHOLD and (kd_up + kd_down + kd_same) >= BREADTH_THRESHOLD:
+            res["success"] = True
+            res["data"] = {"kp_up": kp_up, "kp_down": kp_down, "kp_same": kp_same, "kd_up": kd_up, "kd_down": kd_down, "kd_same": kd_same}
+        else: res["error"] = "Insufficient Data"
+    except Exception as e: res["error"] = f"Err: {str(e)[:70]}"
+    res["elapsed"] = round(time.time() - st, 3)
+    return res
+
+def _fetch_fdr():
+    st = time.time()
+    res = {"success": False, "source": "한국거래소(FDR)", "error": "", "data": {}, "elapsed": 0.0}
+    try:
+        krx = fdr.StockListing('KRX')
+        target_col = None
+        for col in ["ChangesRatio", "ChgRate", "ChangeRatio", "FluctuationRate", "Rate", "Change"]:
+            if col in krx.columns:
+                target_col = col; break
+        if not target_col: raise RuntimeError("변동률 컬럼 탐색 실패")
+        
+        krx = krx.rename(columns={target_col: "ChangesRatio"})
+        
+        kpi_df, kdq_df, kon_df = krx[krx['Market'] == 'KOSPI'], krx[krx['Market'] == 'KOSDAQ'], krx[krx['Market'] == 'KONEX']
+        fdr_kp_total, fdr_kd_total = len(kpi_df), len(kdq_df)
+        
+        kp_up, kp_down, kp_same = len(kpi_df[kpi_df['ChangesRatio']>0]), len(kpi_df[kpi_df['ChangesRatio']<0]), len(kpi_df[kpi_df['ChangesRatio']==0])
+        kd_up, kd_down, kd_same = len(kdq_df[kdq_df['ChangesRatio']>0]), len(kdq_df[kdq_df['ChangesRatio']<0]), len(kdq_df[kdq_df['ChangesRatio']==0])
+        kp_sum, kd_sum = kp_up + kp_down + kp_same, kd_up + kd_down + kd_same
+        
+        if abs(kp_sum - fdr_kp_total) <= 2 and abs(kd_sum - fdr_kd_total) <= 2 and kp_sum >= (fdr_kp_total * 0.75) and kd_sum >= (fdr_kd_total * 0.75):
+            res["success"] = True
+            res["data"] = {
+                "fdr_total": len(krx), "fdr_kp_total": fdr_kp_total, "fdr_kd_total": fdr_kd_total, "fdr_konex_total": len(kon_df),
+                "fdr_others": len(krx) - (fdr_kp_total + fdr_kd_total + len(kon_df)),
+                "kp_up": kp_up, "kp_down": kp_down, "kp_same": kp_same, "kd_up": kd_up, "kd_down": kd_down, "kd_same": kd_same
+            }
+        else: res["error"] = f"Mismatch (KP:{kp_sum}/{fdr_kp_total}, KD:{kd_sum}/{fdr_kd_total})"
+    except Exception as e: res["error"] = str(e)[:80]
+    res["elapsed"] = round(time.time() - st, 3)
+    return res
+
+def _get_src_key(source_str):
+    if "API" in source_str: return "API"
+    if "DOM" in source_str: return "DOM"
+    return "FDR"
+
 def load_breadth():
-    global _breadth_cache
-    current_time = time.time()
+    global _breadth_cache, _health_history
+    start_time = time.time()
+    cache_ttl = _get_dynamic_ttl()
     
     b_data = {
-        "success": False, "source": "NONE",
-        "kp_up": 0, "kp_down": 0, "kp_same": 0, 
-        "kd_up": 0, "kd_down": 0, "kd_same": 0, 
+        "success": False, "source": "NONE", "kp_up": 0, "kp_down": 0, "kp_same": 0, "kd_up": 0, "kd_down": 0, "kd_same": 0,
         "fdr_total": 0, "fdr_kp_total": 0, "fdr_kd_total": 0, "fdr_konex_total": 0, "fdr_others": 0,
         "diag": {
-            "API": {"status": "FAIL", "error": ""},
-            "DOM": {"status": "FAIL", "error": ""},
-            "FDR": {"status": "FAIL", "error": ""},
-            "YAHOO": {"status": "OFF" if not YF_AVAILABLE else "FAIL", "error": ""},
-            "CACHE": {"status": "NO", "age": 0}
+            "API": {"status": "FAIL", "error": "", "elapsed": 0}, "DOM": {"status": "FAIL", "error": "", "elapsed": 0},
+            "FDR": {"status": "FAIL", "error": "", "elapsed": 0}, "YAHOO": {"status": "OFF", "error": "", "elapsed": 0},
+            "CACHE": {"status": "NO", "age": 0, "error": ""}
         }
     }
     
-    if _breadth_cache["data"] is not None:
-        b_data["diag"]["CACHE"]["age"] = int(current_time - _breadth_cache["timestamp"])
-        
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    with _cache_lock:
+        if _breadth_cache["data"] is not None and (start_time - _breadth_cache["timestamp"] < cache_ttl):
+            cached = copy.deepcopy(_breadth_cache["data"])
+            cached["success"] = True
+            
+            for k in ["API", "DOM", "FDR", "YAHOO"]:
+                cached["diag"][k] = {"status": "SKIP", "error": "", "elapsed": 0}
+            cached["diag"]["CACHE"].update({"status": "USED", "age": int(start_time - _breadth_cache['timestamp']), "error": ""})
+            
+            # 캐시 반환 시에는 _health_history를 오염시키지 않음
+            elapsed = round(time.time() - start_time, 3)
+            logging.debug(f"[Market] Source=CACHE (Original:{cached['source']}) | Elapsed={elapsed}s | Age={int(start_time - _breadth_cache['timestamp'])}s")
+            return cached
+
+    priority_map = {"한국거래소(FDR)": 100, "NAVER API": 95, "NAVER DOM": 90}
+    valid_results = []
     
-    # [1] NAVER API
+    task_map = {}
+    if _check_cb("API"): task_map[_fetch_api] = "API"
+    else: b_data["diag"]["API"]["status"] = "BLOCKED"
+    
+    if _check_cb("DOM"): task_map[_fetch_dom] = "DOM"
+    else: b_data["diag"]["DOM"]["status"] = "BLOCKED"
+        
+    if _check_cb("FDR"): task_map[_fetch_fdr] = "FDR"
+    else: b_data["diag"]["FDR"]["status"] = "BLOCKED"
+
+    executor = ThreadPoolExecutor(max_workers=3)
     try:
-        res_kp = requests.get("https://m.stock.naver.com/api/index/KOSPI/price", headers=headers, timeout=3)
-        res_kd = requests.get("https://m.stock.naver.com/api/index/KOSDAQ/price", headers=headers, timeout=3)
-        if res_kp.status_code == 200 and res_kd.status_code == 200:
-            data_kp, data_kd = res_kp.json(), res_kd.json()
-            if isinstance(data_kp, list) and len(data_kp) > 0: data_kp = data_kp[0]
-            if isinstance(data_kd, list) and len(data_kd) > 0: data_kd = data_kd[0]
-            
-            kp_rf, kd_rf = data_kp.get("riseFall", {}), data_kd.get("riseFall", {})
-            b_data["kp_up"], b_data["kp_down"], b_data["kp_same"] = int(kp_rf.get("rise",0)), int(kp_rf.get("fall",0)), int(kp_rf.get("same",0))
-            b_data["kd_up"], b_data["kd_down"], b_data["kd_same"] = int(kd_rf.get("rise",0)), int(kd_rf.get("fall",0)), int(kd_rf.get("same",0))
-            
-            if (b_data["kp_up"] + b_data["kp_down"]) > 0:
-                b_data["success"], b_data["source"], b_data["diag"]["API"]["status"] = True, "NAVER API", "PASS"
-    except Exception as e: b_data["diag"]["API"]["error"] = str(e)[:30]
+        futures = {executor.submit(task): name for task, name in task_map.items()}
         
-    # [2] NAVER DOM
-    if not b_data["success"]:
-        try:
-            for code, k_up, k_down, k_same in [("KOSPI", "kp_up", "kp_down", "kp_same"), ("KOSDAQ", "kd_up", "kd_down", "kd_same")]:
-                res = requests.get(f"https://finance.naver.com/sise/sise_index.naver?code={code}", headers=headers, timeout=5)
-                soup = BeautifulSoup(res.text, 'html.parser')
-                dl = soup.find("dl", class_="lst_kos_info")
-                if dl:
-                    for dt in dl.find_all("dt"):
-                        txt = dt.get_text().strip()
-                        dd = dt.find_next_sibling("dd")
-                        if not dd: continue
-                        val = int(re.search(r'[\d,]+', dd.get_text()).group().replace(",", "")) if re.search(r'[\d,]+', dd.get_text()) else 0
-                        if "상승" in txt: b_data[k_up] = val
-                        elif "하락" in txt: b_data[k_down] = val
-                        elif "보합" in txt: b_data[k_same] = val
-            if (b_data["kp_up"] + b_data["kp_down"]) > 0:
-                b_data["success"], b_data["source"], b_data["diag"]["DOM"]["status"] = True, "NAVER DOM", "PASS"
-        except Exception as e: b_data["diag"]["DOM"]["error"] = str(e)[:30]
-
-    # [3] 한국거래소 (FDR)
-    if not b_data["success"]:
-        try:
-            krx = fdr.StockListing('KRX')
-            b_data["fdr_total"] = len(krx)
+        if futures:
+            done, not_done = wait(futures, return_when=FIRST_COMPLETED)
             
-            if 'ChangesRatio' not in krx.columns and 'ChagesRatio' in krx.columns:
-                krx.rename(columns={'ChagesRatio': 'ChangesRatio'}, inplace=True)
+            highest_found = False
+            for f in done:
+                try:
+                    res = f.result()
+                except Exception as e:
+                    # 스레드 자체 크래시 방어
+                    src_key = futures[f]
+                    b_data["diag"][src_key]["error"] = f"Thread Exception: {str(e)[:50]}"
+                    logging.error(f"[Market] Thread Exception for {src_key}: {e}")
+                    continue
                 
-            if 'ChangesRatio' in krx.columns:
-                kpi_df = krx[krx['Market'] == 'KOSPI']
-                kdq_df = krx[krx['Market'] == 'KOSDAQ']
-                kon_df = krx[krx['Market'] == 'KONEX']
+                src_key = _get_src_key(res["source"])
+                b_data["diag"][src_key]["elapsed"] = res.get("elapsed", 0)
+                _update_cb(src_key, res["success"])
                 
-                b_data["fdr_kp_total"] = len(kpi_df)
-                b_data["fdr_kd_total"] = len(kdq_df)
-                b_data["fdr_konex_total"] = len(kon_df)
-                b_data["fdr_others"] = b_data["fdr_total"] - (len(kpi_df) + len(kdq_df) + len(kon_df))
+                if res["success"]:
+                    valid_results.append(res)
+                    if res["source"] == "한국거래소(FDR)":
+                        highest_found = True
+                else:
+                    b_data["diag"][src_key]["error"] = res["error"]
+                    logging.debug(f"[Market] {res['source']} Fail: {res['error']} ({res['elapsed']}s)")
+            
+            if not highest_found and not_done:
+                done2, not_done2 = wait(not_done, timeout=1.5, return_when=ALL_COMPLETED)
+                for f in done2:
+                    try:
+                        res = f.result()
+                    except Exception as e:
+                        src_key = futures[f]
+                        b_data["diag"][src_key]["error"] = f"Thread Exception: {str(e)[:50]}"
+                        continue
+                        
+                    src_key = _get_src_key(res["source"])
+                    b_data["diag"][src_key]["elapsed"] = res.get("elapsed", 0)
+                    _update_cb(src_key, res["success"])
+                    
+                    if res["success"]: valid_results.append(res)
+                    else:
+                        b_data["diag"][src_key]["error"] = res["error"]
+                        logging.debug(f"[Market] {res['source']} Fail (Grace): {res['error']} ({res['elapsed']}s)")
                 
-                b_data["kp_up"] = len(kpi_df[kpi_df['ChangesRatio'] > 0])
-                b_data["kp_down"] = len(kpi_df[kpi_df['ChangesRatio'] < 0])
-                b_data["kp_same"] = len(kpi_df[kpi_df['ChangesRatio'] == 0])
-                
-                b_data["kd_up"] = len(kdq_df[kdq_df['ChangesRatio'] > 0])
-                b_data["kd_down"] = len(kdq_df[kdq_df['ChangesRatio'] < 0])
-                b_data["kd_same"] = len(kdq_df[kdq_df['ChangesRatio'] == 0])
-                
-                if (b_data["kp_up"] + b_data["kp_down"]) > 0:
-                    b_data["success"], b_data["source"], b_data["diag"]["FDR"]["status"] = True, "한국거래소(FDR)", "PASS"
-            else: b_data["diag"]["FDR"]["error"] = "ChangesRatio 칼럼 누락"
-        except Exception as e: b_data["diag"]["FDR"]["error"] = str(e)[:30]
+                # 명시적 상태 기록 및 취소 검증
+                for f in not_done2: 
+                    is_cancelled = f.cancel()
+                    src_key = futures[f]
+                    if b_data["diag"][src_key]["status"] == "FAIL" and not b_data["diag"][src_key]["error"]:
+                        b_data["diag"][src_key]["error"] = "Cancelled (Timeout/Grace Exceeded)" if is_cancelled else "Timeout (Running in background)"
+            else:
+                for f in not_done:
+                    is_cancelled = f.cancel()
+                    src_key = futures[f]
+                    if b_data["diag"][src_key]["status"] == "FAIL" and not b_data["diag"][src_key]["error"]:
+                        b_data["diag"][src_key]["error"] = "Cancelled (Fast Exit)" if is_cancelled else "Fast Exit (Running in background)"
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
-    # [4] YAHOO
-    if not b_data["success"] and YF_AVAILABLE:
-        try:
-            yf_kp = yf.Ticker("^KS11").history(period="1d")
-            if not yf_kp.empty: b_data["diag"]["YAHOO"]["status"] = "PASS"
-        except Exception as e: b_data["diag"]["YAHOO"]["error"] = str(e)[:30]
-
-    # [5] CACHE
-    if not b_data["success"] and _breadth_cache["data"] is not None:
-        cached = _breadth_cache["data"]
-        for k in ["kp_up", "kp_down", "kp_same", "kd_up", "kd_down", "kd_same", "fdr_total", "fdr_kp_total", "fdr_kd_total"]:
-            b_data[k] = cached.get(k, 0)
-        b_data["success"], b_data["source"], b_data["diag"]["CACHE"]["status"] = True, "캐시", "USED"
-
-    b_data["kp_actual_sum"] = b_data["kp_up"] + b_data["kp_down"] + b_data["kp_same"]
-    b_data["kd_actual_sum"] = b_data["kd_up"] + b_data["kd_down"] + b_data["kd_same"]
-
-    if b_data["success"] and b_data["source"] != "캐시":
-        _breadth_cache = {"timestamp": current_time, "data": b_data.copy()}
-
-    return b_data
-
-def calculate_up_ratio(b_data):
-    """3. 상승 종목 비율 계산"""
-    b_data["total_up"] = b_data["kp_up"] + b_data["kd_up"]
-    b_data["total_down"] = b_data["kp_down"] + b_data["kd_down"]
-    b_data["total_same"] = b_data["kp_same"] + b_data["kd_same"]
-    b_data["actual_sum"] = b_data["total_up"] + b_data["total_down"] + b_data["total_same"]
-    
-    total_valid = b_data["total_up"] + b_data["total_down"]
-    if total_valid > 0:
-        b_data["up_ratio"] = round((b_data["total_up"] / total_valid) * 100, 1)
+    if valid_results:
+        valid_results.sort(key=lambda x: priority_map.get(x["source"], 0), reverse=True)
+        winner_res = valid_results[0]
+        
+        b_data.update(winner_res["data"])
+        b_data["success"], b_data["source"] = True, winner_res["source"]
+        
+        winner_key = _get_src_key(winner_res["source"])
+        for k in ["API", "DOM", "FDR"]:
+            if k == winner_key: b_data["diag"][k]["status"] = "PASS"
+            elif b_data["diag"][k]["status"] == "FAIL" and "Cancelled" not in b_data["diag"][k]["error"] and "Running" not in b_data["diag"][k]["error"] and b_data["diag"][k]["error"] == "":
+                b_data["diag"][k]["status"] = "SKIP"
     else:
-        b_data["up_ratio"] = 0.0
+        try:
+            yf_st = time.time()
+            resp = _req_session.get("https://query1.finance.yahoo.com/v8/finance/chart/^KS11", timeout=(3, 3))
+            resp.raise_for_status()
+            b_data["diag"]["YAHOO"]["status"] = "PASS"
+            b_data["diag"]["YAHOO"]["elapsed"] = round(time.time() - yf_st, 3)
+            logging.debug("[Market] YAHOO Connectivity check PASS")
+        except Exception as e:
+            b_data["diag"]["YAHOO"]["error"] = f"Conn Err: {str(e)[:50]}"
+            
+        logging.error("[Market] ALL SOURCES FAILED OR BLOCKED")
+
+    b_data["kp_actual_sum"] = b_data.get("kp_up",0) + b_data.get("kp_down",0) + b_data.get("kp_same",0)
+    b_data["kd_actual_sum"] = b_data.get("kd_up",0) + b_data.get("kd_down",0) + b_data.get("kd_same",0)
+    
+    elapsed = round(time.time() - start_time, 3)
+    with _cache_lock:
+        if b_data["success"]:
+            # 성공한 진짜 Source만 히스토리에 반영
+            _health_history.append(b_data["source"])
+            cache_data = copy.deepcopy(b_data)
+            cache_data["diag"]["CACHE"]["age"] = 0
+            _breadth_cache = {"timestamp": time.time(), "data": cache_data}
         
-    if b_data["up_ratio"] >= 55.0: b_data["trend"] = "Improving"
-    elif b_data["up_ratio"] > 0 and b_data["up_ratio"] <= 45.0: b_data["trend"] = "Weakening"
-    else: b_data["trend"] = "Flat"
+        total_runs = len(_health_history)
+        if total_runs > 0 and (total_runs % 10 == 0 or not b_data["success"]):
+            counts = Counter(_health_history)
+            stats = {k: round(v / total_runs * 100, 1) for k, v in counts.items()}
+            logging.info(f"[Market Health] {total_runs}-MA Stats: {stats}")
+
+    diag_log = " | ".join([f"{k}:{v['status']}({v.get('elapsed',0)}s)" for k, v in b_data['diag'].items() if k != "CACHE"])
+    logging.debug(f"[Market] Diagnostics -> {diag_log}")
+    
+    if b_data["success"]:
+        logging.info(f"[Market] Selected Source={b_data['source']} | Elapsed={elapsed}s")
     
     return b_data
 
 def calculate_quality(idx_data, b_data):
-    """4. 데이터 검증 및 품질 산정 (100점 만점 연동)"""
-    q_data = {
-        "idx_pass": False, "idx_score": 0,
-        "brd_pass": False, "brd_score": 0,
-        "kp_pass": False, "kp_score": 0,
-        "kd_pass": False, "kd_score": 0,
-        "src_pass": False, "src_score": 0,
-        "validation_pass": False, "total_score": 0, "reason": "All Clear"
-    }
+    q = {"idx": 0, "brd": 0, "kp": 0, "kd": 0, "src": 0, "score": 0, "reasons": []}
     
-    # 1. 지수 검증 (20점)
-    if idx_data["success"]: q_data["idx_pass"], q_data["idx_score"] = True, 20
-    else: q_data["reason"] = f"Index Fail: {idx_data.get('error')}"
+    if idx_data["success"]:
+        if idx_data.get("partial"):
+            q["idx"] = 5; q["reasons"].append("Index Partial Success")
+        else: q["idx"] = 10
+    else: q["reasons"].append("Index Fail")
         
-    # 2. 시장폭 검증 (20점)
-    if b_data["success"]: q_data["brd_pass"], q_data["brd_score"] = True, 20
-    elif q_data["reason"] == "All Clear": q_data["reason"] = "Breadth Data Missing"
-        
-    # 3. KOSPI 정합성 (20점)
+    if b_data["success"]: q["brd"] = 30
+    else: q["reasons"].append("Breadth Data Fail")
+    
     if b_data["source"] == "한국거래소(FDR)":
-        if b_data["kp_actual_sum"] == b_data["fdr_kp_total"] and b_data["kp_actual_sum"] > 0:
-            q_data["kp_pass"], q_data["kp_score"] = True, 20
-        else:
-            if q_data["reason"] == "All Clear": 
-                q_data["reason"] = f"KOSPI Mismatch (Exp: {b_data['fdr_kp_total']}, Act: {b_data['kp_actual_sum']})"
+        if abs(b_data["kp_actual_sum"] - b_data.get("fdr_kp_total", 0)) <= 2 and b_data["kp_actual_sum"] >= (b_data.get("fdr_kp_total", 0) * 0.75): q["kp"] = 20
+        else: q["reasons"].append("KOSPI Mismatch")
+        if abs(b_data["kd_actual_sum"] - b_data.get("fdr_kd_total", 0)) <= 2 and b_data["kd_actual_sum"] >= (b_data.get("fdr_kd_total", 0) * 0.75): q["kd"] = 20
+        else: q["reasons"].append("KOSDAQ Mismatch")
     else:
-        if b_data["kp_actual_sum"] > 0: q_data["kp_pass"], q_data["kp_score"] = True, 20
+        if b_data["kp_actual_sum"] >= BREADTH_THRESHOLD: q["kp"] = 20
+        else: q["reasons"].append("KOSPI Empty/Low")
+        if b_data["kd_actual_sum"] >= BREADTH_THRESHOLD: q["kd"] = 20
+        else: q["reasons"].append("KOSDAQ Empty/Low")
+        
+    if b_data["source"] == "NAVER API": q["src"] = 20
+    elif b_data["source"] == "한국거래소(FDR)": q["src"] = 20
+    elif b_data["source"] == "NAVER DOM": q["src"] = 15
+    elif b_data["source"] == "CACHE":
+        q["src"] = 10
+        if not q["reasons"]: q["reasons"].append("Using Stale Cache")
             
-    # 4. KOSDAQ 정합성 (20점)
-    if b_data["source"] == "한국거래소(FDR)":
-        if b_data["kd_actual_sum"] == b_data["fdr_kd_total"] and b_data["kd_actual_sum"] > 0:
-            q_data["kd_pass"], q_data["kd_score"] = True, 20
-        else:
-            if q_data["reason"] == "All Clear": 
-                q_data["reason"] = f"KOSDAQ Mismatch (Exp: {b_data['fdr_kd_total']}, Act: {b_data['kd_actual_sum']})"
-    else:
-        if b_data["kd_actual_sum"] > 0: q_data["kd_pass"], q_data["kd_score"] = True, 20
-            
-    # 5. 출처 신뢰도 (20점)
-    if b_data["source"] in ["NAVER API", "NAVER DOM", "한국거래소(FDR)"]:
-        q_data["src_pass"], q_data["src_score"] = True, 20
-    elif b_data["source"] == "캐시":
-        q_data["src_pass"], q_data["src_score"] = True, 10
-        if q_data["reason"] == "All Clear": q_data["reason"] = "Using Stale Cache"
-    else:
-        if q_data["reason"] == "All Clear": q_data["reason"] = "Source is NONE"
-        
-    q_data["total_score"] = sum([q_data["idx_score"], q_data["brd_score"], q_data["kp_score"], q_data["kd_score"], q_data["src_score"]])
+    q["score"] = sum([q["idx"], q["brd"], q["kp"], q["kd"], q["src"]])
     
-    if q_data["total_score"] == 100:
-        q_data["validation_pass"] = True
-        
-    return q_data
-
-def validation_log(idx_data, b_data, q_data):
-    """5. 심층 검증 로깅"""
-    logging.info("========== SOURCE CHECK ==========")
-    for src in ["API", "DOM", "FDR", "YAHOO"]:
-        status = b_data["diag"][src]["status"]
-        err = f" ({b_data['diag'][src]['error']})" if b_data["diag"][src]["error"] else ""
-        logging.info(f"{src:<10} {status}{err}")
-        
-    logging.info("========== CACHE ==========")
-    logging.info(f"USED : {b_data['diag']['CACHE']['status']}")
-    if b_data['diag']['CACHE']['age'] > 0: logging.info(f"Age  : {b_data['diag']['CACHE']['age']} sec")
-
-    logging.info("========== INDEX VALIDATION ==========")
-    logging.info(f"KOSPI  | Today Close: {idx_data['kp_today']:<8} | Prev Close: {idx_data['kp_prev']:<8} | Return: {idx_data['kp_1d']}%")
-    logging.info(f"KOSDAQ | Today Close: {idx_data['kd_today']:<8} | Prev Close: {idx_data['kd_prev']:<8} | Return: {idx_data['kd_1d']}%")
+    if q["score"] >= 90: state = "NORMAL"
+    elif q["score"] >= 80: state = "CAUTION"
+    else: state = "INVALID"
     
-    logging.info("========== MARKET BREAKDOWN ==========")
-    if b_data["source"] == "한국거래소(FDR)":
-        logging.info(f"KRX Total : {b_data['fdr_total']}")
-        logging.info(f"KOSPI     : {b_data['fdr_kp_total']}")
-        logging.info(f"KOSDAQ    : {b_data['fdr_kd_total']}")
-        logging.info(f"KONEX     : {b_data['fdr_konex_total']}")
-        logging.info(f"Others    : {b_data['fdr_others']}")
-        sum_check = b_data['fdr_kp_total'] + b_data['fdr_kd_total'] + b_data['fdr_konex_total'] + b_data['fdr_others']
-        logging.info(f"SUM CHECK : {sum_check} {'PASS' if sum_check == b_data['fdr_total'] else 'FAIL'}")
-    else:
-        logging.info(f"Breakdown Unavailable (Using {b_data['source']})")
-        
-    logging.info("========== MARKET CONSISTENCY CHECK ==========")
-    kp_exp = b_data.get('fdr_kp_total', b_data['kp_actual_sum'])
-    kd_exp = b_data.get('fdr_kd_total', b_data['kd_actual_sum'])
-    logging.info(f"KOSPI  | UP+DOWN+FLAT: {b_data['kp_actual_sum']:<4} | EXPECTED: {kp_exp:<4} | {'PASS' if b_data['kp_actual_sum'] == kp_exp else 'FAIL'}")
-    logging.info(f"KOSDAQ | UP+DOWN+FLAT: {b_data['kd_actual_sum']:<4} | EXPECTED: {kd_exp:<4} | {'PASS' if b_data['kd_actual_sum'] == kd_exp else 'FAIL'}")
-    logging.info(f"Missing Symbols: {(kp_exp - b_data['kp_actual_sum']) + (kd_exp - b_data['kd_actual_sum'])}")
-    logging.info(f"Validation: {'PASS' if q_data['validation_pass'] else 'FAIL'}")
-    
-    logging.info("========== QUALITY SCORE ==========")
-    logging.info(f"Index    {'PASS' if q_data['idx_pass'] else 'FAIL':<4} {q_data['idx_score']}")
-    logging.info(f"Breadth  {'PASS' if q_data['brd_pass'] else 'FAIL':<4} {q_data['brd_score']}")
-    logging.info(f"KOSPI    {'PASS' if q_data['kp_pass'] else 'FAIL':<4} {q_data['kp_score']}")
-    logging.info(f"KOSDAQ   {'PASS' if q_data['kd_pass'] else 'FAIL':<4} {q_data['kd_score']}")
-    logging.info(f"Source   {'PASS' if q_data['src_pass'] else 'FAIL':<4} {q_data['src_score']}")
-    logging.info(f"TOTAL SCORE : {q_data['total_score']}")
-    logging.info("===================================")
+    return q["score"], state, "; ".join(q["reasons"]) if q["reasons"] else "All Clear"
 
 def get_market_context():
-    """메인 오케스트레이터"""
-    idx_data = load_index()
-    b_data = load_breadth()
-    b_data = calculate_up_ratio(b_data)
-    q_data = calculate_quality(idx_data, b_data)
+    idx, b = load_index(), load_breadth()
+    score, state, reason = calculate_quality(idx, b)
+    val_pass = (state in ["NORMAL", "CAUTION"])
     
-    validation_log(idx_data, b_data, q_data)
+    log_level = logging.INFO if val_pass else logging.WARNING
+    logging.log(log_level, f"[Market Final] State={state} | Score={score} | Reason={reason}")
     
-    # 👑 최상위 방화벽: 검증 실패 시 파이프라인 강제 차단 플래그 송출
-    if not q_data["validation_pass"]:
-        return {
-            "state": "INVALID_MARKET_DATA",
-            "allow_scan": False,
-            "reason": q_data["reason"],
-            "data_quality": q_data["total_score"], "source": b_data["source"],
-            "kospi_1d": idx_data["kp_1d"], "kosdaq_1d": idx_data["kd_1d"],
-            "breadth": b_data, "validation_pass": False
-        }
-        
-    is_crash = False
-    if idx_data["kp_1d"] <= -3.0 and b_data["up_ratio"] < 35 and idx_data["kp_20d"] < -5.0:
-        is_crash = True
-        
-    if is_crash: state = "CRASH"
-    elif idx_data["kp_1d"] <= -1.5 or b_data["up_ratio"] < 40: state = "RISK"
-    elif q_data["total_score"] <= 60: state = "CAUTION"
-    elif idx_data["kp_1d"] >= 1.0 and b_data["trend"] == "Improving": state = "BULL"
-    else: state = "NORMAL"
-        
     return {
-        "state": state, "allow_scan": True, "reason": "All Clear",
-        "data_quality": q_data["total_score"], "source": b_data["source"],
-        "kospi_1d": idx_data["kp_1d"], "kospi_5d": idx_data["kp_5d"], "kospi_20d": idx_data["kp_20d"],
-        "kosdaq_1d": idx_data["kd_1d"], "kosdaq_5d": idx_data["kd_5d"], "kosdaq_20d": idx_data["kd_20d"],
-        "breadth": b_data, "validation_pass": True
+        "state": state, "allow_scan": val_pass, "data_quality": score, "validation_pass": val_pass,
+        "reason": reason, "breadth": b, "kospi_1d": idx["kp_1d"], "kosdaq_1d": idx["kd_1d"], "source": b["source"], "partial": idx.get("partial", False)
     }
