@@ -1,3 +1,4 @@
+# scanner.py
 import os
 import time
 import logging
@@ -27,7 +28,7 @@ class ScannerConfig:
     MAX_PRICE: int = 500000
     MIN_VOLUME: int = 100000
     
-    # [핵심] 추격매수 방지 (Anti-Chasing) 및 돌파 조건
+    # 추격매수 방지 (Anti-Chasing) 및 돌파 조건
     MAX_AWAY_FROM_20MA: float = 0.15  # 20일선 대비 15% 이상 급등한 종목은 제외 (고점 추격매수 방지)
     VOL_BREAKOUT_MULTIPLIER: float = 2.0  # 5일 평균 거래량 대비 200% 이상 터진 종목
     
@@ -89,10 +90,10 @@ def evaluate_stock(symbol: str, name: str, market_ctx: Dict) -> Optional[Dict[st
         # 3. 정배열 확인 (20MA > 60MA)
         if ma20 < ma60: return None
         
-        # 4. [핵심] 추격매수 방지 (이격도 체크)
+        # 4. 추격매수 방지 (이격도 체크)
         away_from_20ma = (current_price - ma20) / ma20
         if away_from_20ma > CONFIG.MAX_AWAY_FROM_20MA:
-            return None # 20일선 기준 너무 높게 떴으면 포기 (추격매수 금지)
+            return None 
             
         # 5. 거래량 돌파 확인
         if current_vol < (vol_ma5 * CONFIG.VOL_BREAKOUT_MULTIPLIER): return None
@@ -100,11 +101,9 @@ def evaluate_stock(symbol: str, name: str, market_ctx: Dict) -> Optional[Dict[st
         # 6. 시장 상태(Market Context)에 따른 동적 필터링
         mkt_state = market_ctx.get("state", "INVALID")
         if mkt_state == "CAUTION":
-            # 시장이 불안정할 때는 조건을 훨씬 까다롭게 (거래량 3배 이상, 20일선 이격도 5% 이내)
             if current_vol < (vol_ma5 * 3.0): return None
             if away_from_20ma > 0.05: return None
             
-        # [핵심 수정] 호환성을 위해 chg (등락률) 데이터 계산 추가
         chg = round((close[-1] / close[-2] - 1) * 100, 2) if len(close) > 1 else 0.0
             
         # 모든 관문 통과 시 시그널 생성
@@ -127,14 +126,24 @@ def evaluate_stock(symbol: str, name: str, market_ctx: Dict) -> Optional[Dict[st
 def run_scanner(market_ctx: Dict) -> List[Dict[str, Any]]:
     _logger.info("Starting market scan. Context State: %s", market_ctx.get("state"))
     
-    # 1. 대상 종목 리스트 확보 (FDR 활용)
+    # 1. 대상 종목 리스트 확보 (FDR Access Denied 방어용 다중 폴백)
     try:
         krx = fdr.StockListing('KRX')
+    except Exception as e:
+        _logger.warning("KRX StockListing failed (%s). Falling back to KRX-DESC...", str(e)[:50])
+        try:
+            # KRX 차단 시 대안 엔드포인트 폴백 적용
+            krx = fdr.StockListing('KRX-DESC')
+        except Exception as e2:
+            _logger.error("All StockListing fallbacks failed: %s", e2)
+            return []
+
+    try:
         # 우선주, 스팩 등 제외 로직 (간단 구현)
         krx = krx[~krx['Name'].str.contains('스팩|우$|우B|우C')]
         targets = krx[['Code', 'Name']].to_dict('records')
     except Exception as e:
-        _logger.error("Failed to fetch target list: %s", e)
+        _logger.error("Failed to parse target list: %s", e)
         return []
 
     # 2. 병렬 스캐닝 파이프라인
