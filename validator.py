@@ -24,6 +24,10 @@ def validate_candidates():
             volume_now = hist['Volume'].iloc[-1]
             volume_avg = hist['Volume'].rolling(20).mean().iloc[-1]
             
+            # [핵심 수정 1] 거래량 0으로 인한 ZeroDivisionError 원천 차단
+            if volume_avg <= 0:
+                continue
+            
             survive, reason = True, []
             if current < ma20:
                 survive = False
@@ -89,7 +93,9 @@ def validate_d3_targets():
                             "buy_p": buy_p, "current": current, "change": change
                         })
                         targets_to_update.append(unique_key)
-            except: continue
+            # [핵심 수정 2] PEP8 표준 권장에 따른 Exception 명시 (Bare Except 방지)
+            except Exception: 
+                continue
             
         # [추가] 알림 발송 완료된 종목은 'D3완료'로 업데이트하여 내일 중복 리포팅 방지
         if targets_to_update:
