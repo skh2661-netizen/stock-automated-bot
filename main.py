@@ -11,11 +11,10 @@ import market_check
 import scanner
 
 # =========================================================
-# 1. Config & Debugging (토큰 로딩 문제 확인)
+# 1. Config & Debugging
 # =========================================================
 @dataclass
 class AppConfig:
-    # 환경 변수 로그 확인용 (디버깅 후 마스킹 예정)
     TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
     DAEMON_MODE: bool = False
@@ -30,7 +29,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-# 토큰 디버깅: 로딩 직후 상태 로그 확인
 if not CONFIG.TELEGRAM_TOKEN:
     logging.error("CRITICAL: TELEGRAM_TOKEN 환경변수를 찾을 수 없습니다!")
 else:
@@ -39,7 +37,7 @@ else:
 _logger = logging.getLogger(__name__)
 
 # =========================================================
-# 2. Telegram Alert Service (상세 에러 핸들링)
+# 2. Telegram Alert Service
 # =========================================================
 def send_telegram_msg(message: str):
     if not CONFIG.TELEGRAM_TOKEN:
@@ -57,7 +55,7 @@ def send_telegram_msg(message: str):
         _logger.error("Failed to send Telegram message: %s", e)
 
 # =========================================================
-# 3. Main Pipeline (ALL SOURCES FAILED 디버깅 강화)
+# 3. Main Pipeline
 # =========================================================
 def run_pipeline():
     _logger.info("=== Pipeline Started ===")
@@ -95,7 +93,6 @@ def run_pipeline():
         signals = scanner.run_scanner(market_ctx)
         if signals:
             top = signals[:5]
-            # [핵심 수정] 멀티팩터 스코어를 강조하는 랭킹 포맷으로 변경
             msg_sig = (
                 "🎯 <b>Actionable Signals</b>\n\n"
                 + "\n\n".join(
