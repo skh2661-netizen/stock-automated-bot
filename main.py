@@ -90,7 +90,17 @@ def run_pipeline():
         signals = scanner.run_scanner(market_ctx)
         if signals:
             top = signals[:5]
-            msg_sig = "🎯 <b>Actionable Signals</b>\n" + "\n".join([f"- {s['name']} ({s['chg']}%)" for s in top])
+            # [핵심 수정] 예전의 단순 chg 포맷에서 실전 스캐너 지표(가격, 거래량, 이격도, 등락률)를 모두 활용하는 포맷으로 완벽 교체
+            msg_sig = (
+                "🎯 <b>Actionable Signals</b>\n"
+                + "\n".join(
+                    [
+                        f"• <b>{s['name']}</b> ({s.get('chg', 0.0)}%)\n"
+                        f"  💰 {s['price']:,}원 | 📈 거래량 {s['vol_ratio']}배 | 📊 20MA 이격 {s['ma20_gap']}%"
+                        for s in top
+                    ]
+                )
+            )
             send_telegram_msg(msg_sig)
         else:
             send_telegram_msg("🕵️‍♂️ No actionable signals found.")
