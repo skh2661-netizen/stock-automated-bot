@@ -9,7 +9,7 @@ import threading
 import atexit
 import itertools
 import copy 
-import math  # [확인] math 모듈 정상 임포트됨
+import math
 from dataclasses import dataclass, field
 from collections import deque, Counter
 from typing import Dict, Any, List, Tuple, Callable, Optional 
@@ -90,7 +90,7 @@ class MarketConfig:
     CB: CircuitConfig = field(default_factory=CircuitConfig)
     EMA: EMAConfig = field(default_factory=EMAConfig)
     STATE_FILE: str = "market_health_state.json"
-    STATE_VERSION: str = "1.4.2"
+    STATE_VERSION: str = "1.4.3"
     SAVE_INTERVAL_SEC: int = 600  
 
 CONFIG = MarketConfig()
@@ -134,8 +134,17 @@ class MarketRuntimeState:
         self.lock = threading.RLock()
         self.cb = {k: CircuitBreakerState() for k in ["API", "DOM", "FDR", "YAHOO"]}
         self.health_history = deque(maxlen=200)
-        self.success_history = {"API": deque(maxlen=20), "DOM": deque(maxlen=20), "FDR": deque(maxlen=20)}
-        self.latency_history = {"API": deque(maxlen=20), "DOM": deque(maxlen=20), "FDR": deque(maxlen=20)}
+        
+        # [수정 1] KeyError 방지를 위해 YAHOO 명시적 추가
+        self.success_history = {
+            "API": deque(maxlen=20), "DOM": deque(maxlen=20), 
+            "FDR": deque(maxlen=20), "YAHOO": deque(maxlen=20)
+        }
+        self.latency_history = {
+            "API": deque(maxlen=20), "DOM": deque(maxlen=20), 
+            "FDR": deque(maxlen=20), "YAHOO": deque(maxlen=20)
+        }
+        
         self.consensus_history = deque(maxlen=5)
         self.global_health_ema = 100.0
         self.fdr_elapsed_ema = 3.0
@@ -299,26 +308,22 @@ def _validate_data(data: Dict[str, Any]) -> bool:
             if k.startswith("kd_") and v > (CONFIG.QUAL.EXPECTED_KD_TOTAL + 50): return False
     return True
 
-# [확인] _get_bayesian_reliability 함수 존재
 def _get_bayesian_reliability(src: str) -> float:
     with STATE.lock:
         bs = STATE.bayesian_stats.get(src, {"alpha": 10.0, "beta": 1.0})
         return bs["alpha"] / (bs["alpha"] + bs["beta"])
 
-# [확인] _copy_shallow_dict 함수 존재
 def _copy_shallow_dict(data: Dict[str, Any]) -> Dict[str, Any]:
     new_data = dict(data)
     if "diag" in new_data: new_data["diag"] = {k: dict(v) if isinstance(v, dict) else v for k, v in new_data["diag"].items()}
     return new_data
 
-# [확인] _get_src_key 함수 존재
 def _get_src_key(source_str: str) -> str:
     if "API" in source_str: return "API"
     if "DOM" in source_str: return "DOM"
     if "YAHOO" in source_str: return "YAHOO"
     return "FDR"
 
-# [확인] _check_cb 함수 존재
 def _check_cb(source_key: str) -> bool:
     with STATE.lock:
         cb = STATE.cb[source_key]
@@ -357,7 +362,6 @@ def _run_fetch_task(src_key: str, fn: Callable, ctx: Dict) -> Tuple[Dict, Source
     try:
         res = fn(ctx)
         elapsed = res.get("elapsed", time.time() - st)
-        # [수정] 성공 시에도 source와 elapsed가 일관되게 주입되도록 보장
         res["source"] = src_key
         res["elapsed"] = elapsed
         diag = SourceDiag(status="PASS" if res.get("success") else "FAIL", error=res.get("error", ""), elapsed=elapsed)
@@ -370,7 +374,6 @@ def _run_fetch_task(src_key: str, fn: Callable, ctx: Dict) -> Tuple[Dict, Source
     return res, diag
 
 def _parallel_fetch(task_map: Dict[str, Callable], ctx: Dict, global_timeout: float) -> Tuple[List[Dict], Dict[str, SourceDiag]]:
-    # [수정] TypeError 해결: fn에 _run_fetch_task 할당, positional args 매핑 정확히 구성
     futures_map = {
         _safe_submit(_run_fetch_task, False, name, task, ctx): name 
         for name, task in task_map.items()
@@ -500,10 +503,40 @@ def load_index() -> Dict:
     with STATE.lock:
         if STATE.index_cache.data is not None and (st_idx - STATE.index_cache.timestamp < ctx["ttl"]) and (STATE.index_cache.time_context == ctx["is_open"]):
             return _copy_shallow_dict(STATE.index_cache.data)
+            
     start_date = (datetime.datetime.now(pytz.timezone("Asia/Seoul")) - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
-    valid_results, diag_info = _parallel_fetch({"KS11": lambda c: _fdr_data_reader_safe({"symbol": "KS11", "start_date": start_date}), "KQ11": lambda c: _fdr_data_reader_safe({"symbol": "KQ11", "start_date": start_date})}, ctx, CONFIG.NET.MAX_INDEX_WAIT)
-    kp = next((r["data"] for r in valid_results if r["source"] == "KS11"), None)
-    kd = next((r["data"] for r in valid_results if r["source"] == "KQ11"), None)
+    
+    idx_data = {
+        "success": False, "partial": False, "error": None,
+        "kp_today": 0.0, "kp_prev": 0.0, "kp_1d": 0.0, "kp_5d": 0.0, "kp_20d": 0.0,
+        "kd_today": 0.0, "kd_prev": 0.0, "kd_1d": 0.0, "kd_5d": 0.0, "kd_20d": 0.0,
+        "elapsed": 0.0
+    }
+    
+    # [수정 2] 구조가 어긋났던 _parallel_fetch 제거 후 명시적/직접적 _safe_submit 비동기 호출로 원복
+    futures_map = {
+        _safe_submit(_fdr_data_reader_safe, is_orchestrator=False, ctx={"symbol": "KS11", "start_date": start_date}): "KS11",
+        _safe_submit(_fdr_data_reader_safe, is_orchestrator=False, ctx={"symbol": "KQ11", "start_date": start_date}): "KQ11"
+    }
+    
+    done, not_done = wait(futures_map.keys(), timeout=CONFIG.NET.MAX_INDEX_WAIT, return_when=ALL_COMPLETED)
+    
+    kp, kd = None, None
+    for f in done:
+        ticker = futures_map[f]
+        if f.done():
+            try:
+                res = f.result(timeout=0.1)
+                if res and res.get("success"):
+                    if ticker == "KS11": kp = res["data"]
+                    elif ticker == "KQ11": kd = res["data"]
+            except Exception as e:
+                err_msg = f"{type(e).__name__} {str(e)[:50]}"
+                idx_data["error"] = f"{idx_data['error']} | {ticker}: {err_msg}" if idx_data["error"] else f"{ticker}: {err_msg}"
+                _logger.warning("Index Fetch Error %s: %s", ticker, e, extra={'ctx': 'INDEX'})
+                
+    for f in not_done:
+        f.cancel()
     
     def _fallback_yf(symbol):
         with _yf_semaphore:
@@ -511,13 +544,16 @@ def load_index() -> Dict:
                 try: df = yf.download(symbol, period="3mo", progress=False, timeout=CONFIG.NET.YF_TIMEOUT); return df if df is not None and not df.empty else None
                 except: time.sleep(0.5)
             return None
+            
     if (kp is None or len(kp) < CONFIG.QUAL.INDEX_REQUIRED_DAYS) and _check_cb("YAHOO"):
         kp = _fallback_yf("^KS11"); _update_cb_and_health("YAHOO", kp is not None, "", 0.0)
     if (kd is None or len(kd) < CONFIG.QUAL.INDEX_REQUIRED_DAYS) and _check_cb("YAHOO"):
         kd = _fallback_yf("^KQ11"); _update_cb_and_health("YAHOO", kd is not None, "", 0.0)
-    idx_data = {"success": (kp is not None and kd is not None), "kp_1d": 0.0, "kd_1d": 0.0}
+        
     if kp is not None and kd is not None:
+        idx_data["success"] = True
         idx_data.update({"kp_1d": round((kp['Close'].iloc[-1]/kp['Close'].iloc[-2]-1)*100, 2), "kd_1d": round((kd['Close'].iloc[-1]/kd['Close'].iloc[-2]-1)*100, 2)})
+        
     with STATE.lock: STATE.index_cache = CacheEntry(timestamp=time.time(), data=dict(idx_data), time_context=ctx["is_open"])
     return idx_data
 
