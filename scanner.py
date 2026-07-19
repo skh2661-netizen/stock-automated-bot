@@ -22,14 +22,12 @@ class ScannerConfig:
     FETCH_TIMEOUT: float = 10.0
     MIN_CANDLES: int = 60
     
-    # 기본 스캔 조건
     MIN_PRICE: int = 1000
     MAX_PRICE: int = 500000
     MIN_VOLUME: int = 100000
     
-    # 추격매수 방지 (Anti-Chasing) 및 돌파 조건
-    MAX_AWAY_FROM_20MA: float = 0.15  # 20일선 대비 15% 이상 급등한 종목은 제외 (고점 추격매수 방지)
-    VOL_BREAKOUT_MULTIPLIER: float = 2.0  # 5일 평균 거래량 대비 200% 이상 터진 종목
+    MAX_AWAY_FROM_20MA: float = 0.15
+    VOL_BREAKOUT_MULTIPLIER: float = 2.0
     
 CONFIG = ScannerConfig()
 
@@ -39,16 +37,12 @@ class ContextAdapter(logging.LoggerAdapter):
 
 _logger = ContextAdapter(logging.getLogger(__name__), {'ctx': 'SCAN'})
 
-# =========================================================
-# 2. Session & Network
-# =========================================================
 _GLOBAL_ADAPTER = HTTPAdapter(
     pool_connections=CONFIG.MAX_WORKERS, pool_maxsize=CONFIG.MAX_WORKERS, 
     max_retries=Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
 )
 
 def _get_fdr_data_safe(symbol: str, start_date: str) -> Optional[pd.DataFrame]:
-    """네트워크 예외를 삼키고 DataFrame 반환 (Thread 안전)"""
     try:
         df = fdr.DataReader(symbol, start_date)
         if df is None or df.empty or len(df) < CONFIG.MIN_CANDLES:
@@ -60,9 +54,10 @@ def _get_fdr_data_safe(symbol: str, start_date: str) -> Optional[pd.DataFrame]:
         return None
 
 # =========================================================
-# 3. Strategy Core (시장 상태 연동형 타점 분석 및 스코어링)
+# 2. Stage 1 & 2: Hard Filter & Metrics Generation
 # =========================================================
 def evaluate_stock(symbol: str, name: str, market_ctx: Dict) -> Optional[Dict[str, Any]]:
+    """조건을 검사하고 통과한 종목의 순수 지표(Metrics)만 반환"""
     st = time.time()
     start_date = (datetime.datetime.now() - datetime.timedelta(days=120)).strftime("%Y-%m-%d")
     
@@ -76,65 +71,35 @@ def evaluate_stock(symbol: str, name: str, market_ctx: Dict) -> Optional[Dict[st
         current_price = close[-1]
         current_vol = volume[-1]
         
-        # 1. 기초 필터링 (동전주, 우선주, 거래량 부족 컷)
+        # Hard Filter 1: 기초 요건
         if not (CONFIG.MIN_PRICE <= current_price <= CONFIG.MAX_PRICE): return None
         if current_vol < CONFIG.MIN_VOLUME: return None
         
-        # 2. 이동평균선 계산
+        # 이동평균 계산
         ma5 = np.mean(close[-5:])
         ma20 = np.mean(close[-20:])
         ma60 = np.mean(close[-60:])
         vol_ma5 = np.mean(volume[-6:-1]) if len(volume) > 6 else np.mean(volume[-5:])
         
-        # 3. 정배열 확인 (20MA > 60MA)
+        # Hard Filter 2: 정배열 및 이격도
         if ma20 < ma60: return None
-        
-        # 4. 추격매수 방지 (이격도 체크)
         away_from_20ma = (current_price - ma20) / ma20
-        if away_from_20ma > CONFIG.MAX_AWAY_FROM_20MA:
-            return None 
+        if away_from_20ma > CONFIG.MAX_AWAY_FROM_20MA: return None 
             
-        # 5. 거래량 돌파 확인
+        # Hard Filter 3: 거래량 돌파
         if current_vol < (vol_ma5 * CONFIG.VOL_BREAKOUT_MULTIPLIER): return None
         
-        # 6. 시장 상태(Market Context)에 따른 동적 필터링
+        # 동적 필터링 (CAUTION 상태)
         mkt_state = market_ctx.get("state", "INVALID")
         if mkt_state == "CAUTION":
             if current_vol < (vol_ma5 * 3.0): return None
             if away_from_20ma > 0.05: return None
             
-        # 등락률 및 주요 지표 계산
+        # Metrics Generation (스코어 계산 안함)
         chg = round((close[-1] / close[-2] - 1) * 100, 2) if len(close) > 1 else 0.0
         gap_pct = away_from_20ma * 100
         vol_ratio = current_vol / vol_ma5 if vol_ma5 > 0 else 0.0
 
-        # =========================================================
-        # [핵심 추가] Multi-Factor Scoring System (Total 100pts)
-        # =========================================================
-        score = 0
-        
-        # Factor 1: 거래량 모멘텀 (Max 40)
-        if vol_ratio >= 4.0: score += 40
-        elif vol_ratio >= 3.0: score += 35
-        elif vol_ratio >= 2.0: score += 25
-        
-        # Factor 2: 가격 상승률 최적화 (Max 20) - 지나친 갭상승은 오히려 감점
-        if 2.0 <= chg <= 6.0: score += 20
-        elif 1.0 <= chg < 2.0: score += 15
-        elif 6.0 < chg <= 8.0: score += 10
-        
-        # Factor 3: 20일선 이격 안정성 (Max 20) - 20일선 근접일수록(절대값 기준) 가점
-        abs_gap = abs(gap_pct)
-        if abs_gap <= 3.0: score += 20
-        elif abs_gap <= 6.0: score += 15
-        elif abs_gap <= 10.0: score += 10
-        elif abs_gap <= 15.0: score += 5
-        
-        # Factor 4: 시장 건강도 보너스 (Max 10)
-        if mkt_state == "NORMAL": score += 10
-        elif mkt_state == "CAUTION": score += 5
-
-        # 최종 반환 (Score 데이터 포함)
         return {
             "symbol": symbol,
             "name": name,
@@ -142,7 +107,6 @@ def evaluate_stock(symbol: str, name: str, market_ctx: Dict) -> Optional[Dict[st
             "chg": chg,
             "ma20_gap": round(gap_pct, 2),
             "vol_ratio": round(vol_ratio, 1),
-            "score": score,
             "elapsed": round(time.time() - st, 3)
         }
     except Exception as e:
@@ -150,10 +114,48 @@ def evaluate_stock(symbol: str, name: str, market_ctx: Dict) -> Optional[Dict[st
         return None
 
 # =========================================================
-# 4. Scanner Orchestrator
+# 3. Stage 3: Scoring & Market Multiplier
+# =========================================================
+def calculate_score(metrics: Dict[str, Any], mkt_state: str) -> int:
+    """추출된 Metrics를 기반으로 100점 만점 Base Score 계산 후 시장 Multiplier 적용"""
+    base_score = 0
+    
+    # Factor 1: 거래량 모멘텀 (Max 40)
+    vr = metrics["vol_ratio"]
+    if vr >= 4.0: base_score += 40
+    elif vr >= 3.0: base_score += 30
+    elif vr >= 2.0: base_score += 20
+    
+    # Factor 2: 가격 상승률 최적화 (Max 30) - 눌림목(-3~0%) 보상 추가
+    chg = metrics["chg"]
+    if 2.0 <= chg <= 6.0: base_score += 30
+    elif 0.0 <= chg < 2.0: base_score += 25
+    elif -3.0 <= chg < 0.0: base_score += 20  # 눌림목(음봉) 점수 부여
+    elif 6.0 < chg <= 8.0: base_score += 15
+    else: base_score += 0  # >8% 추격리스크, <-3% 추세이탈 간주
+    
+    # Factor 3: 20일선 이격 안정성 (Max 30) - 기준 강화
+    abs_gap = abs(metrics["ma20_gap"])
+    if abs_gap <= 3.0: base_score += 30
+    elif abs_gap <= 5.0: base_score += 20
+    elif abs_gap <= 8.0: base_score += 10
+    else: base_score += 0  # >8%는 리스크 산정하여 0점 처리
+    
+    # Factor 4: Market Multiplier 적용
+    multiplier = 1.0
+    if mkt_state == "CAUTION":
+        multiplier = 0.8
+    elif mkt_state == "INVALID": 
+        multiplier = 0.5  # Bypassed 겠지만 안전장치 부여
+        
+    return int(base_score * multiplier)
+
+# =========================================================
+# 4. Stage 4: Orchestrator & Ranking
 # =========================================================
 def run_scanner(market_ctx: Dict) -> List[Dict[str, Any]]:
-    _logger.info("Starting market scan. Context State: %s", market_ctx.get("state"))
+    mkt_state = market_ctx.get("state", "NORMAL")
+    _logger.info("Starting market scan. Context State: %s", mkt_state)
     
     try:
         krx = fdr.StockListing('KRX')
@@ -166,14 +168,12 @@ def run_scanner(market_ctx: Dict) -> List[Dict[str, Any]]:
             return []
 
     try:
-        # 우선주, 스팩 등 제외 로직
         krx = krx[~krx['Name'].str.contains('스팩|우$|우B|우C')]
         targets = krx[['Code', 'Name']].to_dict('records')
     except Exception as e:
         _logger.error("Failed to parse target list: %s", e)
         return []
 
-    # 병렬 스캐닝 파이프라인
     signals = []
     with ThreadPoolExecutor(max_workers=CONFIG.MAX_WORKERS) as executor:
         future_to_stock = {
@@ -184,14 +184,17 @@ def run_scanner(market_ctx: Dict) -> List[Dict[str, Any]]:
         
         for f in done:
             try:
-                res = f.result()
-                if res: signals.append(res)
+                metrics = f.result()
+                if metrics:
+                    # [핵심] 분리된 스코어링 모듈 호출
+                    metrics["score"] = calculate_score(metrics, mkt_state)
+                    signals.append(metrics)
             except Exception: pass
             
         for f in not_done:
             f.cancel()
             
-    # [핵심 수정] 단일 거래량 기준 정렬에서 종합 스코어(score) 정렬로 구조 완전 개편
+    # [핵심] 스코어 기반 최종 정렬 (Ranking)
     signals.sort(key=lambda x: x['score'], reverse=True)
     
     _logger.info("Scan complete. Found %d signals.", len(signals))
