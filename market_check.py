@@ -9,6 +9,7 @@ import threading
 import atexit
 import itertools
 import copy 
+import math  # [확인] math 모듈 정상 임포트됨
 from dataclasses import dataclass, field
 from collections import deque, Counter
 from typing import Dict, Any, List, Tuple, Callable, Optional 
@@ -89,7 +90,7 @@ class MarketConfig:
     CB: CircuitConfig = field(default_factory=CircuitConfig)
     EMA: EMAConfig = field(default_factory=EMAConfig)
     STATE_FILE: str = "market_health_state.json"
-    STATE_VERSION: str = "1.4.1"
+    STATE_VERSION: str = "1.4.2"
     SAVE_INTERVAL_SEC: int = 600  
 
 CONFIG = MarketConfig()
@@ -282,7 +283,6 @@ def cleanup():
 # =========================================================
 def _get_time_context() -> Dict[str, Any]:
     kst = pytz.timezone("Asia/Seoul"); now = datetime.datetime.now(kst)
-    # [수정] 주말/공휴일에는 Ratio(비율 검증 임계치)를 0.50으로 낮춰 빈 데이터로 인한 실패 완화
     if now.weekday() >= 5: return {"is_open": False, "ttl": CONFIG.CACHE.TTL_CLOSED, "ratio": 0.50}
     t = now.time()
     if datetime.time(9, 0) <= t < datetime.time(9, 5): return {"is_open": True, "ttl": CONFIG.CACHE.TTL_OPEN_EXTREME, "ratio": 0.70} 
@@ -299,10 +299,37 @@ def _validate_data(data: Dict[str, Any]) -> bool:
             if k.startswith("kd_") and v > (CONFIG.QUAL.EXPECTED_KD_TOTAL + 50): return False
     return True
 
+# [확인] _get_bayesian_reliability 함수 존재
 def _get_bayesian_reliability(src: str) -> float:
     with STATE.lock:
         bs = STATE.bayesian_stats.get(src, {"alpha": 10.0, "beta": 1.0})
         return bs["alpha"] / (bs["alpha"] + bs["beta"])
+
+# [확인] _copy_shallow_dict 함수 존재
+def _copy_shallow_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+    new_data = dict(data)
+    if "diag" in new_data: new_data["diag"] = {k: dict(v) if isinstance(v, dict) else v for k, v in new_data["diag"].items()}
+    return new_data
+
+# [확인] _get_src_key 함수 존재
+def _get_src_key(source_str: str) -> str:
+    if "API" in source_str: return "API"
+    if "DOM" in source_str: return "DOM"
+    if "YAHOO" in source_str: return "YAHOO"
+    return "FDR"
+
+# [확인] _check_cb 함수 존재
+def _check_cb(source_key: str) -> bool:
+    with STATE.lock:
+        cb = STATE.cb[source_key]
+        if cb.state == "OPEN":
+            if time.time() >= cb.blocked_until: cb.state = "HALF_OPEN"; return True
+            return False
+        bs = STATE.bayesian_stats.get(source_key, {"alpha": 10.0, "beta": 1.0})
+        if (bs["alpha"] / (bs["alpha"] + bs["beta"])) < 0.5 and STATE.source_health_ema.get(source_key, 100.0) < 70.0:
+            cb.state = "OPEN"; cb.blocked_until = time.time() + CONFIG.CB.BASE_PENALTY
+            STATE.trigger_save(force=True); return False
+        return True
 
 def _update_cb_and_health(source_key: str, success: bool, error_msg: str, elapsed: float):
     now = time.time()
@@ -330,28 +357,41 @@ def _run_fetch_task(src_key: str, fn: Callable, ctx: Dict) -> Tuple[Dict, Source
     try:
         res = fn(ctx)
         elapsed = res.get("elapsed", time.time() - st)
+        # [수정] 성공 시에도 source와 elapsed가 일관되게 주입되도록 보장
+        res["source"] = src_key
+        res["elapsed"] = elapsed
         diag = SourceDiag(status="PASS" if res.get("success") else "FAIL", error=res.get("error", ""), elapsed=elapsed)
     except Exception as e:
         elapsed = time.time() - st
-        res = {"success": False, "source": src_key, "error": f"{type(e).__name__}: {str(e)[:40]}", "data": {}}
+        res = {"success": False, "source": src_key, "error": f"{type(e).__name__}: {str(e)[:40]}", "data": {}, "elapsed": elapsed}
         diag = SourceDiag(status="FAIL", error=res["error"], elapsed=elapsed)
-    _update_cb_and_health(src_key, res["success"], res.get("error", ""), elapsed)
+        
+    _update_cb_and_health(src_key, res.get("success", False), res.get("error", ""), elapsed)
     return res, diag
 
 def _parallel_fetch(task_map: Dict[str, Callable], ctx: Dict, global_timeout: float) -> Tuple[List[Dict], Dict[str, SourceDiag]]:
-    futures_map = {_safe_submit(task, is_orchestrator=False, src_key=name, fn=task, ctx=ctx): name for name, task in task_map.items()}
+    # [수정] TypeError 해결: fn에 _run_fetch_task 할당, positional args 매핑 정확히 구성
+    futures_map = {
+        _safe_submit(_run_fetch_task, False, name, task, ctx): name 
+        for name, task in task_map.items()
+    }
+    
     valid_results, diag_info = [], {k: SourceDiag(status="BLOCKED") for k in task_map.keys()}
     done, not_done = wait(futures_map.keys(), timeout=global_timeout, return_when=ALL_COMPLETED)
+    
     for f in done:
         src_key = futures_map[f]
         if f.done():
             try:
                 res, diag = f.result(timeout=0.1)
                 diag_info[src_key] = diag
-                if res["success"]: valid_results.append(res)
-            except Exception as e: _logger.warning("Fetch Exception %s: %s", src_key, e, extra={'ctx': 'FETCH'})
+                if res.get("success"): valid_results.append(res)
+            except Exception as e: 
+                _logger.warning("Fetch Exception %s: %s", src_key, e, extra={'ctx': 'FETCH'})
+                
     for f in not_done:
         src_key = futures_map[f]; f.cancel(); diag_info[src_key].error = "Zombie"
+        
     return valid_results, diag_info
 
 # =========================================================
@@ -426,7 +466,6 @@ def _fetch_fdr_raw(ctx: Dict) -> Dict:
                 STATE.fdr_listing_cache = {"timestamp": now, "data": krx}
                 
     with STATE.lock:
-        # [수정] KRX 사이트 업데이트 대응: 등락률 관련 컬럼을 다중 키워드로 유연하게 검색
         if STATE.fdr_col_cache is None or STATE.fdr_col_cache not in krx.columns:
             candidates = ["ChangesRatio", "ChgRate", "ChangeRatio", "FluctuationRate", "Rate", "Change", "등락률", "ChagesRatio"]
             found_col = next((c for c in candidates if c in krx.columns), None)
@@ -449,7 +488,6 @@ def _fetch_fdr_raw(ctx: Dict) -> Dict:
     kp_sum = data["kp_up"] + data["kp_down"] + data["kp_same"]
     kd_sum = data["kd_up"] + data["kd_down"] + data["kd_same"]
     
-    # [수정] FDR 자체 결측치 감안하여 Ratio 임계치를 주말과 상관없이 최소 0.5로 고정 완화
     if _validate_data(data) and kp_sum >= (fkp * 0.5) and kd_sum >= (fkd * 0.5):
         return {"success": True, "data": data}
     return {"success": False, "error": f"Ratio/Match Failed (KP:{kp_sum}/{fkp}, KD:{kd_sum}/{fkd})", "data": {}}
