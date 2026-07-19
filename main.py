@@ -1,3 +1,4 @@
+# main.py
 import os
 import sys
 import time
@@ -69,10 +70,16 @@ def run_pipeline():
         send_telegram_msg("🚨 시장 엔진 붕괴: " + str(e)[:30])
         return
 
-    # 상세 실패 원인 로깅 (ALL SOURCES FAILED 디버깅)
+    # [핵심 수정] SourceDiag 객체 속성 참조 버그 수정 (AttributeError 방지)
     if not market_ctx.get("breadth", {}).get("success", False):
         diag = market_ctx.get("breadth", {}).get("diag", {})
-        err_msg = "\n".join([f"- {k}: {v.get('error', 'Unknown')}" for k, v in diag.items() if v.get('error')])
+        lines = []
+        for k, v in diag.items():
+            err = getattr(v, "error", v.get("error", "") if isinstance(v, dict) else "")
+            if err:
+                lines.append(f"- {k}: {err}")
+        
+        err_msg = "\n".join(lines)
         _logger.error("Breadth sources failed details:\n%s", err_msg)
         send_telegram_msg(f"⚠️ 시장 데이터 수집 실패:\n{err_msg}")
 
@@ -90,7 +97,6 @@ def run_pipeline():
         signals = scanner.run_scanner(market_ctx)
         if signals:
             top = signals[:5]
-            # [핵심 수정] 예전의 단순 chg 포맷에서 실전 스캐너 지표(가격, 거래량, 이격도, 등락률)를 모두 활용하는 포맷으로 완벽 교체
             msg_sig = (
                 "🎯 <b>Actionable Signals</b>\n"
                 + "\n".join(
