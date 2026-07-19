@@ -28,7 +28,7 @@ from urllib3.util.retry import Retry
 from urllib3.util import Timeout
 
 # =========================================================
-# 1. Configuration (모든 매직 넘버는 CONFIG 클래스로 관리)
+# 1. Configuration 
 # =========================================================
 @dataclass
 class NetworkConfig:
@@ -90,12 +90,11 @@ class MarketConfig:
     CB: CircuitConfig = field(default_factory=CircuitConfig)
     EMA: EMAConfig = field(default_factory=EMAConfig)
     STATE_FILE: str = "market_health_state.json"
-    STATE_VERSION: str = "1.4.3"
+    STATE_VERSION: str = "1.4.4"
     SAVE_INTERVAL_SEC: int = 600  
 
 CONFIG = MarketConfig()
 
-# Logger Adapter 설정
 class ContextAdapter(logging.LoggerAdapter):
     def process(self, msg, kwargs):
         return f"[{self.extra['ctx']}] {msg}", kwargs
@@ -135,7 +134,6 @@ class MarketRuntimeState:
         self.cb = {k: CircuitBreakerState() for k in ["API", "DOM", "FDR", "YAHOO"]}
         self.health_history = deque(maxlen=200)
         
-        # [수정 1] KeyError 방지를 위해 YAHOO 명시적 추가
         self.success_history = {
             "API": deque(maxlen=20), "DOM": deque(maxlen=20), 
             "FDR": deque(maxlen=20), "YAHOO": deque(maxlen=20)
@@ -496,7 +494,7 @@ def _fetch_fdr_raw(ctx: Dict) -> Dict:
     return {"success": False, "error": f"Ratio/Match Failed (KP:{kp_sum}/{fkp}, KD:{kd_sum}/{fkd})", "data": {}}
 
 # =========================================================
-# 11. Pipeline (Index & Breadth)
+# 11. Pipeline (Index, Consensus & Breadth)
 # =========================================================
 def load_index() -> Dict:
     st_idx = time.time(); ctx = _get_time_context()
@@ -513,7 +511,6 @@ def load_index() -> Dict:
         "elapsed": 0.0
     }
     
-    # [수정 2] 구조가 어긋났던 _parallel_fetch 제거 후 명시적/직접적 _safe_submit 비동기 호출로 원복
     futures_map = {
         _safe_submit(_fdr_data_reader_safe, is_orchestrator=False, ctx={"symbol": "KS11", "start_date": start_date}): "KS11",
         _safe_submit(_fdr_data_reader_safe, is_orchestrator=False, ctx={"symbol": "KQ11", "start_date": start_date}): "KQ11"
@@ -557,6 +554,52 @@ def load_index() -> Dict:
     with STATE.lock: STATE.index_cache = CacheEntry(timestamp=time.time(), data=dict(idx_data), time_context=ctx["is_open"])
     return idx_data
 
+# [수정 2 & 4 & 5] _evaluate_consensus 부활 및 final_score, confidence, cross_penalty 논리 복원
+def _evaluate_consensus(valid_results: List[Dict], priority_map: Dict[str, float]) -> Tuple[Dict, int]:
+    for r in valid_results: r["consensus"] = 0
+    source_rms_diff = {r["source"]: 0.0 for r in valid_results}
+    
+    for r1, r2 in itertools.combinations(valid_results, 2):
+        d1, d2 = r1["data"], r2["data"]
+        diffs = [
+            abs(d1.get("kp_up",0) - d2.get("kp_up",0)) / CONFIG.QUAL.EXPECTED_KP_TOTAL,
+            abs(d1.get("kp_down",0) - d2.get("kp_down",0)) / CONFIG.QUAL.EXPECTED_KP_TOTAL,
+            abs(d1.get("kd_up",0) - d2.get("kd_up",0)) / CONFIG.QUAL.EXPECTED_KD_TOTAL,
+            abs(d1.get("kd_down",0) - d2.get("kd_down",0)) / CONFIG.QUAL.EXPECTED_KD_TOTAL,
+        ]
+        rms_diff = math.sqrt(sum(x**2 for x in diffs) / len(diffs))
+        source_rms_diff[r1["source"]] = max(source_rms_diff[r1["source"]], rms_diff)
+        source_rms_diff[r2["source"]] = max(source_rms_diff[r2["source"]], rms_diff)
+        if rms_diff <= CONFIG.QUAL.CROSS_CHECK_TOLERANCE:
+            r1["consensus"] += 1; r2["consensus"] += 1
+
+    for r in valid_results:
+        src = r["source"]
+        src_key = _get_src_key(src)
+        rms = source_rms_diff[src]
+        
+        # [수정 4] confidence 계산 로직 
+        conf = max(0.1, math.exp(CONFIG.QUAL.CONFIDENCE_EXP_FACTOR * rms))
+        r["confidence"] = conf
+        
+        with STATE.lock:
+            hist_rel = STATE.source_health_ema.get(src_key, 100.0) / 100.0
+            
+        # [수정 2] final_score 생성 복원
+        r["final_score"] = (priority_map.get(src, 0) * hist_rel * conf) + (r["consensus"] * 15)
+        
+    valid_results.sort(key=lambda x: x["final_score"], reverse=True)
+    winner = copy.deepcopy(valid_results[0])
+    
+    agreeing_results = [r for r in valid_results if source_rms_diff[r["source"]] <= CONFIG.QUAL.CROSS_CHECK_TOLERANCE]
+    if len(agreeing_results) > 1:
+        avg_data = {}
+        for k in ["kp_up", "kp_down", "kp_same", "kd_up", "kd_down", "kd_same"]:
+            avg_data[k] = int(np.median([r["data"].get(k, 0) for r in agreeing_results]))
+        winner["data"] = dict(winner["data"], **avg_data)
+        
+    return winner, int(source_rms_diff[winner["source"]] * 100)
+
 def load_breadth() -> Dict:
     start_time = time.time(); ctx = _get_time_context()
     with STATE.lock:
@@ -571,42 +614,110 @@ def load_breadth() -> Dict:
     if _check_cb("FDR"): task_map["FDR"] = _fetch_fdr_raw
     
     valid, diag_info = _parallel_fetch(task_map, ctx, STATE.get_adaptive_timeout("FDR"))
-    if not valid: return {"success": False, "source": "NONE", "diag": diag_info}
+    if not valid: 
+        # [수정 3] 실패 시에도 Health History 및 EMA 갱신 적용
+        with STATE.lock:
+            STATE.health_history.append("FAIL")
+            STATE.global_health_ema = (STATE.global_health_ema * (1 - CONFIG.EMA.ALPHA_GLOBAL))
+        STATE.trigger_save()
+        return {"success": False, "source": "NONE", "diag": diag_info}
     
-    # Consensus
-    winner = copy.deepcopy(max(valid, key=lambda x: x.get("final_score", 0)))
-    with STATE.lock: STATE.consensus_history.append(_get_src_key(winner["source"]))
+    # Priority map for evaluation
+    priority_map = {"API": 100, "FDR": 98, "DOM": 92} if ctx["is_open"] else {"FDR": 100, "API": 95, "DOM": 90}
+    
+    # Evaluate Consensus & Confidence
+    winner_res, cross_penalty = _evaluate_consensus(valid, priority_map)
+    winner = winner_res
+    winner["cross_penalty"] = cross_penalty
+    winner["diag"] = diag_info
     
     # Update State
     with STATE.lock:
+        STATE.consensus_history.append(_get_src_key(winner["source"]))
         STATE.health_history.append("SUCCESS")
-        STATE.breadth_cache_gen.appendleft({"timestamp": time.time(), "data": dict(winner), "time_context": ctx["is_open"], "original_source": winner["source"], "confidence": winner.get("confidence", 1.0)})
+        
+        # [수정 3] Breadth 성공 시 EMA 갱신 (크로스 페널티 반영)
+        health_val = max(0.0, 100.0 - cross_penalty)
+        STATE.global_health_ema = (STATE.global_health_ema * (1 - CONFIG.EMA.ALPHA_GLOBAL)) + (health_val * CONFIG.EMA.ALPHA_GLOBAL)
+        
+        STATE.breadth_cache_gen.appendleft({
+            "timestamp": time.time(), "data": dict(winner), "time_context": ctx["is_open"], 
+            "original_source": winner["source"], "confidence": winner.get("confidence", 1.0)
+        })
     STATE.trigger_save()
-    return {"success": True, "diag": diag_info, **winner}
+    return {"success": True, **winner}
 
 # =========================================================
-# 12. Quality & Context
+# 12. Quality Evaluation (100점 만점 기반 스케일 조정)
 # =========================================================
 def calculate_quality(idx_data: Dict, b_data: Dict) -> Tuple[int, str, str]:
-    q_score, reasons = 0, []
-    if not idx_data.get("success"): q_score -= 30; reasons.append("CRITICAL: Index Fail (-30)")
-    else: q_score += 10
-    
-    if b_data.get("success"): q_score += 30
-    else: reasons.append("Breadth Fail")
-    
+    q_score = 0
+    reasons = []
+
+    # [수정 1] Index Evaluation (Max 30) - 점수 구조 완전 개편
+    if idx_data.get("success"):
+        if idx_data.get("partial"):
+            if idx_data.get("kp_today", 0) <= 0:
+                q_score += 10; reasons.append("KOSPI Fail (-20)")
+            else:
+                q_score += 20; reasons.append("KOSDAQ Fail (-10)")
+        else:
+            q_score += 30
+    else:
+        reasons.append("CRITICAL: Index Fail (-30)")
+
+    # [수정 1] Breadth Evaluation (Max 50)
+    if b_data.get("success"):
+        ctx = _get_time_context()
+        fdr_kp = b_data.get("data", {}).get("fdr_kp_total", CONFIG.QUAL.EXPECTED_KP_TOTAL)
+        fdr_kd = b_data.get("data", {}).get("fdr_kd_total", CONFIG.QUAL.EXPECTED_KD_TOTAL)
+        
+        kp_val = b_data.get("data", {}).get("kp_up",0) + b_data.get("data", {}).get("kp_down",0) + b_data.get("data", {}).get("kp_same",0)
+        kd_val = b_data.get("data", {}).get("kd_up",0) + b_data.get("data", {}).get("kd_down",0) + b_data.get("data", {}).get("kd_same",0)
+        
+        if kp_val >= (fdr_kp * ctx["ratio"]): q_score += 25
+        else: reasons.append("KOSPI Ratio Low (-25)")
+        
+        if kd_val >= (fdr_kd * ctx["ratio"]): q_score += 25
+        else: reasons.append("KOSDAQ Ratio Low (-25)")
+    else:
+        reasons.append("Breadth Fail (-50)")
+
+    # [수정 1] Source Health & Bayesian Evaluation (Max 20)
     src_key = _get_src_key(b_data.get("source", "NONE"))
     with STATE.lock:
         bs = STATE.bayesian_stats.get(src_key, {"alpha": 10.0, "beta": 1.0})
         bayesian_rel = bs["alpha"] / (bs["alpha"] + bs["beta"])
         g_ema = STATE.global_health_ema
+
+    src_base = int(20 * bayesian_rel)
+    q_score += src_base
+
+    # [수정 5] 각종 페널티 누적 및 명시적 Reason 할당
+    conf = b_data.get("confidence", 1.0)
+    cross_pen = b_data.get("cross_penalty", 0)
     
-    q_score += int(20 * bayesian_rel)
-    if g_ema < 80.0: q_score -= int((80.0 - g_ema) / 2); reasons.append("Health Pen")
-    if b_data.get('elapsed', 0) > CONFIG.QUAL.HIGH_LATENCY_THRESHOLD: q_score -= CONFIG.QUAL.HIGH_LATENCY_PENALTY; reasons.append("High Latency")
-    
+    tot_pen = int((1.0 - conf) * 20) + cross_pen
+    if tot_pen > 0:
+        q_score = max(0, q_score - tot_pen)
+        reasons.append(f"Cross/Conf Pen (-{tot_pen})")
+
+    if g_ema < 80.0:
+        h_pen = int((80.0 - g_ema) / 2)
+        q_score = max(0, q_score - h_pen)
+        reasons.append(f"Health Pen (-{h_pen})")
+        
+    if b_data.get('elapsed', 0) > CONFIG.QUAL.HIGH_LATENCY_THRESHOLD:
+        q_score = max(0, q_score - CONFIG.QUAL.HIGH_LATENCY_PENALTY)
+        reasons.append("High Latency")
+
+    # Score Shortfall Fallback
+    if q_score < 90 and not reasons:
+        reasons.append(f"Base Score Shortfall (Bayes: {bayesian_rel:.2f})")
+
     state = "NORMAL" if q_score >= 90 else ("CAUTION" if q_score >= 80 else "INVALID")
-    return q_score, state, "; ".join(set(reasons))
+    
+    return q_score, state, "; ".join(set(reasons)) if reasons else "All Clear"
 
 def health_snapshot() -> Dict[str, Any]:
     with STATE.lock:
