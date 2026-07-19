@@ -1,4 +1,3 @@
-# scanner.py
 import os
 import time
 import logging
@@ -61,7 +60,7 @@ def _get_fdr_data_safe(symbol: str, start_date: str) -> Optional[pd.DataFrame]:
         return None
 
 # =========================================================
-# 3. Strategy Core (시장 상태 연동형 타점 분석)
+# 3. Strategy Core (시장 상태 연동형 타점 분석 및 스코어링)
 # =========================================================
 def evaluate_stock(symbol: str, name: str, market_ctx: Dict) -> Optional[Dict[str, Any]]:
     st = time.time()
@@ -104,16 +103,46 @@ def evaluate_stock(symbol: str, name: str, market_ctx: Dict) -> Optional[Dict[st
             if current_vol < (vol_ma5 * 3.0): return None
             if away_from_20ma > 0.05: return None
             
+        # 등락률 및 주요 지표 계산
         chg = round((close[-1] / close[-2] - 1) * 100, 2) if len(close) > 1 else 0.0
-            
-        # 모든 관문 통과 시 시그널 생성
+        gap_pct = away_from_20ma * 100
+        vol_ratio = current_vol / vol_ma5 if vol_ma5 > 0 else 0.0
+
+        # =========================================================
+        # [핵심 추가] Multi-Factor Scoring System (Total 100pts)
+        # =========================================================
+        score = 0
+        
+        # Factor 1: 거래량 모멘텀 (Max 40)
+        if vol_ratio >= 4.0: score += 40
+        elif vol_ratio >= 3.0: score += 35
+        elif vol_ratio >= 2.0: score += 25
+        
+        # Factor 2: 가격 상승률 최적화 (Max 20) - 지나친 갭상승은 오히려 감점
+        if 2.0 <= chg <= 6.0: score += 20
+        elif 1.0 <= chg < 2.0: score += 15
+        elif 6.0 < chg <= 8.0: score += 10
+        
+        # Factor 3: 20일선 이격 안정성 (Max 20) - 20일선 근접일수록(절대값 기준) 가점
+        abs_gap = abs(gap_pct)
+        if abs_gap <= 3.0: score += 20
+        elif abs_gap <= 6.0: score += 15
+        elif abs_gap <= 10.0: score += 10
+        elif abs_gap <= 15.0: score += 5
+        
+        # Factor 4: 시장 건강도 보너스 (Max 10)
+        if mkt_state == "NORMAL": score += 10
+        elif mkt_state == "CAUTION": score += 5
+
+        # 최종 반환 (Score 데이터 포함)
         return {
             "symbol": symbol,
             "name": name,
             "price": int(current_price),
             "chg": chg,
-            "ma20_gap": round(away_from_20ma * 100, 2),
-            "vol_ratio": round(current_vol / vol_ma5, 1) if vol_ma5 > 0 else 0.0,
+            "ma20_gap": round(gap_pct, 2),
+            "vol_ratio": round(vol_ratio, 1),
+            "score": score,
             "elapsed": round(time.time() - st, 3)
         }
     except Exception as e:
@@ -126,27 +155,25 @@ def evaluate_stock(symbol: str, name: str, market_ctx: Dict) -> Optional[Dict[st
 def run_scanner(market_ctx: Dict) -> List[Dict[str, Any]]:
     _logger.info("Starting market scan. Context State: %s", market_ctx.get("state"))
     
-    # 1. 대상 종목 리스트 확보 (FDR Access Denied 방어용 다중 폴백)
     try:
         krx = fdr.StockListing('KRX')
     except Exception as e:
         _logger.warning("KRX StockListing failed (%s). Falling back to KRX-DESC...", str(e)[:50])
         try:
-            # KRX 차단 시 대안 엔드포인트 폴백 적용
             krx = fdr.StockListing('KRX-DESC')
         except Exception as e2:
             _logger.error("All StockListing fallbacks failed: %s", e2)
             return []
 
     try:
-        # 우선주, 스팩 등 제외 로직 (간단 구현)
+        # 우선주, 스팩 등 제외 로직
         krx = krx[~krx['Name'].str.contains('스팩|우$|우B|우C')]
         targets = krx[['Code', 'Name']].to_dict('records')
     except Exception as e:
         _logger.error("Failed to parse target list: %s", e)
         return []
 
-    # 2. 병렬 스캐닝 파이프라인
+    # 병렬 스캐닝 파이프라인
     signals = []
     with ThreadPoolExecutor(max_workers=CONFIG.MAX_WORKERS) as executor:
         future_to_stock = {
@@ -164,8 +191,8 @@ def run_scanner(market_ctx: Dict) -> List[Dict[str, Any]]:
         for f in not_done:
             f.cancel()
             
-    # 3. 점수(돌파 강도) 기반 정렬
-    signals.sort(key=lambda x: x['vol_ratio'], reverse=True)
+    # [핵심 수정] 단일 거래량 기준 정렬에서 종합 스코어(score) 정렬로 구조 완전 개편
+    signals.sort(key=lambda x: x['score'], reverse=True)
     
     _logger.info("Scan complete. Found %d signals.", len(signals))
     return signals
