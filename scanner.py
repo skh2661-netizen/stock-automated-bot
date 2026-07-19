@@ -104,13 +104,17 @@ def evaluate_stock(symbol: str, name: str, market_ctx: Dict) -> Optional[Dict[st
             if current_vol < (vol_ma5 * 3.0): return None
             if away_from_20ma > 0.05: return None
             
+        # [핵심 수정] 호환성을 위해 chg (등락률) 데이터 계산 추가
+        chg = round((close[-1] / close[-2] - 1) * 100, 2) if len(close) > 1 else 0.0
+            
         # 모든 관문 통과 시 시그널 생성
         return {
             "symbol": symbol,
             "name": name,
             "price": int(current_price),
+            "chg": chg,
             "ma20_gap": round(away_from_20ma * 100, 2),
-            "vol_ratio": round(current_vol / vol_ma5, 1) if vol_ma5 > 0 else 0,
+            "vol_ratio": round(current_vol / vol_ma5, 1) if vol_ma5 > 0 else 0.0,
             "elapsed": round(time.time() - st, 3)
         }
     except Exception as e:
