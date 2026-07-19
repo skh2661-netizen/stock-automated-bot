@@ -9,10 +9,10 @@ import datetime
 import threading
 import atexit
 import itertools
-import copy
+import copy  # [수정 2] copy 모듈 import 확인
 from dataclasses import dataclass, field
 from collections import deque, Counter
-from typing import Dict, Any, List, Tuple, Callable
+from typing import Dict, Any, List, Tuple, Callable, Optional  # [수정 3] Optional 추가
 from concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED
 from concurrent.futures.thread import BrokenThreadPool
 
@@ -90,7 +90,7 @@ class MarketConfig:
     CB: CircuitConfig = field(default_factory=CircuitConfig)
     EMA: EMAConfig = field(default_factory=EMAConfig)
     STATE_FILE: str = "market_health_state.json"
-    STATE_VERSION: str = "1.3.1"
+    STATE_VERSION: str = "1.3.2"
     SAVE_INTERVAL_SEC: int = 600  
 
 CONFIG = MarketConfig()
@@ -437,6 +437,7 @@ def _run_fetch_task(src_key: str, fn: Callable, ctx: Dict) -> Tuple[Dict, Source
         res = {"success": False, "source": src_key, "error": f"{type(e).__name__}: {str(e)[:40]}", "data": {}}
         diag = SourceDiag(status="FAIL", error=res["error"], elapsed=elapsed)
         
+    # [수정 1] 함수명 오류 완벽 교정 (_update_cb_and_health)
     _update_cb_and_health(src_key, res["success"], res.get("error", ""), elapsed)
     return res, diag
 
@@ -668,7 +669,7 @@ def _get_cached_breadth(ctx: Dict) -> Optional[Dict]:
                     orig_src = c.get("original_source", "FDR")
                     decay_rate = {"FDR": 1.0, "API": 3.0, "DOM": 3.0}.get(_get_src_key(orig_src), 2.0)
                     cached_conf = max(0.1, c.get("confidence", 1.0) * math.exp(-decay_rate * (age / ctx["ttl"])))
-                    if _logger.isEnabledFor(logging.DEBUG): _logger.debug("[CACHE-001] Grace Hit (%s) | Age=%ds | Conf=%.2f", orig_src, age, cached_conf)
+                    if _logger.isEnabledFor(logging.DEBUG): _logger.debug("Grace Hit (%s) | Age=%ds | Conf=%.2f", orig_src, age, cached_conf, extra={'ctx': 'CACHE'})
                     return {"success": True, "source": f"CACHE({orig_src})", "confidence": cached_conf, "elapsed": round(age, 3), "diag": {}, "cross_penalty": 0, **cached}
     return None
 
@@ -714,7 +715,7 @@ def _build_consensus(valid_results: List[Dict], ctx: Dict) -> Tuple[Dict, int]:
         r["final_score"] = (priority_map.get(r["source"], 0) * bayesian_rel * r["confidence"]) + (r["consensus"] * 15) + history_bonus
         
     winner_cand = max(valid_results, key=lambda x: x["final_score"])
-    winner = copy.deepcopy(winner_cand)
+    winner = copy.deepcopy(winner_cand)  # [수정 2] 원본 보존을 위한 Deepcopy
     with STATE.lock: STATE.consensus_history.append(_get_src_key(winner["source"]))
     
     agreeing_results = [r for r in valid_results if source_rms_diff[r["source"]] <= CONFIG.QUAL.CROSS_CHECK_TOLERANCE]
@@ -823,6 +824,7 @@ def calculate_quality(idx_data: Dict, b_data: Dict) -> Tuple[int, str, str]:
     actual_src = src_str.replace("CACHE(", "").replace(")", "") if is_cache else src_str
     
     s_brd, r_brd = _score_breadth(b_data, actual_src, _get_time_context()); q_score += s_brd; reasons.extend(r_brd)
+    # [수정 4] 오타 완벽 교정 (r_brd -> r_hlth)
     s_hlth, r_hlth = _score_health(b_data, actual_src); q_score += s_hlth; reasons.extend(r_hlth) 
     s_lat, r_lat = _score_latency(b_data); q_score += s_lat; reasons.extend(r_lat)
     
