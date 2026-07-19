@@ -1,4 +1,3 @@
-# main.py
 import os
 import sys
 import time
@@ -70,7 +69,6 @@ def run_pipeline():
         send_telegram_msg("🚨 시장 엔진 붕괴: " + str(e)[:30])
         return
 
-    # [핵심 수정] SourceDiag 객체 속성 참조 버그 수정 (AttributeError 방지)
     if not market_ctx.get("breadth", {}).get("success", False):
         diag = market_ctx.get("breadth", {}).get("diag", {})
         lines = []
@@ -97,13 +95,17 @@ def run_pipeline():
         signals = scanner.run_scanner(market_ctx)
         if signals:
             top = signals[:5]
+            # [핵심 수정] 멀티팩터 스코어를 강조하는 랭킹 포맷으로 변경
             msg_sig = (
-                "🎯 <b>Actionable Signals</b>\n"
-                + "\n".join(
+                "🎯 <b>Actionable Signals</b>\n\n"
+                + "\n\n".join(
                     [
-                        f"• <b>{s['name']}</b> ({s.get('chg', 0.0)}%)\n"
-                        f"  💰 {s['price']:,}원 | 📈 거래량 {s['vol_ratio']}배 | 📊 20MA 이격 {s['ma20_gap']}%"
-                        for s in top
+                        f"<b>{idx+1}위. {s['name']}</b>\n"
+                        f"⭐ <b>{s['score']}점</b>\n"
+                        f"  💰 {s['price']:,}원 (등락률 {s.get('chg', 0.0)}%)\n"
+                        f"  📈 거래량 {s['vol_ratio']}배\n"
+                        f"  📊 20MA 이격 {s['ma20_gap']}%"
+                        for idx, s in enumerate(top)
                     ]
                 )
             )
