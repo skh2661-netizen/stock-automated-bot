@@ -6,7 +6,8 @@ class PriceStructure:
     prev_pivot_low_price: float
     last_pivot_low_price: float
     dist_ma20: float  
-    dist_52w_high: float  
+    dist_52w_high: float
+    high_stay_days: int
 
 @dataclass
 class PricePattern:
@@ -14,6 +15,7 @@ class PricePattern:
     is_hammer: bool
     gap_survived: bool
     is_gap_up: bool
+    has_long_upper_shadow: bool  # [핵심] 장대 윗꼬리(매도세) 감지 필드
 
 @dataclass
 class Volatility:
@@ -37,6 +39,7 @@ class VolumeFlow:
     vr_20: float
     money_flow_ratio: float
     relative_vol_today: float
+    trading_value_100m: float  # [핵심] 거래대금 (단위: 억원) 추가
 
 @dataclass
 class CandidateFeature:
