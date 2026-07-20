@@ -13,17 +13,25 @@ def generate_trade_plan(cf: CandidateFeature, strategies: List[str], total_equit
         
     if optimal_entry > current: optimal_entry = current  
         
+    # [수정] 손절가(Stop Loss): ATR과 Pivot 중 더 먼(min) 곳을 잡아 휩소 이탈 방지
     atr_stop = optimal_entry - (cf.vty.atr_14 * 1.5)
     pivot_stop = cf.struc.last_pivot_low_price
     
-    stop_loss = max(atr_stop, pivot_stop) if pivot_stop > 0 else atr_stop
-    stop_loss = min(stop_loss, optimal_entry * 0.95)  
+    stop_loss = min(atr_stop, pivot_stop) if pivot_stop > 0 else atr_stop
+    stop_loss = min(stop_loss, optimal_entry * 0.95)  # 최소 5% 손절폭 보장
     
-    target1 = optimal_entry + (cf.vty.atr_14 * 2.0)
-    target2 = optimal_entry + (cf.vty.atr_14 * 4.0)
+    # [핵심 수정] 목표가(Target): 단순 ATR이 아닌 직전 저항선(Pivot High) 기준 산출
+    resistance1 = cf.struc.prev_pivot_high_price if cf.struc.prev_pivot_high_price > optimal_entry else optimal_entry * 1.10
+    
+    target1 = max(int(optimal_entry + (cf.vty.atr_14 * 2.0)), int(resistance1))
+    target2 = max(int(optimal_entry + (cf.vty.atr_14 * 4.0)), int(resistance1 * 1.05))
     
     risk_amount = total_equity * (risk_per_trade_pct / 100.0)
     stop_distance = optimal_entry - stop_loss
+    
+    # [수정] 저항선 기반으로 계산된 실전 손익비(RR) 산출
+    target_distance = target1 - optimal_entry
+    rr_ratio = round(target_distance / stop_distance, 2) if stop_distance > 0 else -1.0
     
     if stop_distance > 0:
         position_qty = max(1, int(risk_amount / stop_distance))
@@ -43,6 +51,7 @@ def generate_trade_plan(cf: CandidateFeature, strategies: List[str], total_equit
         "stop_loss": int(stop_loss), 
         "target1": int(target1), 
         "target2": int(target2),
+        "rr_ratio": rr_ratio,
         "sizing": {
             "qty": position_qty,
             "amount": int(position_size_krw),
