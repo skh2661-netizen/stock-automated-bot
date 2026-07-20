@@ -22,7 +22,8 @@ jobs:
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.10'
+        # [핵심 수정] pandas-ta 최신 버전 호환을 위해 Python 3.10 -> 3.12로 업그레이드
+        python-version: '3.12'
 
     - name: Install
       run: |
