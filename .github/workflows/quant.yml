@@ -28,7 +28,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         # V13 엔진 구동을 위한 전체 의존성 명시
-        pip install pandas finance-datareader python-telegram-bot pytz yfinance requests beautifulsoup4 lxml numpy
+        pip install pandas finance-datareader python-telegram-bot pytz yfinance requests beautifulsoup4 lxml numpy pandas-ta
 
     - name: Run Quant
       env:
