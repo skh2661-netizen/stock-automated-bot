@@ -10,8 +10,6 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import FinanceDataReader as fdr
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 from models import CandidateFeature, PriceStructure, PricePattern, Volatility, Momentum, VolumeFlow
 
@@ -48,14 +46,13 @@ def build_candidate_feature(symbol: str, name: str, market_str: str, market_retu
         if not (CONFIG.MIN_PRICE <= current_price <= CONFIG.MAX_PRICE): return None
         if current_vol < CONFIG.MIN_VOLUME: return None
         
-        # [핵심 수정] 실전 하드 필터링 (가망 없는 종목 차단하여 리소스 세이브)
         chg = round((current_price / close.iloc[-2] - 1) * 100, 2) if len(close) > 1 else 0.0
-        if chg < -12.0: return None  # 12% 이상 급락은 치명적 리스크
         
-        vol_ma5 = np.mean(volume.iloc[-6:-1]) if len(volume) > 6 else np.mean(volume.iloc[-5:])
-        if current_vol < vol_ma5 * 0.3: return None  # 평균 거래량의 30%도 안 되는 소외주
+        # [핵심 수정] Relative Volume (5일 -> 20일 평균으로 안정화)
+        vol_ma20 = np.mean(volume.iloc[-21:-1]) if len(volume) > 21 else np.mean(volume.iloc[:-1])
+        if current_vol < vol_ma20 * 0.3: return None  
+        relative_vol_today = current_vol / vol_ma20 if vol_ma20 > 0 else 0.0
         
-        # 보조지표 연산
         df.ta.sma(length=5, append=True)
         df.ta.sma(length=20, append=True)
         df.ta.sma(length=60, append=True)
@@ -67,7 +64,7 @@ def build_candidate_feature(symbol: str, name: str, market_str: str, market_retu
         ma20 = df['SMA_20'].iloc[-1]
         ma60 = df['SMA_60'].iloc[-1]
         
-        if current_price < ma60 * 0.85: return None  # 장기 역배열 심화 종목 차단
+        if current_price < ma60 * 0.85: return None  
         
         atr_col = next((c for c in df.columns if c.startswith("ATR")), None)
         natr_col = next((c for c in df.columns if c.startswith("NATR")), None)
@@ -92,40 +89,59 @@ def build_candidate_feature(symbol: str, name: str, market_str: str, market_retu
         true_rs_composite = (rs_20d * 0.4) + (rs_60d * 0.3) + (rs_120d * 0.2) + (rs_250d * 0.1)
         
         vr_20 = np.sum(np.where(close.iloc[-20:] > close.shift(1).iloc[-20:], volume.iloc[-20:], 0)) / (np.sum(np.where(close.iloc[-20:] < close.shift(1).iloc[-20:], volume.iloc[-20:], 0)) + 1)
-        relative_vol_today = current_vol / vol_ma5 if vol_ma5 > 0 else 0.0
         
+        # [핵심 수정] 1일이 아닌 20일 평균 거래대금(억원) 산출 (노이즈, 휩소 차단)
+        if len(close) >= 20:
+            trading_value_100m = float(np.mean(close.iloc[-20:].values * volume.iloc[-20:].values)) / 100_000_000.0
+        else:
+            trading_value_100m = (float(current_price) * float(current_vol)) / 100_000_000.0
+        
+        # [핵심 수정] Pivot 탐색 윈도우를 좌우 5봉(총 11봉)으로 넓혀 잔파도(Noise) 대신 진짜 구조적 저항선 도출
         lows, highs = low.values, high.values
         pivots = []
-        for i in range(2, len(lows)-2):
-            if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
+        for i in range(5, len(lows)-5):
+            if lows[i] == np.min(lows[i-5:i+6]):
                 pivots.append(lows[i])
                 
         last_pivot_low = pivots[-1] if len(pivots) > 0 else 0.0
         prev_pivot_low = pivots[-2] if len(pivots) > 1 else 0.0
-        high_pivots = [highs[i] for i in range(2, len(highs)-2) if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]]
+        
+        high_pivots = []
+        for i in range(5, len(highs)-5):
+            if highs[i] == np.max(highs[i-5:i+6]):
+                high_pivots.append(highs[i])
+                
         prev_pivot_high = high_pivots[-1] if len(high_pivots) > 0 else 0.0
 
-        dist_52w_high = (current_price - high.iloc[-250:].max()) / high.iloc[-250:].max() * 100 if len(high) >= 250 else -100.0
+        high_52w = high.iloc[-250:].max() if len(high) >= 250 else high.max()
+        dist_52w_high = (current_price - high_52w) / high_52w * 100 if len(high) >= 20 else -100.0
+        high_stay_days = int(np.sum(close.iloc[-60:] >= high_52w * 0.90)) if len(close) > 0 else 0
 
+        # [핵심 수정] Gap Survived: 당일 저가가 아닌, 전일 고가 위에서 종가를 마감해야 인정 (진짜 갭 유지)
         is_gap_up = low.iloc[-1] > high.iloc[-2] if len(high) > 1 else False
-        gap_survived = is_gap_up and close.iloc[-1] > low.iloc[-1]
+        gap_survived = is_gap_up and close.iloc[-1] > high.iloc[-2]
         
         body = abs(close.iloc[-1] - open_p.iloc[-1])
         lower_shadow = min(close.iloc[-1], open_p.iloc[-1]) - low.iloc[-1]
         upper_shadow = high.iloc[-1] - max(close.iloc[-1], open_p.iloc[-1])
-        is_hammer = lower_shadow > (2 * body) and upper_shadow < (body * 0.3)
+        
+        # [수정] 해머 조건 완화 (실전 반영 0.5)
+        is_hammer = lower_shadow > (2 * body) and upper_shadow < (body * 0.5)
         
         recent_downtrend = close.iloc[-2] < close.iloc[-5] if len(close) > 5 else False
         near_20ma = abs(dist_ma20) < 5.0
         is_bull_engulfing = recent_downtrend and near_20ma and (close.iloc[-2] < open_p.iloc[-2]) and (close.iloc[-1] > open_p.iloc[-1]) and (open_p.iloc[-1] < close.iloc[-2]) and (close.iloc[-1] > open_p.iloc[-2]) if len(close) > 1 else False
 
+        # [핵심 수정] 장대 윗꼬리(매도세) 감지: 고점 대비 3% 이상 밀리면 강한 저항으로 판정
+        has_long_upper_shadow = ((high.iloc[-1] - close.iloc[-1]) / high.iloc[-1]) > 0.03
+
         atr_compression = natr14 < np.mean(df[natr_col].iloc[-60:]) if natr_col and len(df) > 60 else False
 
-        struc = PriceStructure(prev_pivot_high, prev_pivot_low, last_pivot_low, dist_ma20, dist_52w_high)
-        pat = PricePattern(is_bull_engulfing, is_hammer, gap_survived, is_gap_up)
+        struc = PriceStructure(prev_pivot_high, prev_pivot_low, last_pivot_low, dist_ma20, dist_52w_high, high_stay_days)
+        pat = PricePattern(is_bull_engulfing, is_hammer, gap_survived, is_gap_up, has_long_upper_shadow)
         vty = Volatility(atr14, natr14, atr_compression)
         mom = Momentum(rs_20d, rs_60d, rs_120d, rs_250d, true_rs_composite, ma20, ma_gap, is_trend_up)
-        vol = VolumeFlow(vr_20, mfi14, relative_vol_today)
+        vol = VolumeFlow(vr_20, mfi14, relative_vol_today, trading_value_100m)
 
         return CandidateFeature(symbol, name, float(current_price), chg, struc, pat, vty, mom, vol)
     except Exception as e:
