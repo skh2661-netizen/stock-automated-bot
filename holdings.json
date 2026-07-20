@@ -1,11 +1,15 @@
-=[
+[
   {
     "code": "232140",
     "name": "와이씨",
     "entry_price": 19520,
     "quantity": 100,
     "entry_date": "2026-07-09",
-    "entry_level": "LEVEL 3",
-    "conf_history": []
+    "stop_loss": 18000,
+    "target1": 22000,
+    "target2": 25000,
+    "highest_price": 19520,
+    "strategy": "돌파매매",
+    "entry_level": "LEVEL 3"
   }
 ]
