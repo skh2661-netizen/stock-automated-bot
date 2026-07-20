@@ -22,6 +22,7 @@ def evaluate_candidates(features_list: List[CandidateFeature], market_context: D
             buy_blocked, block_reason = True, "슬롯 소진"
 
     final_results = []
+    level_counts = {"LEVEL 3": 0, "LEVEL 2": 0, "LEVEL 1": 0, "GATED": 0}
     
     for cf in features_list:
         if not is_holding_eval and cf.code in holding_codes: continue
@@ -29,20 +30,46 @@ def evaluate_candidates(features_list: List[CandidateFeature], market_context: D
         strats, strat_score = assign_strategies(cf)
         plan = generate_trade_plan(cf, strats, total_equity=total_equity)
         
-        # 필터 1: 상승 제한 (너무 높은 추격매수 차단)
         atr_pct = (cf.vty.atr_14 / cf.price * 100) if cf.price > 0 else 0
         chg_limit = max(6.0, atr_pct * 2.5)
         if not is_holding_eval and (cf.chg >= chg_limit or cf.price >= plan["target1"]): continue
-        
-        # 필터 2: 하방 제한 (-8% 이상 급락 종목은 '과대낙폭반등' 전략이 아니면 즉시 차단)
         if not is_holding_eval and cf.chg < -8.0 and "과대낙폭반등" not in strats: continue
 
         # =========================================================
-        # 👑 Multi-Factor Scoring System 보강
+        # ⭐ Final Buy Gate (실전 매매 필수 가이드 검증)
+        # =========================================================
+        if not is_holding_eval:
+            # 1. R:R (손익비) 1.2 미만은 아무리 좋아도 진입 불가 (이제 저항선 기준으로 정상 연산됨)
+            if plan["rr_ratio"] != -1.0 and plan["rr_ratio"] < 1.2:
+                level_counts["GATED"] += 1
+                continue
+                
+            # 2. 20일선 이격도 12% 이상 초과 급등 추격 금지
+            if cf.struc.dist_ma20 > 12.0:
+                level_counts["GATED"] += 1
+                continue
+                
+            # 3. 평균 거래대금 100억 미만 소외주 금지 (이제 20일 평균 기준이라 작전주 걸러냄)
+            if cf.vol.trading_value_100m < 100.0:
+                level_counts["GATED"] += 1
+                continue
+                
+            # 4. 강한 매도세를 뜻하는 장대 윗꼬리 캔들 제외 (고가 대비 밀린 폭 기준)
+            if cf.pat.has_long_upper_shadow:
+                level_counts["GATED"] += 1
+                continue
+
+        # =========================================================
+        # 👑 Multi-Factor Scoring System
         # =========================================================
         raw_score = strat_score  
         
-        # 1. Volume & Money Flow Factor
+        # 1. Trading Value Factor (이제 20일 평균 기준이므로 더욱 견고함)
+        if cf.vol.trading_value_100m >= 3000: raw_score += 15
+        elif cf.vol.trading_value_100m >= 1000: raw_score += 10
+        elif cf.vol.trading_value_100m >= 300: raw_score += 5
+        
+        # 2. Volume & Money Flow Factor
         if cf.vol.vr_20 >= 3.0: raw_score += 15
         elif cf.vol.vr_20 >= 2.0: raw_score += 10
         elif cf.vol.vr_20 >= 1.2: raw_score += 5
@@ -52,43 +79,48 @@ def evaluate_candidates(features_list: List[CandidateFeature], market_context: D
         
         if cf.vol.money_flow_ratio >= 60.0: raw_score += 5
         
-        # 2. True RS Factor (상대강도)
-        if cf.mom.true_rs_composite >= 20.0: raw_score += 25
-        elif cf.mom.true_rs_composite >= 10.0: raw_score += 15
+        # 3. True RS Factor
+        if cf.mom.true_rs_composite >= 20.0: raw_score += 20
+        elif cf.mom.true_rs_composite >= 10.0: raw_score += 10
         elif cf.mom.true_rs_composite >= 0.0: raw_score += 5
         
-        # 3. Structure & Trend Factor
+        # 4. Structure & Trend Factor
         if cf.mom.is_trend_up: raw_score += 5
-        
         abs_gap = abs(cf.struc.dist_ma20)
         if abs_gap <= 3.0: raw_score += 5
         elif abs_gap <= 8.0: raw_score += 3
         
         if cf.struc.dist_52w_high > -10.0: raw_score += 5
         
-        # 4. Pattern & Volatility Factor
+        # 5. Pattern & Volatility Factor
         if cf.vty.atr_compression: raw_score += 5
         if cf.pat.is_hammer: raw_score += 5
         if cf.pat.is_bull_engulfing: raw_score += 5
         if cf.pat.is_gap_up and cf.pat.gap_survived: raw_score += 5
 
+        if cf.struc.high_stay_days >= 10: raw_score += 5
+        elif cf.struc.high_stay_days >= 5: raw_score += 3
+
         # =========================================================
-        # 👑 Market Multiplier 적용
+        # 👑 Market Multiplier
         # =========================================================
         multiplier = 1.0
         if m_state == "CAUTION": multiplier = 0.8
         elif m_state == "WEAK": multiplier = 0.6
-        elif m_state in ["CRASH", "INVALID"]: multiplier = 0.3
+        # [수정] CRASH는 어차피 BUY BLOCK이므로 불필요한 연산 제거
         
         adj_score = round(raw_score * multiplier, 1)
         level = "LEVEL 3" if adj_score >= 60 else ("LEVEL 2" if adj_score >= 40 else "LEVEL 1")
+        
+        level_counts[level] += 1
         
         final_results.append({
             "code": cf.code, 
             "name": cf.name, 
             "price": cf.price, 
             "chg": cf.chg,
-            "ma20_gap": round(cf.struc.dist_ma20, 2),  # [확실한 패치] formatter 에러 방지용 키 주입
+            "ma20_gap": round(cf.struc.dist_ma20, 2),
+            "trading_value": round(cf.vol.trading_value_100m, 1),
             "plan": plan, 
             "strategies": strats,
             "decision": {
@@ -108,5 +140,6 @@ def evaluate_candidates(features_list: List[CandidateFeature], market_context: D
         "candidates": final_results, 
         "alert_candidates": alert_cands, 
         "buy_blocked": buy_blocked, 
-        "block_reason": block_reason
+        "block_reason": block_reason,
+        "level_counts": level_counts
     }
