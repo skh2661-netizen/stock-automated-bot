@@ -5,7 +5,8 @@ class PriceStructure:
     prev_pivot_high_price: float
     prev_pivot_low_price: float
     last_pivot_low_price: float
-    dist_ma20: float  # 👑 전략 엔진이 애타게 찾던 20일선 이격도 속성 추가
+    dist_ma20: float  
+    dist_52w_high: float  
 
 @dataclass
 class PricePattern:
@@ -18,11 +19,18 @@ class PricePattern:
 class Volatility:
     atr_14: float
     natr_14: float
+    atr_compression: bool
 
 @dataclass
 class Momentum:
     rs_20d: float
+    rs_60d: float
+    rs_120d: float
+    rs_250d: float
+    true_rs_composite: float
     ma_20: float
+    ma_gap: float  
+    is_trend_up: bool
 
 @dataclass
 class VolumeFlow:
