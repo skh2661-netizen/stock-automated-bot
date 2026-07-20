@@ -1,21 +1,41 @@
+from typing import List, Tuple
 from models import CandidateFeature
 
-def assign_strategies(cf: CandidateFeature):
-    primary = "수급/종가베팅"
-    secondary = None
+def assign_strategies(cf: CandidateFeature) -> Tuple[List[str], int]:
+    strategies = []
+    bonus_score = 0
     
-    is_higher_low = cf.struc.last_pivot_low_price > cf.struc.prev_pivot_low_price and cf.struc.last_pivot_low_price > 0
+    is_higher_low = cf.struc.last_pivot_low_price > cf.struc.prev_pivot_low_price > 0
     
-    # 모델명 변수 동기화 교정: rvt -> relative_vol_today
-    if cf.pat.is_gap_up and cf.pat.gap_survived and cf.vol.relative_vol_today >= 2.0:
-        primary = "시초/갭돌파"
-    elif cf.mom.rs_20d >= 20 and cf.struc.dist_ma20 <= 15 and cf.vol.vr_20 >= 2.0:
-        primary = "맥점돌파"
-    elif is_higher_low and cf.mom.ma_gap <= 5 and cf.pat.is_hammer:
-        primary = "눌림목 (Higher Low)"
-    elif cf.mom.rs_20d <= -20 and cf.pat.is_bull_engulfing:
-        primary = "과대낙폭 반등"
+    if cf.pat.is_gap_up and cf.pat.gap_survived and cf.vol.relative_vol_today >= 1.5:
+        strategies.append("시초/갭돌파")
+        bonus_score += 10
         
-    if cf.pat.is_bull_engulfing or cf.pat.is_hammer: secondary = "반전 캔들 출현"
+    if cf.mom.true_rs_composite >= 15 and cf.struc.dist_ma20 <= 10:
+        strategies.append("주도주(RS)")
+        bonus_score += 10
         
-    return primary, secondary
+    if cf.struc.dist_52w_high > -5.0 and cf.vol.vr_20 >= 1.5:
+        strategies.append("신고가돌파")
+        bonus_score += 8
+        
+    if is_higher_low and cf.pat.is_hammer and cf.mom.is_trend_up:
+        strategies.append("눌림목(HL)")
+        bonus_score += 8
+        
+    if cf.pat.is_bull_engulfing:
+        strategies.append("상승장악")
+        bonus_score += 7
+        
+    if cf.mom.true_rs_composite <= -20 and cf.vol.vr_20 >= 1.5:
+        strategies.append("과대낙폭반등")
+        bonus_score += 5
+        
+    if not strategies:
+        strategies.append("수급/종가베팅")
+        bonus_score += 3
+        
+    final_strategies = strategies[:2]
+    final_bonus = min(bonus_score, 18) 
+        
+    return final_strategies, final_bonus
