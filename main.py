@@ -1,64 +1,41 @@
 import os
 import sys
-import time
 import logging
 from dataclasses import dataclass
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 import market_check
+import market_report
 import scanner
+import decision_engine
+import holding_analyzer
+import report_formatter
 
-# =========================================================
-# 1. Config & Debugging
-# =========================================================
 @dataclass
 class AppConfig:
     TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
-    DAEMON_MODE: bool = False
-    INTERVAL_SEC: int = 3600
+    # 추후 증권사 API 연동을 통해 실시간 계좌 잔고를 불러오도록 업데이트 예정
+    TOTAL_EQUITY: float = 10_000_000  
 
 CONFIG = AppConfig()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)-8s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-
-if not CONFIG.TELEGRAM_TOKEN:
-    logging.error("CRITICAL: TELEGRAM_TOKEN 환경변수를 찾을 수 없습니다!")
-else:
-    logging.info("Telegram Token loaded (Length: %d)", len(CONFIG.TELEGRAM_TOKEN))
-
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)-8s | %(message)s', datefmt='%Y-%m-%d %H:%M:%S', handlers=[logging.StreamHandler(sys.stdout)])
 _logger = logging.getLogger(__name__)
 
-# =========================================================
-# 2. Telegram Alert Service
-# =========================================================
 def send_telegram_msg(message: str):
     if not CONFIG.TELEGRAM_TOKEN:
         _logger.warning("Telegram token missing, skipping alert.")
         return
-        
     url = f"https://api.telegram.org/bot{CONFIG.TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CONFIG.TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-    
     try:
-        resp = requests.post(url, json=payload, timeout=10.0)
-        resp.raise_for_status()
-        _logger.info("Telegram notification sent.")
+        requests.post(url, json=payload, timeout=10.0).raise_for_status()
     except Exception as e:
         _logger.error("Failed to send Telegram message: %s", e)
 
-# =========================================================
-# 3. Main Pipeline
-# =========================================================
 def run_pipeline():
-    _logger.info("=== Pipeline Started ===")
+    _logger.info("=== 4-Stage Quant Pipeline Started ===")
     
     try:
         market_ctx = market_check.get_market_context()
@@ -67,50 +44,34 @@ def run_pipeline():
         send_telegram_msg("🚨 시장 엔진 붕괴: " + str(e)[:30])
         return
 
-    if not market_ctx.get("breadth", {}).get("success", False):
-        diag = market_ctx.get("breadth", {}).get("diag", {})
-        lines = []
-        for k, v in diag.items():
-            err = getattr(v, "error", v.get("error", "") if isinstance(v, dict) else "")
-            if err:
-                lines.append(f"- {k}: {err}")
-        
-        err_msg = "\n".join(lines)
-        _logger.error("Breadth sources failed details:\n%s", err_msg)
-        send_telegram_msg(f"⚠️ 시장 데이터 수집 실패:\n{err_msg}")
-
-    mkt_state = market_ctx.get("state", "INVALID")
-    msg_mkt = (f"📊 <b>Market Health: {mkt_state}</b>\n"
-               f"Reason: {market_ctx.get('reason', 'N/A')}\n"
-               f"Source: {market_ctx.get('source', 'None')}")
+    stats_dict = market_report.build_market_report(market_ctx)
+    msg_mkt = report_formatter.format_market_report(stats_dict)
     send_telegram_msg(msg_mkt)
-    
+
     if not market_ctx.get("allow_scan", False):
-        _logger.warning("Scan bypassed due to market state: %s", mkt_state)
+        _logger.warning("Scan bypassed. Market State: %s", market_ctx.get("state"))
         return
-        
+
     try:
-        signals = scanner.run_scanner(market_ctx)
-        if signals:
-            top = signals[:5]
-            msg_sig = (
-                "🎯 <b>Actionable Signals</b>\n\n"
-                + "\n\n".join(
-                    [
-                        f"<b>{idx+1}위. {s['name']}</b>\n"
-                        f"⭐ <b>{s['score']}점</b>\n"
-                        f"  💰 {s['price']:,}원 (등락률 {s.get('chg', 0.0)}%)\n"
-                        f"  📈 거래량 {s['vol_ratio']}배\n"
-                        f"  📊 20MA 이격 {s['ma20_gap']}%"
-                        for idx, s in enumerate(top)
-                    ]
-                )
-            )
-            send_telegram_msg(msg_sig)
-        else:
-            send_telegram_msg("🕵️‍♂️ No actionable signals found.")
+        features_list = scanner.run_scanner(market_ctx)
+        _logger.info("Scanner generated %d features.", len(features_list))
     except Exception as e:
         _logger.exception("Scanner runtime error: %s", e)
+        return
+
+    holdings_data = holding_analyzer.load_holdings("holdings.json")
+
+    if holdings_data:
+        features_map = {cf.code: cf for cf in features_list}
+        holding_evals = holding_analyzer.evaluate_holdings(holdings_data, features_map)
+        msg_holdings = report_formatter.format_holding_report(holding_evals)
+        send_telegram_msg(msg_holdings)
+
+    decision_results = decision_engine.evaluate_candidates(features_list, market_ctx, holdings_data, total_equity=CONFIG.TOTAL_EQUITY)
+    
+    msg_signals = report_formatter.format_signal_report(decision_results)
+    send_telegram_msg(msg_signals)
+    _logger.info("=== Pipeline Completed ===")
 
 if __name__ == "__main__":
     run_pipeline()
