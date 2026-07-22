@@ -1,3 +1,4 @@
+# strategy_engine.py
 from typing import List, Tuple
 from models import CandidateFeature
 
@@ -36,6 +37,7 @@ def assign_strategies(cf: CandidateFeature) -> Tuple[List[str], int]:
         bonus_score += 3
         
     final_strategies = strategies[:2]
+    # [수정] 복수 전략 가점 한도 축소 (의미 없는 고득점 인플레이션 방지)
     final_bonus = min(bonus_score, 18) 
         
     return final_strategies, final_bonus
