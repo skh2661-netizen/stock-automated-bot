@@ -1,3 +1,4 @@
+# models.py
 from dataclasses import dataclass
 
 @dataclass
@@ -8,6 +9,7 @@ class PriceStructure:
     dist_ma20: float  
     dist_52w_high: float
     high_stay_days: int
+    is_5d_breakout: bool  # [추가] 최근 5일 고점 돌파 여부
 
 @dataclass
 class PricePattern:
@@ -15,13 +17,14 @@ class PricePattern:
     is_hammer: bool
     gap_survived: bool
     is_gap_up: bool
-    has_long_upper_shadow: bool  # [핵심] 장대 윗꼬리(매도세) 감지 필드
+    has_long_upper_shadow: bool
 
 @dataclass
 class Volatility:
     atr_14: float
     natr_14: float
     atr_compression: bool
+    adr_20: float  # [추가] 20일 평균 일변동률(ADR)
 
 @dataclass
 class Momentum:
@@ -33,13 +36,15 @@ class Momentum:
     ma_20: float
     ma_gap: float  
     is_trend_up: bool
+    is_ma20_up: bool  # [추가] 20일선 상승 기울기 여부
 
 @dataclass
 class VolumeFlow:
     vr_20: float
     money_flow_ratio: float
     relative_vol_today: float
-    trading_value_100m: float  # [핵심] 거래대금 (단위: 억원) 추가
+    trading_value_100m: float
+    is_vol_dry_up: bool  # [추가] 눌림목 거래량 급감 여부
 
 @dataclass
 class CandidateFeature:
