@@ -1,26 +1,26 @@
+# scanner.py
 import os
 import time
 import logging
 import datetime
+import multiprocessing as mp
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import FinanceDataReader as fdr
 
-from models import CandidateFeature, PriceStructure, PricePattern, Volatility, Momentum, VolumeFlow
+from models import CandidateFeature, PriceStructure, PricePattern, Volatility, Momentum, VolumeFlow, RiskProfile, QuantConfig
 
 @dataclass
 class ScannerConfig:
-    MAX_WORKERS: int = 8  
-    CHUNK_SIZE: int = 100  
-    MIN_CANDLES: int = 250  
+    MAX_WORKERS: int = min(8, (os.cpu_count() or 4))
     MIN_PRICE: int = 1000
     MAX_PRICE: int = 500000
     MIN_VOLUME: int = 100000
+    PROCESS_TIMEOUT: float = 15.0  # [핵심] 프로세스 강제 킬(Kill) 데드라인 설정
     
 CONFIG = ScannerConfig()
 _logger = logging.getLogger(__name__)
@@ -28,34 +28,54 @@ _logger = logging.getLogger(__name__)
 def _get_fdr_data_safe(symbol: str, start_date: str) -> Optional[pd.DataFrame]:
     try:
         df = fdr.DataReader(symbol, start_date)
-        if df is None or df.empty or len(df) < 60:  
-            return None
+        if df is None or df.empty or len(df) < 60: return None
         return df
-    except Exception:
-        return None
+    except Exception: return None
 
-def build_candidate_feature(symbol: str, name: str, market_str: str, market_returns: Dict[str, Dict[str, float]]) -> Optional[CandidateFeature]:
+def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature], Dict[str, float]]:
+    symbol, name, market_str, sector_str, market_returns = args
+    latency = {"fdr": 0.0, "ta": 0.0, "total": 0.0}
+    t_start = time.perf_counter()
+    
     start_date = (datetime.datetime.now() - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
+    
+    t0 = time.perf_counter()
     df = _get_fdr_data_safe(symbol, start_date)
-    if df is None: return None
+    latency["fdr"] = (time.perf_counter() - t0) * 1000.0
+    
+    if df is None: return "FETCH_FAIL", None, latency
     
     try:
         close, volume, low, high, open_p = df['Close'], df['Volume'], df['Low'], df['High'], df['Open']
         current_price, current_vol = close.iloc[-1], volume.iloc[-1]
+    except (KeyError, IndexError): return "DATA_CORRUPT", None, latency
         
-        if not (CONFIG.MIN_PRICE <= current_price <= CONFIG.MAX_PRICE): return None
-        if current_vol < CONFIG.MIN_VOLUME: return None
+    if current_price <= 0 or current_vol <= 0: return "INVALID_DATA", None, latency
+    if not (CONFIG.MIN_PRICE <= current_price <= CONFIG.MAX_PRICE): return "LOW_PRICE", None, latency
+    if current_vol < CONFIG.MIN_VOLUME: return "LOW_VOL", None, latency
+    
+    trading_value_100m_today = (float(current_price) * float(current_vol)) / 100_000_000.0
+    trading_value_100m_avg20 = float(np.mean(close.iloc[-20:].values * volume.iloc[-20:].values)) / 100_000_000.0 if len(close) >= 20 else trading_value_100m_today
+    mixed_tval = (trading_value_100m_today * 0.7) + (trading_value_100m_avg20 * 0.3)
+    
+    if mixed_tval < QuantConfig.MIN_TRADING_VALUE_100M: return "LOW_TVAL", None, latency
         
+    if len(close) >= 60:
+        ma60_fast = close.iloc[-60:].mean()
+        if current_price < ma60_fast * 0.90: return "MA60_DOWN", None, latency
+    else: return "DATA_LACK", None, latency
+    
+    t1 = time.perf_counter()
+    try:
         chg = round((current_price / close.iloc[-2] - 1) * 100, 2) if len(close) > 1 else 0.0
-        
-        # [핵심 수정] Relative Volume (5일 -> 20일 평균으로 안정화)
         vol_ma20 = np.mean(volume.iloc[-21:-1]) if len(volume) > 21 else np.mean(volume.iloc[:-1])
-        if current_vol < vol_ma20 * 0.3: return None  
+        if current_vol < vol_ma20 * 0.3: return "VOL_DRY", None, latency
         relative_vol_today = current_vol / vol_ma20 if vol_ma20 > 0 else 0.0
         
         df.ta.sma(length=5, append=True)
         df.ta.sma(length=20, append=True)
         df.ta.sma(length=60, append=True)
+        df.ta.sma(length=120, append=True)
         df.ta.atr(length=14, append=True)
         df.ta.natr(length=14, append=True)
         df.ta.mfi(length=14, append=True)
@@ -64,108 +84,140 @@ def build_candidate_feature(symbol: str, name: str, market_str: str, market_retu
         ma20 = df['SMA_20'].iloc[-1]
         ma60 = df['SMA_60'].iloc[-1]
         
-        if current_price < ma60 * 0.85: return None  
-        
         atr_col = next((c for c in df.columns if c.startswith("ATR")), None)
         natr_col = next((c for c in df.columns if c.startswith("NATR")), None)
         atr14 = df[atr_col].iloc[-1] if atr_col else 0.0
+        atr14 = max(atr14, current_price * QuantConfig.ATR_MIN_PCT)  
         natr14 = df[natr_col].iloc[-1] if natr_col else 0.0
         mfi14 = df['MFI_14'].iloc[-1] if 'MFI_14' in df.columns else 50.0
         
+        if not (np.isfinite(ma20) and np.isfinite(atr14) and atr14 > 0 and ma20 > 0):
+            return "INDICATOR_FAIL", None, latency
+            
         is_trend_up = bool(ma20 > ma60)
+        if len(df['SMA_20']) >= 5:
+            ma20_slope = np.polyfit(np.arange(5), df['SMA_20'].iloc[-5:].values, 1)[0]
+            is_ma20_up = bool(ma20_slope > 0)
+        else: is_ma20_up = False
+        
         dist_ma20 = (current_price - ma20) / ma20 * 100 if ma20 > 0 else 0.0
         ma_gap = (ma5 - ma20) / ma20 * 100 if ma20 > 0 else 0.0
         
+        atr_pct = (atr14 / current_price * 100) if current_price > 0 else 0.0
+        chg_limit = max(6.0, atr_pct * 2.5)
+        max_gap_allowed = min(max(3.0, atr_pct), QuantConfig.GAP_CHASE_MAX_PCT)
+        
+        # [핵심] 실제 수익률 분산 (Return Variance) 연산 
+        return_var_20d = float(close.pct_change().iloc[-20:].var() * 252) if len(close) >= 20 else 0.0
+        
+    except Exception: return "TA_CALC_FAIL", None, latency
+    latency["ta"] = (time.perf_counter() - t1) * 1000.0
+        
+    try:
         def calc_ret(days): 
             idx = min(days + 1, len(close))
             return (current_price / close.iloc[-idx]) - 1 if len(close) >= idx else 0.0
         
         bm = market_returns.get(market_str, market_returns.get("KOSPI", {}))
-        rs_20d = (calc_ret(20) - bm.get("20d", 0)) * 100
+        rs_10d = (calc_ret(10) - bm.get("10d", 0)) * 100
+        rs_25d = (calc_ret(25) - bm.get("25d", 0)) * 100
         rs_60d = (calc_ret(60) - bm.get("60d", 0)) * 100
         rs_120d = (calc_ret(120) - bm.get("120d", 0)) * 100
-        rs_250d = (calc_ret(250) - bm.get("250d", 0)) * 100
+        true_rs_composite = (rs_10d * 0.40) + (rs_25d * 0.30) + (rs_60d * 0.20) + (rs_120d * 0.10)
         
-        true_rs_composite = (rs_20d * 0.4) + (rs_60d * 0.3) + (rs_120d * 0.2) + (rs_250d * 0.1)
+        if len(df['SMA_120']) > 0 and current_price < df['SMA_120'].iloc[-1]:
+            true_rs_composite *= 0.5  
+    except Exception: return "RS_FAIL", None, latency
         
+    try:
         vr_20 = np.sum(np.where(close.iloc[-20:] > close.shift(1).iloc[-20:], volume.iloc[-20:], 0)) / (np.sum(np.where(close.iloc[-20:] < close.shift(1).iloc[-20:], volume.iloc[-20:], 0)) + 1)
+        is_vol_dry_up = current_vol < (vol_ma20 * 0.5)
+        adr_20 = float(((high.iloc[-20:] / low.iloc[-20:]) - 1).mean() * 100) if len(high) >= 20 else 0.0
+        adv_100m = float(np.mean(close.iloc[-20:].values * volume.iloc[-20:].values)) / 100_000_000.0 if len(close) >= 20 else trading_value_100m_today
         
-        # [핵심 수정] 1일이 아닌 20일 평균 거래대금(억원) 산출 (노이즈, 휩소 차단)
-        if len(close) >= 20:
-            trading_value_100m = float(np.mean(close.iloc[-20:].values * volume.iloc[-20:].values)) / 100_000_000.0
-        else:
-            trading_value_100m = (float(current_price) * float(current_vol)) / 100_000_000.0
+        pivot_window = int(np.clip(round(8 * np.exp(-atr_pct / 10.0)) + 2, 3, 10))
+            
+        window_size = 2 * pivot_window + 1
+        low_series = pd.Series(low.values)
+        high_series = pd.Series(high.values)
         
-        # [핵심 수정] Pivot 탐색 윈도우를 좌우 5봉(총 11봉)으로 넓혀 잔파도(Noise) 대신 진짜 구조적 저항선 도출
-        lows, highs = low.values, high.values
-        pivots = []
-        for i in range(5, len(lows)-5):
-            if lows[i] == np.min(lows[i-5:i+6]):
-                pivots.append(lows[i])
-                
-        last_pivot_low = pivots[-1] if len(pivots) > 0 else 0.0
-        prev_pivot_low = pivots[-2] if len(pivots) > 1 else 0.0
+        low_min = low_series.rolling(window_size).min()
+        high_max = high_series.rolling(window_size).max()
         
-        high_pivots = []
-        for i in range(5, len(highs)-5):
-            if highs[i] == np.max(highs[i-5:i+6]):
-                high_pivots.append(highs[i])
-                
-        prev_pivot_high = high_pivots[-1] if len(high_pivots) > 0 else 0.0
+        is_piv_low = (low_series.shift(pivot_window) == low_min) & low_min.notna()
+        is_piv_high = (high_series.shift(pivot_window) == high_max) & high_max.notna()
+        
+        valid_lows_raw = low_series.shift(pivot_window)[is_piv_low].dropna()
+        valid_lows = valid_lows_raw.loc[valid_lows_raw.shift() != valid_lows_raw].values
+        
+        valid_highs_raw = high_series.shift(pivot_window)[is_piv_high].dropna()
+        valid_highs = valid_highs_raw.loc[valid_highs_raw.shift() != valid_highs_raw].values
+        
+        last_pivot_low = float(valid_lows[-1]) if len(valid_lows) > 0 else 0.0
+        prev_pivot_low = float(valid_lows[-2]) if len(valid_lows) > 1 else 0.0
+        last_pivot_high_price = float(valid_highs[-1]) if len(valid_highs) > 0 else 0.0
+        prev_pivot_high_price = float(valid_highs[-2]) if len(valid_highs) > 1 else 0.0
+        is_higher_high = bool(last_pivot_high_price > prev_pivot_high_price + (atr14 * QuantConfig.HH_BREAKOUT_ATR_MULT)) if prev_pivot_high_price > 0 else False
 
         high_52w = high.iloc[-250:].max() if len(high) >= 250 else high.max()
         dist_52w_high = (current_price - high_52w) / high_52w * 100 if len(high) >= 20 else -100.0
         high_stay_days = int(np.sum(close.iloc[-60:] >= high_52w * 0.90)) if len(close) > 0 else 0
+        is_5d_breakout = bool(current_price > high.iloc[-6:-1].max()) if len(high) > 6 else False
 
-        # [핵심 수정] Gap Survived: 당일 저가가 아닌, 전일 고가 위에서 종가를 마감해야 인정 (진짜 갭 유지)
+    except Exception: return "PIVOT_FAIL", None, latency
+
+    try:
         is_gap_up = low.iloc[-1] > high.iloc[-2] if len(high) > 1 else False
         gap_survived = is_gap_up and close.iloc[-1] > high.iloc[-2]
         
-        body = abs(close.iloc[-1] - open_p.iloc[-1])
+        body = max(abs(close.iloc[-1] - open_p.iloc[-1]), atr14 * QuantConfig.DOJI_BODY_ATR_MULT)
         lower_shadow = min(close.iloc[-1], open_p.iloc[-1]) - low.iloc[-1]
         upper_shadow = high.iloc[-1] - max(close.iloc[-1], open_p.iloc[-1])
         
-        # [수정] 해머 조건 완화 (실전 반영 0.5)
-        is_hammer = lower_shadow > (2 * body) and upper_shadow < (body * 0.5)
+        recent_downtrend = bool(close.iloc[-2] < close.iloc[-5]) if len(close) > 5 else False
+        is_hammer = lower_shadow > (2 * body) and upper_shadow < (body * 0.5) and recent_downtrend
         
-        recent_downtrend = close.iloc[-2] < close.iloc[-5] if len(close) > 5 else False
         near_20ma = abs(dist_ma20) < 5.0
-        is_bull_engulfing = recent_downtrend and near_20ma and (close.iloc[-2] < open_p.iloc[-2]) and (close.iloc[-1] > open_p.iloc[-1]) and (open_p.iloc[-1] < close.iloc[-2]) and (close.iloc[-1] > open_p.iloc[-2]) if len(close) > 1 else False
+        vol_confirm = bool(current_vol > vol_ma20 * 1.2)
+        is_bull_engulfing = recent_downtrend and near_20ma and vol_confirm and (close.iloc[-2] < open_p.iloc[-2]) and (close.iloc[-1] > open_p.iloc[-1]) and (open_p.iloc[-1] < close.iloc[-2]) and (close.iloc[-1] > open_p.iloc[-2]) if len(close) > 1 else False
 
-        # [핵심 수정] 장대 윗꼬리(매도세) 감지: 고점 대비 3% 이상 밀리면 강한 저항으로 판정
-        has_long_upper_shadow = ((high.iloc[-1] - close.iloc[-1]) / high.iloc[-1]) > 0.03
+        min_shadow_limit = max(atr14 * QuantConfig.UPPER_SHADOW_ATR_MULT, current_price * 0.01)
+        candle_len = high.iloc[-1] - low.iloc[-1] + 1e-5
+        close_pos = (close.iloc[-1] - low.iloc[-1]) / candle_len
+        is_upper_heavy = bool(close_pos < QuantConfig.UPPER_SHADOW_CLOSE_POS)
+        has_long_upper_shadow = (upper_shadow > min_shadow_limit) and is_upper_heavy
 
-        atr_compression = natr14 < np.mean(df[natr_col].iloc[-60:]) if natr_col and len(df) > 60 else False
+        if natr_col and len(df) > 120:
+            atr_compression = df[natr_col].rolling(120).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1]).iloc[-1] < 0.20
+        else:
+            atr_compression = False
 
-        struc = PriceStructure(prev_pivot_high, prev_pivot_low, last_pivot_low, dist_ma20, dist_52w_high, high_stay_days)
+        struc = PriceStructure(last_pivot_high_price, prev_pivot_high_price, prev_pivot_low, last_pivot_low, dist_ma20, dist_52w_high, high_stay_days, is_5d_breakout, is_higher_high)
         pat = PricePattern(is_bull_engulfing, is_hammer, gap_survived, is_gap_up, has_long_upper_shadow)
-        vty = Volatility(atr14, natr14, atr_compression)
-        mom = Momentum(rs_20d, rs_60d, rs_120d, rs_250d, true_rs_composite, ma20, ma_gap, is_trend_up)
-        vol = VolumeFlow(vr_20, mfi14, relative_vol_today, trading_value_100m)
+        vty = Volatility(atr14, natr14, atr_compression, 0.0, return_var_20d)
+        mom = Momentum(rs_10d, rs_25d, rs_60d, rs_120d, true_rs_composite, ma20, ma_gap, is_trend_up, is_ma20_up)
+        vol = VolumeFlow(vr_20, mfi14, relative_vol_today, mixed_tval, adv_100m, is_vol_dry_up)
+        risk = RiskProfile(atr_pct, chg_limit, max_gap_allowed)
 
-        return CandidateFeature(symbol, name, float(current_price), chg, struc, pat, vty, mom, vol)
-    except Exception as e:
-        return None
+        latency["total"] = (time.perf_counter() - t_start) * 1000.0
+        return "PASS", CandidateFeature(symbol, name, sector_str, float(current_price), chg, struc, pat, vty, mom, vol, risk), latency
+    except Exception: return "PATTERN_FAIL", None, latency
 
 def run_scanner(market_ctx: Dict) -> List[CandidateFeature]:
-    _logger.info("Starting target generation with Chunking.")
-    
+    _logger.info("Starting target generation with multiprocessing.Pool (Hard Worker Kill/Recycle)")
     try:
         krx = fdr.StockListing('KRX')
     except Exception:
         try:
             krx = fdr.StockListing('KRX-DESC')
-        except Exception as e2:
-            _logger.error("All StockListing fallbacks failed: %s", e2)
-            return []
+        except Exception: return []
 
     try:
         krx = krx[~krx['Name'].str.contains('스팩|우$|우B|우C')]
-        targets = krx[['Code', 'Name', 'Market']].to_dict('records')
-        _logger.info("Targeting %d stocks.", len(targets))
-    except Exception as e:
-        _logger.error("Failed to parse target list: %s", e)
-        return []
+        if 'Sector' not in krx.columns: krx['Sector'] = krx['Market']
+        krx['Sector'] = krx['Sector'].fillna(krx['Market'])
+        targets = krx[['Code', 'Name', 'Market', 'Sector']].to_dict('records')
+    except Exception: return []
 
     market_returns = {"KOSPI": {}, "KOSDAQ": {}}
     start_date = (datetime.datetime.now() - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
@@ -175,27 +227,50 @@ def run_scanner(market_ctx: Dict) -> List[CandidateFeature]:
             if len(df) > 0:
                 c = df['Close']
                 market_returns[mkt] = {
-                    "20d": (c.iloc[-1] / c.iloc[-min(21, len(c))] - 1) if len(c) >= 21 else 0,
+                    "10d": (c.iloc[-1] / c.iloc[-min(11, len(c))] - 1) if len(c) >= 11 else 0,
+                    "25d": (c.iloc[-1] / c.iloc[-min(26, len(c))] - 1) if len(c) >= 26 else 0,
                     "60d": (c.iloc[-1] / c.iloc[-min(61, len(c))] - 1) if len(c) >= 61 else 0,
                     "120d": (c.iloc[-1] / c.iloc[-min(121, len(c))] - 1) if len(c) >= 121 else 0,
-                    "250d": (c.iloc[-1] / c.iloc[-min(251, len(c))] - 1) if len(c) >= 251 else 0,
                 }
-    except Exception as e:
-        _logger.warning("Benchmark fetch failed. RS will be absolute. %s", e)
+    except Exception: pass
 
     features_list = []
+    reject_counts = {"FETCH_FAIL": 0, "INVALID_DATA": 0, "LOW_PRICE": 0, "LOW_VOL": 0, "LOW_TVAL": 0, "MA60_DOWN": 0, "DATA_LACK": 0, "VOL_DRY": 0, "DATA_CORRUPT": 0, "TA_CALC_FAIL": 0, "INDICATOR_FAIL": 0, "RS_FAIL": 0, "PIVOT_FAIL": 0, "PATTERN_FAIL": 0, "TIMEOUT_ERROR": 0, "PASS": 0, "PROCESS_CRASH": 0}
     
-    for i in range(0, len(targets), CONFIG.CHUNK_SIZE):
-        chunk = targets[i:i + CONFIG.CHUNK_SIZE]
-        with ThreadPoolExecutor(max_workers=CONFIG.MAX_WORKERS) as executor:
-            future_to_stock = {
-                executor.submit(build_candidate_feature, t['Code'], t['Name'], t['Market'], market_returns): t for t in chunk
-            }
-            for f in as_completed(future_to_stock):
-                try:
-                    res = f.result(timeout=60.0)
-                    if res: features_list.append(res)
-                except Exception: pass
-        time.sleep(0.3) 
+    latency_stats = {"fdr": [], "ta": [], "total": []}
+    
+    # [핵심] maxtasksperchild 옵션으로 워커가 일정한 작업을 마치면 강제 재시작되게 하여 메모리 누수 원천 차단
+    # get(timeout) 시 발생하는 mp.TimeoutError를 통해 Hanging된 워커를 식별하고 패스
+    with mp.Pool(processes=CONFIG.MAX_WORKERS, maxtasksperchild=50) as pool:
+        adaptive_chunk = max(50, int(3000 / (CONFIG.MAX_WORKERS * 2)))
+        for i in range(0, len(targets), adaptive_chunk):
+            chunk = targets[i:i + adaptive_chunk]
+            args_list = [(t['Code'], t['Name'], t['Market'], str(t['Sector']), market_returns) for t in chunk]
             
+            async_results = [pool.apply_async(build_candidate_feature, (args,)) for args in args_list]
+            
+            for res_obj in async_results:
+                try:
+                    reason, res, latency = res_obj.get(timeout=CONFIG.PROCESS_TIMEOUT)
+                    reject_counts[reason] = reject_counts.get(reason, 0) + 1
+                    if res: 
+                        features_list.append(res)
+                        latency_stats["fdr"].append(latency["fdr"])
+                        latency_stats["ta"].append(latency["ta"])
+                        latency_stats["total"].append(latency["total"])
+                except mp.TimeoutError:
+                    reject_counts["TIMEOUT_ERROR"] = reject_counts.get("TIMEOUT_ERROR", 0) + 1
+                except Exception:
+                    reject_counts["PROCESS_CRASH"] = reject_counts.get("PROCESS_CRASH", 0) + 1
+    
+    # [핵심] Observability: P95, P99 구간별 응답 지연 시간(Latency) 로깅
+    if latency_stats["total"]:
+        market_ctx["latency_metrics_ms"] = {
+            "fdr_p95": round(np.percentile(latency_stats["fdr"], 95), 1),
+            "ta_p95": round(np.percentile(latency_stats["ta"], 95), 1),
+            "total_mean": round(np.mean(latency_stats["total"]), 1),
+            "total_p99": round(np.percentile(latency_stats["total"], 99), 1)
+        }
+        
+    market_ctx["scanner_rejects"] = reject_counts    
     return features_list
