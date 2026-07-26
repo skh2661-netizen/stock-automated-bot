@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import json
 import logging
 import requests
 from dataclasses import dataclass
@@ -59,17 +60,35 @@ def run_pipeline():
     holdings_data = holding_analyzer.load_holdings("holdings.json")
     _logger.info("Loaded holding count: %d", len(holdings_data))
 
+    # 시장 차단(스캔 우회) 상태일 때도 보유 종목 평가는 반영하고 JSON에 저장
     if not market_ctx.get("allow_scan", False):
         _logger.warning("Scan bypassed. Market State: %s", market_ctx.get("state"))
         
         if holdings_data:
             holding_evals = holding_analyzer.evaluate_holdings(holdings_data, {})
+            try:
+                with open("holdings.json", "w", encoding="utf-8") as f:
+                    json.dump(holding_evals, f, ensure_ascii=False, indent=4)
+                _logger.info("보유종목 상태가 holdings.json에 성공적으로 저장(Update)되었습니다.")
+            except Exception as e:
+                _logger.error(f"보유종목 저장 실패: {e}")
+                
             msg_holdings = report_formatter.format_holding_report(holding_evals)
             final_report.append("\n=== 💼 [2/3] 보유 종목 ===")
             final_report.append(msg_holdings)
             
         final_report.append("\n=== 🎯 [3/3] 신규 추천 ===")
-        final_report.append(f"🛑 신규 매수는 차단되었습니다.\n사유: 시장 상태 ({market_ctx.get('state')})")
+        
+        # UI 개선에 맞춰 텔레그램 포맷 수정
+        blocked_msg = f"==========================\n"
+        blocked_msg += f"🚫 <b>오늘 신규매수 불가</b>\n"
+        blocked_msg += f"사유: {market_ctx.get('state')} 국면\n"
+        blocked_msg += f"==========================\n"
+        blocked_msg += f"오늘 매수추천: <b>없음</b>\n"
+        blocked_msg += f"==========================\n\n"
+        blocked_msg += f"👉 <b>현재 행동: 현금 유지 및 관망</b>\n"
+        blocked_msg += f"=========================="
+        final_report.append(blocked_msg)
         
         send_telegram_msg("\n".join(final_report))
         return
@@ -84,11 +103,19 @@ def run_pipeline():
     if holdings_data:
         features_map = {cf.code: cf for cf in features_list}
         holding_evals = holding_analyzer.evaluate_holdings(holdings_data, features_map)
+        
+        # 보유 종목 평가 후 JSON 덮어쓰기 (영속성 유지)
+        try:
+            with open("holdings.json", "w", encoding="utf-8") as f:
+                json.dump(holding_evals, f, ensure_ascii=False, indent=4)
+            _logger.info("보유종목 상태가 holdings.json에 성공적으로 저장(Update)되었습니다.")
+        except Exception as e:
+            _logger.error(f"보유종목 저장 실패: {e}")
+            
         msg_holdings = report_formatter.format_holding_report(holding_evals)
         final_report.append("\n=== 💼 [2/3] 보유 종목 ===")
         final_report.append(msg_holdings)
 
-    # [핵심] 키워드 인자 명시화로 sys_state와 holdings_data 꼬임 버그 완벽 해결
     decision_results = decision_engine.evaluate_candidates(
         features_list=features_list,
         market_context=market_ctx,
