@@ -1,12 +1,10 @@
 from typing import Dict, List, Any
 
 def format_market_report(stats: Dict[str, Any]) -> str:
-    """ market_report.py 에서 전달된 시장 요약 데이터를 포매팅 """
     state = stats.get("state", "UNKNOWN")
     val_pass = state != "INVALID"
     val_text = "PASS" if val_pass else "FAIL"
     
-    # 이모지 세팅
     state_emoji = "🟢" if state == "NORMAL" else "🔴" if state == "CRASH" else "🟡"
     
     msg = f"🌐 <b>시장 데이터 검증 : {val_text}</b>\n"
@@ -25,7 +23,6 @@ def format_market_report(stats: Dict[str, Any]) -> str:
     return msg
 
 def format_holding_report(holdings: List[Dict[str, Any]]) -> str:
-    """ 보유 종목 평가 결과 포매팅 """
     if not holdings:
         return "등록된 보유 종목이 없습니다."
         
@@ -39,7 +36,6 @@ def format_holding_report(holdings: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 def format_signal_report(decision_results: Dict[str, Any]) -> str:
-    """ decision_engine 의 결과를 포매팅 """
     buy_blocked = decision_results.get("buy_blocked", False)
     block_reason = decision_results.get("block_reason", "")
     alert_cands = decision_results.get("alert_candidates", [])
@@ -51,9 +47,9 @@ def format_signal_report(decision_results: Dict[str, Any]) -> str:
         
     msg += f"<b>[티어별 현황]</b>\n"
     if buy_blocked:
-        msg += f"관찰 L3: {level_counts.get('LEVEL 3', 0)}개 | "
-        msg += f"관찰 L2: {level_counts.get('LEVEL 2', 0)}개 | "
-        msg += f"관찰 L1: {level_counts.get('LEVEL 1', 0)}개\n\n"
+        msg += f"WATCH A: {level_counts.get('WATCH A', 0)}개 | "
+        msg += f"WATCH B: {level_counts.get('WATCH B', 0)}개 | "
+        msg += f"WATCH C: {level_counts.get('WATCH C', 0)}개\n\n"
     else:
         msg += f"LEVEL 3: {level_counts.get('LEVEL 3', 0)}개 | "
         msg += f"LEVEL 2: {level_counts.get('LEVEL 2', 0)}개 | "
@@ -75,7 +71,6 @@ def format_signal_report(decision_results: Dict[str, Any]) -> str:
         
         msg += f"⭐ <b>{name}</b> | {price:,}원 ({chg}%)\n"
         
-        # [핵심 패치] 관찰 모드일 경우 상세 메타데이터 및 이유 출력
         if buy_blocked:
             score = decision.get('watch_score', decision.get('final_score', 'N/A'))
             msg += f"관찰점수: <b>{score}</b> | RS: <b>{rs}</b>\n"
