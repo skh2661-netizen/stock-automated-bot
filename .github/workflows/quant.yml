@@ -1,3 +1,4 @@
+# .github/workflows/quant.yml
 name: V8.4.5 Quant Engine Automated
 
 permissions:
@@ -41,13 +42,15 @@ jobs:
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        # 데이터베이스 파일 존재 여부 확인 후 git add
-        if [ -f data/candidates.db ]; then
-            git add data/candidates.db
-            git diff --quiet && git diff --staged --quiet || (
-              git commit -m "Auto-update DB" &&
-              git push
-            )
+        
+        # 파일 존재 여부 확인 후 git add
+        [ -f data/candidates.db ] && git add data/candidates.db
+        [ -f holdings.json ] && git add holdings.json
+        
+        # 변경사항이 있을 때만 커밋 및 푸시
+        if ! git diff --staged --quiet; then
+            git commit -m "Auto-update DB and holdings"
+            git push
         else
-            echo "Database file not found, skipping commit."
+            echo "No changes to commit."
         fi
