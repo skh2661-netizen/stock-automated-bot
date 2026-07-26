@@ -1,4 +1,3 @@
-# decision_engine.py
 import logging
 import numpy as np
 import pandas as pd
@@ -9,7 +8,6 @@ from trade_plan import generate_trade_plan
 
 _logger = logging.getLogger(__name__)
 
-# Portfolio Optimizer: 상관관계(Sector/RS 기반)를 평가하여 포트폴리오 노출을 통제
 def _optimize_portfolio(candidates: List[Dict], max_sector_exposure: int = 2) -> List[Dict]:
     optimized = []
     sector_exposure = {}
@@ -38,7 +36,7 @@ def evaluate_candidates(features_list: List[CandidateFeature], market_context: D
             buy_blocked, block_reason = True, "슬롯 소진"
 
     pre_eval_data = []
-    level_counts = {"LEVEL 3": 0, "LEVEL 2": 0, "LEVEL 1": 0, "HOLD": 0, "REDUCE": 0, "EXIT": 0, "GATED": 0}
+    level_counts = {"LEVEL 3": 0, "LEVEL 2": 0, "LEVEL 1": 0, "WATCH A": 0, "WATCH B": 0, "WATCH C": 0, "HOLD": 0, "REDUCE": 0, "EXIT": 0, "GATED": 0}
     
     for cf in features_list:
         if not is_holding_eval and cf.code in holding_codes: continue
@@ -72,7 +70,6 @@ def evaluate_candidates(features_list: List[CandidateFeature], market_context: D
         if cf.pat.is_hammer: adj += 1.0
         if cf.pat.is_bull_engulfing: adj += 1.0
         
-        # Risk 산출 (수익률 분산 및 ATR 안정성)
         risk_score = 1.0 / (cf.vty.return_var_20d + 1e-8) if cf.vty.return_var_20d > 0 else 0.0
 
         pre_eval_data.append({
@@ -92,7 +89,6 @@ def evaluate_candidates(features_list: List[CandidateFeature], market_context: D
     global_rs_m, global_rs_s = df_eval['rs'].mean(), df_eval['rs'].std()
     global_tval_m, global_tval_s = df_eval['tval'].mean(), df_eval['tval'].std()
 
-    # True James-Stein Shrinkage (표본 수 n 적용)
     def calc_true_james_stein_z(x, g_m, g_s):
         n = len(x)
         if n < 3 or x.std() == 0:
@@ -136,7 +132,6 @@ def evaluate_candidates(features_list: List[CandidateFeature], market_context: D
                 "quality_z": q_z, "liq_z": liq_z, "risk_z": risk_z, "expected_value": ev, 
                 "bayesian_win_rate": round(d["bayesian_win"], 3), 
                 "true_rs": round(cf.mom.true_rs_composite, 2),
-                # [추가] 텔레그램 출력용 메타데이터 주입
                 "dist_52w": round(cf.struc.dist_52w_high, 2),
                 "atr_pct": round(cf.risk.atr_pct, 2),
                 "tval": round(cf.vol.trading_value_100m, 1),
@@ -175,27 +170,24 @@ def evaluate_candidates(features_list: List[CandidateFeature], market_context: D
             d["final_score"] = final_score
             d["percentile_rank"] = round(ev_norms[i], 1)
             
-            # [핵심] 폭락장용 방어력 지표 (WatchScore) 산출 및 관찰 이유 생성
-            w_score = (final_score * 0.4) + (d["true_rs"] * 0.4) + (max(0, 100 + d["dist_52w"]) * 0.1) + (min(500, d["tval"]) * 0.05) - (d["atr_pct"] * 2.0)
+            w_score = (final_score * 0.4) + (d["true_rs"] * 1.5) + (max(0, 100 + d["dist_52w"]) * 0.3) + (min(500, d["tval"]) * 0.05) - (d["atr_pct"] * 4.0)
             d["watch_score"] = round(w_score, 2)
             
             reasons = []
             if d["dist_52w"] > -10.0: reasons.append("✔ 52주 신고가 근접")
-            if d["true_rs"] > 10.0: reasons.append("✔ 시장 대비 RS 우수")
+            if d["true_rs"] > 10.0: reasons.append("✔ 시장 대비 강력한 RS 우위")
             if d["tval"] > 300: reasons.append("✔ 풍부한 거래대금 유지")
-            if d["atr_pct"] < 3.0: reasons.append("✔ 낮은 변동성 (안정성)")
+            if d["atr_pct"] < 3.0: reasons.append("✔ 낮은 변동성 (하방 안정성)")
             if d["ma20_gap"] > 0: reasons.append("✔ 20일선 지지 굳건")
             
             if not reasons: reasons.append("✔ 낙폭 과대 후 반등 대기")
-            d["reasons"] = reasons[:3] # 최대 3개까지만 노출
+            d["reasons"] = reasons[:3]
 
-        # [핵심] 시장 차단(CRASH) 상태면 WatchScore로 정렬, 아니면 FinalScore로 정렬
         if buy_blocked:
             valid_results.sort(key=lambda x: x["decision"]["watch_score"], reverse=True)
         else:
             valid_results.sort(key=lambda x: x["decision"]["final_score"], reverse=True)
         
-        # 포트폴리오 최적화(Portfolio Optimizer) 가동
         optimized_results = _optimize_portfolio(valid_results, max_sector_exposure=2)
         
         new_buys = [r for r in optimized_results if r["code"] not in holding_codes]
@@ -221,9 +213,14 @@ def evaluate_candidates(features_list: List[CandidateFeature], market_context: D
                 elif ev >= 0.0: level = "REDUCE"
                 else: level = "EXIT"
             else:
-                if new_buy_idx < l3_idx: level = "LEVEL 3"
-                elif new_buy_idx < l2_idx: level = "LEVEL 2"
-                else: level = "LEVEL 1"
+                if buy_blocked:
+                    if new_buy_idx < l3_idx: level = "WATCH A"
+                    elif new_buy_idx < l2_idx: level = "WATCH B"
+                    else: level = "WATCH C"
+                else:
+                    if new_buy_idx < l3_idx: level = "LEVEL 3"
+                    elif new_buy_idx < l2_idx: level = "LEVEL 2"
+                    else: level = "LEVEL 1"
                 new_buy_idx += 1
                 
             res["decision"]["level"] = level
@@ -233,7 +230,7 @@ def evaluate_candidates(features_list: List[CandidateFeature], market_context: D
     else:
         final_portfolio = []
             
-    alert_cands = [r for r in final_portfolio if r["decision"]["level"] == "LEVEL 3"]
+    alert_cands = [r for r in final_portfolio if r["decision"]["level"] in ["LEVEL 3", "WATCH A"]]
     
     return {
         "market": market_context, "candidates": final_portfolio, "alert_candidates": alert_cands, 
