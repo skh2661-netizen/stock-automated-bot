@@ -2,8 +2,8 @@ import os
 import sys
 import time
 import logging
-from dataclasses import dataclass
 import requests
+from dataclasses import dataclass
 
 import market_check
 import market_report
@@ -88,7 +88,14 @@ def run_pipeline():
         final_report.append("\n=== 💼 [2/3] 보유 종목 ===")
         final_report.append(msg_holdings)
 
-    decision_results = decision_engine.evaluate_candidates(features_list, market_ctx, holdings_data, total_equity=CONFIG.TOTAL_EQUITY)
+    # [핵심] 키워드 인자 명시화로 sys_state와 holdings_data 꼬임 버그 완벽 해결
+    decision_results = decision_engine.evaluate_candidates(
+        features_list=features_list,
+        market_context=market_ctx,
+        sys_state={},
+        holdings_data=holdings_data,
+        total_equity=CONFIG.TOTAL_EQUITY
+    )
     
     level_counts = decision_results.get("level_counts", {})
     _logger.info("Decision breakdown: %s", level_counts)
