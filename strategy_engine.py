@@ -1,4 +1,3 @@
-# strategy_engine.py
 from typing import List, Tuple, Dict
 from models import CandidateFeature, QuantConfig
 
@@ -43,8 +42,8 @@ def assign_strategies(cf: CandidateFeature, sys_state: Dict) -> Tuple[List[str],
         
     final_strategies = final_candidates[:2]
     
-    # [핵심] DB 기반 Empirical Bayes 실시간 업데이트 연동
-    strat_db = sys_state.get("strat_db", QuantConfig.STRAT_DB_MOCK)
+    # [핵심 패치] 구 버전의 잔재(STRAT_DB_MOCK)를 제거하고 빈 딕셔너리로 안전하게 초기화
+    strat_db = sys_state.get("strat_db", {})
     
     total_w = sum(d.get("w", 0) for d in strat_db.values())
     total_l = sum(d.get("l", 0) for d in strat_db.values())
