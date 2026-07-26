@@ -31,7 +31,7 @@ def get_market_context() -> dict:
             _logger.info(f"[DEBUG Breadth] KRX Rows: {len(krx)}")
             _logger.info(f"[DEBUG Breadth] KRX Columns: {krx.columns.tolist()}")
             
-            # [핵심 패치] FDR 버전별 오타 및 다양한 컬럼명 모두 대응
+            # FDR 버전별 오타 및 다양한 컬럼명 모두 대응
             possible_cols = ['ChangesRatio', 'ChagesRatio', 'Change', 'Changes', 'Chg', '등락률', 'FLUC_RT']
             c = next((col for col in possible_cols if col in krx.columns), None)
             
@@ -47,7 +47,7 @@ def get_market_context() -> dict:
                 total_down = int((krx[c] < 0).sum())
                 total_same = int((krx[c] == 0).sum())
 
-                # 형님이 알려주신 간소화 공식
+                # 간소화 공식
                 advance_ratio = round((100.0 * total_up) / max(total_up + total_down, 1), 1)
             else:
                 _logger.warning("[DEBUG Breadth] 등락률 컬럼을 찾지 못해 계산을 스킵합니다. (0 반환)")
@@ -58,7 +58,8 @@ def get_market_context() -> dict:
         if current_kospi < kospi_20ma and current_kosdaq < kosdaq_20ma:
             if kospi_1d < -1.5 or kosdaq_1d < -1.5:
                 state = "CRASH" 
-                allow_scan = False
+                # [수정] 폭락장에서도 관찰 종목(Watchlist) 수집을 위해 스캐너 가동 허용
+                allow_scan = True 
                 score = 20
             else:
                 state = "WEAK" 
