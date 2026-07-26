@@ -45,10 +45,13 @@ def format_signal_report(decision_results: Dict[str, Any]) -> str:
     alert_cands = decision_results.get("alert_candidates", [])
     level_counts = decision_results.get("level_counts", {})
     
+    msg = ""
+    
+    # [수정] 매수 차단 시 return으로 끝내지 않고 경고문만 상단에 부착
     if buy_blocked:
-        return f"⚠️ <b>신규 매수 차단됨</b>\n사유: {block_reason}\n"
+        msg += f"⚠️ <b>신규 매수 차단됨</b>\n사유: {block_reason}\n\n"
         
-    msg = f"<b>[티어별 추천 현황]</b>\n"
+    msg += f"<b>[티어별 추천 현황]</b>\n"
     msg += f"LEVEL 3: {level_counts.get('LEVEL 3', 0)}개 | "
     msg += f"LEVEL 2: {level_counts.get('LEVEL 2', 0)}개 | "
     msg += f"LEVEL 1: {level_counts.get('LEVEL 1', 0)}개\n\n"
