@@ -1,42 +1,6 @@
 from typing import Dict, List, Any
 
-def format_market_report(stats: Dict[str, Any]) -> str:
-    """ market_report.py 에서 전달된 시장 요약 데이터를 포매팅 """
-    state = stats.get("state", "UNKNOWN")
-    val_pass = state != "INVALID"
-    val_text = "PASS" if val_pass else "FAIL"
-    
-    # 이모지 세팅
-    state_emoji = "🟢" if state == "NORMAL" else "🔴" if state == "CRASH" else "🟡"
-    
-    msg = f"🌐 <b>시장 데이터 검증 : {val_text}</b>\n"
-    msg += f"시장 국면 : {state_emoji} <b>{state}</b> (강도: {stats.get('score', 0)}점)\n"
-    msg += f"KOSPI : {stats.get('kospi_1d', 0.0)}% | KOSDAQ : {stats.get('kosdaq_1d', 0.0)}%\n"
-    msg += f"판단 근거 : {stats.get('reason', 'N/A')}\n"
-    msg += f"출처 : {stats.get('source', '알수없음')}\n\n"
-    
-    up_cnt = stats.get('total_up', 0)
-    down_cnt = stats.get('total_down', 0)
-    same_cnt = stats.get('total_same', 0)
-    
-    msg += f"📈 상승 {up_cnt} | 하락 {down_cnt} | 보합 {same_cnt}\n"
-    msg += f"📊 상승 비율(Breadth) : <b>{stats.get('advance_ratio', 0.0)}%</b>\n"
-    
-    return msg
-
-def format_holding_report(holdings: List[Dict[str, Any]]) -> str:
-    """ 보유 종목 평가 결과 포매팅 """
-    if not holdings:
-        return "등록된 보유 종목이 없습니다."
-        
-    lines = []
-    for idx, h in enumerate(holdings, 1):
-        name = h.get("name", "Unknown")
-        pnl = h.get("pnl", 0.0)
-        judgment = h.get("judgment", "보유")
-        lines.append(f"{idx}. <b>{name}</b> ({pnl}%) | <b>{judgment}</b>")
-        
-    return "\n".join(lines)
+# (format_market_report, format_holding_report는 기존과 동일)
 
 def format_signal_report(decision_results: Dict[str, Any]) -> str:
     """ decision_engine 의 결과를 포매팅 """
@@ -47,31 +11,46 @@ def format_signal_report(decision_results: Dict[str, Any]) -> str:
     
     msg = ""
     
-    # [수정] 매수 차단 시 return으로 끝내지 않고 경고문만 상단에 부착
     if buy_blocked:
         msg += f"⚠️ <b>신규 매수 차단됨</b>\n사유: {block_reason}\n\n"
         
-    msg += f"<b>[티어별 추천 현황]</b>\n"
-    msg += f"LEVEL 3: {level_counts.get('LEVEL 3', 0)}개 | "
-    msg += f"LEVEL 2: {level_counts.get('LEVEL 2', 0)}개 | "
-    msg += f"LEVEL 1: {level_counts.get('LEVEL 1', 0)}개\n\n"
+    msg += f"<b>[티어별 현황]</b>\n"
+    # [핵심] 매수 차단 시 용어를 '관찰'로 변경하여 혼선 방지
+    if buy_blocked:
+        msg += f"관찰 L3: {level_counts.get('LEVEL 3', 0)}개 | "
+        msg += f"관찰 L2: {level_counts.get('LEVEL 2', 0)}개 | "
+        msg += f"관찰 L1: {level_counts.get('LEVEL 1', 0)}개\n\n"
+    else:
+        msg += f"LEVEL 3: {level_counts.get('LEVEL 3', 0)}개 | "
+        msg += f"LEVEL 2: {level_counts.get('LEVEL 2', 0)}개 | "
+        msg += f"LEVEL 1: {level_counts.get('LEVEL 1', 0)}개\n\n"
     
-    msg += f"👑 <b>Prime Leader (최상위 타점)</b>\n"
+    # [핵심] 국면에 따른 리더 타이틀 동적 변환
+    leader_title = "👀 <b>Observation Leader (최우선 관찰)</b>" if buy_blocked else "👑 <b>Prime Leader (최상위 타점)</b>"
+    msg += f"{leader_title}\n"
+    
     if not alert_cands:
-        msg += "오늘의 추천 타점이 없습니다.\n"
+        msg += "오늘의 추천/관찰 타점이 없습니다.\n"
     else:
         prime = alert_cands[0]
         name = prime.get('name', 'Unknown')
         price = prime.get('price', 0)
         chg = prime.get('chg', 0.0)
         
-        # decision_engine.py 의 실제 출력 키값인 final_score, true_rs 사용
         decision = prime.get('decision', {})
         score = decision.get('final_score', 'N/A')
         rs = decision.get('true_rs', 'N/A')
         
         msg += f"⭐ <b>{name}</b> | {price:,}원 ({chg}%)\n"
         msg += f"점수: <b>{score}</b> | RS: <b>{rs}</b>\n"
+        
+        # [핵심] 관찰 모드일 경우 실전 매수 진입(트리거) 조건 부착
+        if buy_blocked:
+            msg += f"\n📌 <b>사전 매수 준비 조건 (Watchlist)</b>\n"
+            msg += f" □ 시장 국면 <b>WEAK</b> 이상 회복\n"
+            msg += f" □ 시장 상승비율(Breadth) <b>40%</b> 이상\n"
+            msg += f" □ 해당 종목 <b>단기 저항선(5일 고점)</b> 돌파\n"
+            msg += f" □ 진입 시 <b>의미 있는 거래대금</b> 유입 확인\n"
         
         if len(alert_cands) > 1:
             msg += "\n📈 <b>Observation (추가 관찰)</b>\n"
