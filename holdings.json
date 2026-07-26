@@ -1,15 +1,11 @@
 [
-  {
-    "code": "232140",
-    "name": "와이씨",
-    "entry_price": 19520,
-    "quantity": 100,
-    "entry_date": "2026-07-09",
-    "stop_loss": 18000,
-    "target1": 22000,
-    "target2": 25000,
-    "highest_price": 19520,
-    "strategy": "돌파매매",
-    "entry_level": "LEVEL 3"
-  }
+    {
+        "code": "232140",
+        "name": "와이씨",
+        "entry_price": 19520,
+        "current_price": 9080.0,
+        "return_pct": -53.48,
+        "action": "STOP_LOSS",
+        "reason": "수동 손절선(-10%) 이탈"
+    }
 ]
