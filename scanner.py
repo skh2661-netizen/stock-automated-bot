@@ -1,4 +1,3 @@
-# scanner.py
 import os
 import time
 import logging
@@ -20,7 +19,7 @@ class ScannerConfig:
     MIN_PRICE: int = 1000
     MAX_PRICE: int = 500000
     MIN_VOLUME: int = 100000
-    PROCESS_TIMEOUT: float = 15.0  # [핵심] 프로세스 강제 킬(Kill) 데드라인 설정
+    PROCESS_TIMEOUT: float = 15.0  
     
 CONFIG = ScannerConfig()
 _logger = logging.getLogger(__name__)
@@ -37,7 +36,8 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
     latency = {"fdr": 0.0, "ta": 0.0, "total": 0.0}
     t_start = time.perf_counter()
     
-    start_date = (datetime.datetime.now() - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
+    # 400일 -> 300일로 다운로드 범위 축소 (최적화)
+    start_date = (datetime.datetime.now() - datetime.timedelta(days=300)).strftime("%Y-%m-%d")
     
     t0 = time.perf_counter()
     df = _get_fdr_data_safe(symbol, start_date)
@@ -72,31 +72,27 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
         if current_vol < vol_ma20 * 0.3: return "VOL_DRY", None, latency
         relative_vol_today = current_vol / vol_ma20 if vol_ma20 > 0 else 0.0
         
-        df.ta.sma(length=5, append=True)
-        df.ta.sma(length=20, append=True)
-        df.ta.sma(length=60, append=True)
-        df.ta.sma(length=120, append=True)
-        df.ta.atr(length=14, append=True)
-        df.ta.natr(length=14, append=True)
-        df.ta.mfi(length=14, append=True)
+        # Native Pandas 연산 적용 (append=True 폐기 최적화)
+        ma5 = close.rolling(window=5).mean().iloc[-1]
+        ma20 = close.rolling(window=20).mean().iloc[-1]
+        ma60 = close.rolling(window=60).mean().iloc[-1]
+        ma120 = close.rolling(window=120).mean().iloc[-1] if len(close) >= 120 else ma60
         
-        ma5 = df['SMA_5'].iloc[-1]
-        ma20 = df['SMA_20'].iloc[-1]
-        ma60 = df['SMA_60'].iloc[-1]
+        tr = np.maximum(high - low, np.maximum(abs(high - close.shift(1)), abs(low - close.shift(1))))
+        atr14 = tr.rolling(window=14).mean().iloc[-1]
+        atr14 = max(atr14, current_price * QuantConfig.ATR_MIN_PCT)
         
-        atr_col = next((c for c in df.columns if c.startswith("ATR")), None)
-        natr_col = next((c for c in df.columns if c.startswith("NATR")), None)
-        atr14 = df[atr_col].iloc[-1] if atr_col else 0.0
-        atr14 = max(atr14, current_price * QuantConfig.ATR_MIN_PCT)  
-        natr14 = df[natr_col].iloc[-1] if natr_col else 0.0
-        mfi14 = df['MFI_14'].iloc[-1] if 'MFI_14' in df.columns else 50.0
+        natr14 = (atr14 / current_price) * 100
+        
+        mfi_series = df.ta.mfi(length=14)
+        mfi14 = mfi_series.iloc[-1] if mfi_series is not None and not mfi_series.empty else 50.0
         
         if not (np.isfinite(ma20) and np.isfinite(atr14) and atr14 > 0 and ma20 > 0):
             return "INDICATOR_FAIL", None, latency
             
         is_trend_up = bool(ma20 > ma60)
-        if len(df['SMA_20']) >= 5:
-            ma20_slope = np.polyfit(np.arange(5), df['SMA_20'].iloc[-5:].values, 1)[0]
+        if len(close) >= 5:
+            ma20_slope = np.polyfit(np.arange(5), close.rolling(window=20).mean().iloc[-5:].values, 1)[0]
             is_ma20_up = bool(ma20_slope > 0)
         else: is_ma20_up = False
         
@@ -107,7 +103,6 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
         chg_limit = max(6.0, atr_pct * 2.5)
         max_gap_allowed = min(max(3.0, atr_pct), QuantConfig.GAP_CHASE_MAX_PCT)
         
-        # [핵심] 실제 수익률 분산 (Return Variance) 연산 
         return_var_20d = float(close.pct_change().iloc[-20:].var() * 252) if len(close) >= 20 else 0.0
         
     except Exception: return "TA_CALC_FAIL", None, latency
@@ -125,7 +120,7 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
         rs_120d = (calc_ret(120) - bm.get("120d", 0)) * 100
         true_rs_composite = (rs_10d * 0.40) + (rs_25d * 0.30) + (rs_60d * 0.20) + (rs_120d * 0.10)
         
-        if len(df['SMA_120']) > 0 and current_price < df['SMA_120'].iloc[-1]:
+        if ma120 > 0 and current_price < ma120:
             true_rs_composite *= 0.5  
     except Exception: return "RS_FAIL", None, latency
         
@@ -187,14 +182,15 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
         is_upper_heavy = bool(close_pos < QuantConfig.UPPER_SHADOW_CLOSE_POS)
         has_long_upper_shadow = (upper_shadow > min_shadow_limit) and is_upper_heavy
 
-        if natr_col and len(df) > 120:
-            atr_compression = df[natr_col].rolling(120).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1]).iloc[-1] < 0.20
-        else:
-            atr_compression = False
+        atr_compression = False
+        if len(close) > 120:
+            tr_series = pd.Series(tr)
+            natr_series = (tr_series.rolling(window=14).mean() / close) * 100
+            atr_compression = natr_series.rolling(120).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1]).iloc[-1] < 0.20
 
         struc = PriceStructure(last_pivot_high_price, prev_pivot_high_price, prev_pivot_low, last_pivot_low, dist_ma20, dist_52w_high, high_stay_days, is_5d_breakout, is_higher_high)
         pat = PricePattern(is_bull_engulfing, is_hammer, gap_survived, is_gap_up, has_long_upper_shadow)
-        vty = Volatility(atr14, natr14, atr_compression, 0.0, return_var_20d)
+        vty = Volatility(atr14, natr14, atr_compression, adr_20, return_var_20d)
         mom = Momentum(rs_10d, rs_25d, rs_60d, rs_120d, true_rs_composite, ma20, ma_gap, is_trend_up, is_ma20_up)
         vol = VolumeFlow(vr_20, mfi14, relative_vol_today, mixed_tval, adv_100m, is_vol_dry_up)
         risk = RiskProfile(atr_pct, chg_limit, max_gap_allowed)
@@ -204,7 +200,7 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
     except Exception: return "PATTERN_FAIL", None, latency
 
 def run_scanner(market_ctx: Dict) -> List[CandidateFeature]:
-    _logger.info("Starting target generation with multiprocessing.Pool (Hard Worker Kill/Recycle)")
+    _logger.info("Starting target generation with multiprocessing.Pool (Optimized imap_unordered)")
     try:
         krx = fdr.StockListing('KRX')
     except Exception:
@@ -239,31 +235,18 @@ def run_scanner(market_ctx: Dict) -> List[CandidateFeature]:
     
     latency_stats = {"fdr": [], "ta": [], "total": []}
     
-    # [핵심] maxtasksperchild 옵션으로 워커가 일정한 작업을 마치면 강제 재시작되게 하여 메모리 누수 원천 차단
-    # get(timeout) 시 발생하는 mp.TimeoutError를 통해 Hanging된 워커를 식별하고 패스
+    # imap_unordered 비동기 스트림 도입 (속도 향상)
     with mp.Pool(processes=CONFIG.MAX_WORKERS, maxtasksperchild=50) as pool:
-        adaptive_chunk = max(50, int(3000 / (CONFIG.MAX_WORKERS * 2)))
-        for i in range(0, len(targets), adaptive_chunk):
-            chunk = targets[i:i + adaptive_chunk]
-            args_list = [(t['Code'], t['Name'], t['Market'], str(t['Sector']), market_returns) for t in chunk]
-            
-            async_results = [pool.apply_async(build_candidate_feature, (args,)) for args in args_list]
-            
-            for res_obj in async_results:
-                try:
-                    reason, res, latency = res_obj.get(timeout=CONFIG.PROCESS_TIMEOUT)
-                    reject_counts[reason] = reject_counts.get(reason, 0) + 1
-                    if res: 
-                        features_list.append(res)
-                        latency_stats["fdr"].append(latency["fdr"])
-                        latency_stats["ta"].append(latency["ta"])
-                        latency_stats["total"].append(latency["total"])
-                except mp.TimeoutError:
-                    reject_counts["TIMEOUT_ERROR"] = reject_counts.get("TIMEOUT_ERROR", 0) + 1
-                except Exception:
-                    reject_counts["PROCESS_CRASH"] = reject_counts.get("PROCESS_CRASH", 0) + 1
-    
-    # [핵심] Observability: P95, P99 구간별 응답 지연 시간(Latency) 로깅
+        args_list = [(t['Code'], t['Name'], t['Market'], str(t['Sector']), market_returns) for t in targets]
+        
+        for reason, res, latency in pool.imap_unordered(build_candidate_feature, args_list):
+            reject_counts[reason] = reject_counts.get(reason, 0) + 1
+            if res: 
+                features_list.append(res)
+                latency_stats["fdr"].append(latency["fdr"])
+                latency_stats["ta"].append(latency["ta"])
+                latency_stats["total"].append(latency["total"])
+                
     if latency_stats["total"]:
         market_ctx["latency_metrics_ms"] = {
             "fdr_p95": round(np.percentile(latency_stats["fdr"], 95), 1),
