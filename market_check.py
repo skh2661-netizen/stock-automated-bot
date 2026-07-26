@@ -26,7 +26,17 @@ def get_market_context() -> dict:
         advance_ratio = 50.0
         try:
             krx = fdr.StockListing('KRX')
-            c = next((col for col in ['ChangesRatio', 'Change', 'Chg', '등락률'] if col in krx.columns), None)
+            
+            # [디버그 로그] 실제 받아온 컬럼 목록과 Row 수 확인
+            _logger.info(f"[DEBUG Breadth] KRX Rows: {len(krx)}")
+            _logger.info(f"[DEBUG Breadth] KRX Columns: {krx.columns.tolist()}")
+            
+            # [핵심 패치] FDR 버전별 오타 및 다양한 컬럼명 모두 대응
+            possible_cols = ['ChangesRatio', 'ChagesRatio', 'Change', 'Changes', 'Chg', '등락률', 'FLUC_RT']
+            c = next((col for col in possible_cols if col in krx.columns), None)
+            
+            _logger.info(f"[DEBUG Breadth] Selected Change Column: {c}")
+
             if c and not krx.empty:
                 krx[c] = pd.to_numeric(krx[c], errors='coerce').fillna(0)
                 noise_filter = '스팩|우$|우B|우C|ETF|ETN|리츠|선박투자|인버스|레버리지|KODEX|TIGER|ACE|SOL|HANARO|TIMEFOLIO|PLUS|KOSEF|ARIRANG|KBSTAR|RISE'
@@ -39,6 +49,9 @@ def get_market_context() -> dict:
 
                 # 형님이 알려주신 간소화 공식
                 advance_ratio = round((100.0 * total_up) / max(total_up + total_down, 1), 1)
+            else:
+                _logger.warning("[DEBUG Breadth] 등락률 컬럼을 찾지 못해 계산을 스킵합니다. (0 반환)")
+                
         except Exception as e:
             _logger.warning(f"Breadth 수집 실패 (기본값 사용): {e}")
         
