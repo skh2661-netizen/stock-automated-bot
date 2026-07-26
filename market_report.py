@@ -1,7 +1,7 @@
 from typing import Dict, Any
 
 def build_market_report(market_ctx: Dict[str, Any]) -> Dict[str, Any]:
-    # 중첩된(nested) 딕셔너리 조회를 제거하고, market_ctx에서 직접 가져옴
+    # market_check.py가 직접 올려주는 Flat 키를 읽어옴
     total_up = market_ctx.get("total_up", 0)
     total_down = market_ctx.get("total_down", 0)
     total_same = market_ctx.get("total_same", 0)
