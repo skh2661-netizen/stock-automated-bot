@@ -3,8 +3,8 @@
         "code": "232140",
         "name": "와이씨",
         "entry_price": 19520,
-        "current_price": 9510.0,
-        "return_pct": -51.28,
+        "current_price": 9620.0,
+        "return_pct": -50.72,
         "action": "STOP_LOSS",
         "reason": "수동 손절선(-10%) 이탈"
     }
