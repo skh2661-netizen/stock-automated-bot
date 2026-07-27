@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import logging
+import tempfile
 import requests
 from dataclasses import dataclass
 
@@ -86,11 +87,10 @@ def run_pipeline():
     final_report.append(msg_mkt)
 
     # 2. PriceCache: KRX 전체 당일 시세를 한 번만 로드해서 Holding/Scanner가 공유
-    #    (holding_analyzer가 종목별로 FDR을 재호출하던 것과, scanner의 다운로드 병목을 동시에 해소)
     price_cache = scanner.build_price_cache()
     if not price_cache:
-        _logger.error("Price cache is empty (FDR/KRX 조회 실패로 추정). 보유종목은 마지막 시세로, 신규 스캔은 건너뜁니다.")
-        send_telegram_msg("⚠️ <b>시세 데이터 조회 실패</b>\n오늘은 KRX 시세를 가져오지 못해 신규 스캔을 건너뜁니다. (보유종목은 마지막 시세 기준으로 평가)")
+        _logger.error("Price cache is empty (FDR/KRX 조회 실패 및 백업본 부재). 보유종목은 마지막 시세로, 신규 스캔은 건너뜁니다.")
+        send_telegram_msg("⚠️ <b>시세 데이터 조회 및 복구 실패</b>\n오늘은 KRX 시세를 가져오지 못해 신규 스캔을 건너뜁니다. (보유종목은 마지막 시세 기준으로 평가)")
 
     # 3. Holding: 시장 차단 여부와 무관하게 항상 평가 + JSON 저장 (분기 통합)
     holdings_data = holding_analyzer.load_holdings("holdings.json")
@@ -99,12 +99,20 @@ def run_pipeline():
     holding_evals = holding_analyzer.evaluate_holdings(holdings_data, price_cache)
 
     if holding_evals:
+        # [STEP 1 핵심] Atomic Write 적용 (파일 손상 원천 차단)
+        temp_name = ""
         try:
-            with open("holdings.json", "w", encoding="utf-8") as f:
+            dir_name = os.path.dirname(os.path.abspath("holdings.json")) or '.'
+            with tempfile.NamedTemporaryFile('w', delete=False, dir=dir_name, encoding='utf-8') as f:
                 json.dump(holding_evals, f, ensure_ascii=False, indent=4)
-            _logger.info("보유종목 상태가 holdings.json에 성공적으로 저장(Update)되었습니다.")
+                temp_name = f.name
+            
+            os.replace(temp_name, "holdings.json")
+            _logger.info("보유종목 상태가 holdings.json에 성공적으로 저장(Atomic Update)되었습니다.")
         except Exception as e:
             _logger.error(f"보유종목 저장 실패: {e}")
+            if temp_name and os.path.exists(temp_name):
+                os.remove(temp_name)
 
         msg_holdings = report_formatter.format_holding_report(holding_evals)
         final_report.append("\n=== 💼 [2/3] 보유 종목 ===")
@@ -157,4 +165,7 @@ def run_pipeline():
     _logger.info("=== Pipeline Completed ===")
 
 if __name__ == "__main__":
+    # Windows 멀티프로세싱 재귀 방지 (안전 장치 추가)
+    import multiprocessing as mp
+    mp.freeze_support()
     run_pipeline()
