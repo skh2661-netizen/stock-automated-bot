@@ -34,9 +34,10 @@ def format_market_report(stats: dict) -> str:
     
     return msg
 
+
 def format_holding_report(holding_evals: list) -> str:
     """
-    보유 종목의 수익률 및 액션(EXIT/HOLD) 상태를 포맷팅합니다.
+    보유 종목의 수익률 및 액션(EXIT/HOLD/DATA_MISSING) 상태를 포맷팅합니다.
     """
     if not holding_evals:
         return "보유 종목이 없습니다."
@@ -44,14 +45,17 @@ def format_holding_report(holding_evals: list) -> str:
     lines = []
     for i, item in enumerate(holding_evals, 1):
         name = item.get("name", "Unknown")
-        # 데이터 구조에 따라 return_rate 또는 profit_rate로 가져옴
         rtn = item.get("return_rate", item.get("profit_rate", 0.0))
         action = item.get("action", "HOLD")
         
-        # 기존 양식: "1. 와이씨 (-58.09%) | EXIT"
-        lines.append(f"{i}. {name} ({rtn:.2f}%) | {action}")
+        # [핵심] 데이터 누락 시 확실한 시각적 경고
+        if action == "DATA_MISSING":
+            lines.append(f"{i}. {name} | ❓ 가격조회실패 (데이터 누락)")
+        else:
+            lines.append(f"{i}. {name} ({rtn:.2f}%) | {action}")
         
     return "\n".join(lines)
+
 
 def format_signal_report(decision_results: dict) -> str:
     """
@@ -59,6 +63,7 @@ def format_signal_report(decision_results: dict) -> str:
     """
     # 데이터 구조에 따라 signals 또는 candidates 리스트를 가져옴
     signals = decision_results.get("signals", decision_results.get("candidates", []))
+    
     if not signals:
         return "==========================\n오늘 매수추천: 없음\n=========================="
         
@@ -72,7 +77,6 @@ def format_signal_report(decision_results: dict) -> str:
         # 숫자 원문자 변환 (①, ②, ③ 등)
         circle_num = chr(0x245F + i) if 1 <= i <= 20 else f"{i}."
         
-        # 기존 양식: "① SK이터닉스 (-7.7%) \n 관찰점수: 10.48 | 적용전략: 주도주(RS)"
         lines.append(f"{circle_num} {name} ({chg}%)")
         lines.append(f"관찰점수: {score} | 적용전략: {strategy}")
         lines.append("") # 줄바꿈 여백
