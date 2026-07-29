@@ -1,89 +1,77 @@
+import os
 import json
 import logging
-import datetime
-from typing import List, Dict, Any
 
 _logger = logging.getLogger(__name__)
 
-
-def load_holdings(filepath: str = "holdings.json") -> List[Dict[str, Any]]:
+def load_holdings(filepath: str = "holdings.json") -> list:
+    """
+    보유 종목 데이터(holdings.json)를 안전하게 로드합니다.
+    """
+    if not os.path.exists(filepath):
+        return []
     try:
         with open(filepath, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except FileNotFoundError:
-        _logger.warning("holdings.json not found. Returning empty list.")
-        return []
+            return json.load(f)
     except Exception as e:
-        _logger.error("Failed to load holdings: %s", e)
+        _logger.error(f"Failed to load holdings from {filepath}: {e}")
         return []
 
-
-def evaluate_holdings(holdings: List[Dict[str, Any]], price_cache: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+def evaluate_holdings(holdings_data: list, price_cache: dict) -> list:
     """
-    [수정 이력]
-    기존 코드는 scanner가 만든 features_map(CandidateFeature)이 있을 때만
-    generate_trade_plan(cf, strats, bayesian_win_rate, sys_state, ...)을 호출해야 하는데
-    인자를 2개(cf, strategies)만 넘겨서 TypeError로 크래시가 났었다.
-    (보유 종목이 스캐너 통과 목록에 있는 날에만 재현되는 간헐적 버그)
-
-    price_cache(당일 시세 스냅샷)만으로는 ATR/피벗 등 generate_trade_plan에
-    필요한 정보가 없으므로, 여기서는 트레이드플랜을 다시 계산하지 않고
-    holdings.json에 저장돼 있던 손절/목표가를 그대로 이어서 쓰고,
-    없으면(최초 1회) 진입가 기준 기본값으로 초기화한다.
-    출력 스키마는 report_formatter.format_holding_report()가 기대하는
-    'pnl' / 'judgment' 키로 통일했다.
+    보유 종목의 현재가 갱신 및 수익률, EXIT/HOLD 여부를 평가합니다.
+    (데이터 누락 시 가짜 HOLD를 막기 위해 DATA_MISSING 처리)
     """
-    evaluated = []
-    today = str(datetime.date.today())
-
-    for h in holdings:
+    results = []
+    
+    for h in holdings_data:
         code = h.get("code")
-        entry_price = h.get("entry_price", 0)
-        quantity = h.get("quantity", 0)
-        entry_date_str = h.get("entry_date", today)
-
-        stop_loss = h.get("stop_loss", round(entry_price * 0.9))
-        target1 = h.get("target1", round(entry_price * 1.1))
-        target2 = h.get("target2", round(entry_price * 1.2))
-        highest_price = h.get("highest_price", entry_price)
-
+        entry_price = float(h.get("entry_price", 0.0))
+        
+        # 1. price_cache에서 현재가 확인
         cache_hit = price_cache.get(code)
-        if cache_hit and cache_hit.get("price", 0) > 0:
-            current_price = cache_hit["price"]
-        else:
-            # 캐시에 없으면(상장폐지/코드 오류 등) 마지막으로 알던 현재가 유지, 없으면 진입가
-            current_price = h.get("current_price", entry_price)
-            _logger.warning("Price cache miss for holding %s(%s), keeping last known price.", code, h.get("name"))
-
-        if entry_price > 0 and current_price > highest_price:
+        
+        if not cache_hit:
+            # [핵심] 시세 데이터가 없으면 가짜 0% HOLD를 막기 위해 즉시 DATA_MISSING 판정
+            _logger.warning(f"[{h.get('name')}] 시세 캐시 누락. DATA_MISSING 처리 (오판 방지).")
+            
+            h["action"] = "DATA_MISSING"
+            # 현재가를 이전 가격(없으면 진입가)으로 임시 셋팅하여 구조 붕괴 방지
+            current_price = float(h.get("current_price", entry_price))
+            h["current_price"] = current_price
+            h["return_rate"] = (current_price / entry_price - 1) * 100 if entry_price > 0 else 0.0
+            
+            results.append(h)
+            continue  # 일반적인 EXIT/HOLD 평가 로직 건너뜀
+            
+        # 2. 정상적으로 시세를 가져온 경우
+        current_price = float(cache_hit["price"])
+        h["current_price"] = current_price
+        h["return_rate"] = (current_price / entry_price - 1) * 100 if entry_price > 0 else 0.0
+        
+        # 최고가(highest_price) 갱신 로직
+        highest_price = float(h.get("highest_price", entry_price))
+        if current_price > highest_price:
             highest_price = current_price
-
-        pnl = round(((current_price / entry_price) - 1) * 100, 2) if entry_price > 0 else 0.0
-
-        judgment = "HOLD"
-        if current_price <= stop_loss:
-            judgment = "EXIT"
-        elif pnl >= 15.0 or current_price >= target2:
-            judgment = "SELL"
-        elif pnl >= 7.0 and current_price >= target1:
-            judgment = "REDUCE"
-
-        evaluated.append({
-            "code": code,
-            "name": h.get("name", "Unknown"),
-            "entry_price": entry_price,
-            "current_price": current_price,
-            "quantity": quantity,
-            "entry_date": entry_date_str,
-            "pnl": pnl,
-            "stop_loss": stop_loss,
-            "target1": target1,
-            "target2": target2,
-            "highest_price": highest_price,
-            "strategy": h.get("strategy", "추세매매"),
-            "entry_level": h.get("entry_level", "LEVEL 3"),
-            "judgment": judgment,
-        })
-
-    return evaluated
+            h["highest_price"] = highest_price
+            
+        # 3. Trailing Stop 및 손절 평가 로직
+        action = "HOLD"
+        
+        # 동적/절대 손절 기준선 가져오기 (기본값 세팅)
+        loss_limit = float(h.get("loss_limit", -10.0))       # 절대 손절선
+        trailing_limit = float(h.get("trailing_limit", -15.0)) # 고점 대비 하락선
+        
+        drawdown_from_high = (current_price / highest_price - 1) * 100 if highest_price > 0 else 0.0
+        
+        if h["return_rate"] <= loss_limit:
+            action = "EXIT"
+            _logger.info(f"[{h.get('name')}] 절대 손절선({loss_limit}%) 이탈: EXIT")
+        elif drawdown_from_high <= trailing_limit:
+            action = "EXIT"
+            _logger.info(f"[{h.get('name')}] 트레일링 스탑({trailing_limit}%) 이탈: EXIT")
+            
+        h["action"] = action
+        results.append(h)
+        
+    return results
