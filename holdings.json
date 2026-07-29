@@ -13,6 +13,8 @@
         "highest_price": 19520,
         "strategy": "추세매매",
         "entry_level": "LEVEL 3",
-        "judgment": "EXIT"
+        "judgment": "EXIT",
+        "return_rate": -59.83606557377049,
+        "action": "EXIT"
     }
 ]
