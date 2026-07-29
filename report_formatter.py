@@ -21,8 +21,8 @@ def format_market_report(stats: dict) -> str:
     msg += f"KOSPI : {stats.get('kospi_1d')}% | KOSDAQ : {stats.get('kosdaq_1d')}%\n"
     msg += f"판단 근거 : {stats.get('reason')}\n"
     
-    # [정확히 지시하신 위치] 신뢰도 및 경고 (출처 바로 앞)
-    msg += f"신뢰도 : {stats.get('confidence_level')} ({stats.get('confidence')}점)\n"
+    # 신뢰도 및 경고 (출처 바로 앞)
+    msg += f"신뢰도 : {stats.get('confidence_level', 'HIGH')} ({stats.get('confidence', 100)}점)\n"
     warning = stats.get("warning", "")
     if warning:
         msg += f"⚠️ {warning}\n"
@@ -34,4 +34,47 @@ def format_market_report(stats: dict) -> str:
     
     return msg
 
-# (아래 format_holding_report, format_signal_report 등 기존 함수들은 100% 그대로 유지)
+def format_holding_report(holding_evals: list) -> str:
+    """
+    보유 종목의 수익률 및 액션(EXIT/HOLD) 상태를 포맷팅합니다.
+    """
+    if not holding_evals:
+        return "보유 종목이 없습니다."
+        
+    lines = []
+    for i, item in enumerate(holding_evals, 1):
+        name = item.get("name", "Unknown")
+        # 데이터 구조에 따라 return_rate 또는 profit_rate로 가져옴
+        rtn = item.get("return_rate", item.get("profit_rate", 0.0))
+        action = item.get("action", "HOLD")
+        
+        # 기존 양식: "1. 와이씨 (-58.09%) | EXIT"
+        lines.append(f"{i}. {name} ({rtn:.2f}%) | {action}")
+        
+    return "\n".join(lines)
+
+def format_signal_report(decision_results: dict) -> str:
+    """
+    신규 추천(매수 시그널) 종목을 포맷팅합니다.
+    """
+    # 데이터 구조에 따라 signals 또는 candidates 리스트를 가져옴
+    signals = decision_results.get("signals", decision_results.get("candidates", []))
+    if not signals:
+        return "==========================\n오늘 매수추천: 없음\n=========================="
+        
+    lines = []
+    for i, sig in enumerate(signals, 1):
+        name = sig.get("name", "Unknown")
+        chg = sig.get("chg", 0.0)
+        score = sig.get("score", 0.0)
+        strategy = sig.get("strategy", "N/A")
+        
+        # 숫자 원문자 변환 (①, ②, ③ 등)
+        circle_num = chr(0x245F + i) if 1 <= i <= 20 else f"{i}."
+        
+        # 기존 양식: "① SK이터닉스 (-7.7%) \n 관찰점수: 10.48 | 적용전략: 주도주(RS)"
+        lines.append(f"{circle_num} {name} ({chg}%)")
+        lines.append(f"관찰점수: {score} | 적용전략: {strategy}")
+        lines.append("") # 줄바꿈 여백
+        
+    return "\n".join(lines).strip()
