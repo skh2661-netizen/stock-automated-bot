@@ -3,7 +3,7 @@
         "code": "232140",
         "name": "와이씨",
         "entry_price": 19520,
-        "current_price": 7210.0,
+        "current_price": 7290.0,
         "quantity": 0,
         "entry_date": "2026-07-27",
         "pnl": -59.84,
@@ -14,7 +14,7 @@
         "strategy": "추세매매",
         "entry_level": "LEVEL 3",
         "judgment": "EXIT",
-        "return_rate": -63.06352459016394,
+        "return_rate": -62.653688524590166,
         "action": "EXIT"
     }
 ]
