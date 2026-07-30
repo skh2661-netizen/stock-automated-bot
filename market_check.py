@@ -1,10 +1,9 @@
-import os
 import time
 import random
 import logging
 import datetime
+from zoneinfo import ZoneInfo
 import requests
-import numpy as np
 import pandas as pd
 import FinanceDataReader as fdr
 
@@ -15,7 +14,7 @@ _logger = logging.getLogger(__name__)
 # -------------------------------------------------------------
 SOURCE_NAVER = "Naver Real-time"
 SOURCE_MIXED = "Mixed (Naver/FDR)"
-SOURCE_FDR = "FDR Cached (Fallback)"
+SOURCE_FDR = "FDR Fallback"  # [수정] 실제 네트워크 요청이 발생하므로 Cached 명칭 제거
 
 CONFIDENCE_HIGH_THRESHOLD = 80
 CONFIDENCE_MEDIUM_THRESHOLD = 50
@@ -64,7 +63,18 @@ def get_realtime_naver_index(session: requests.Session, code="KOSPI"):
     return None, None
 
 def get_market_breadth() -> dict:
-    breadth_data = {"up": 0, "down": 0, "same": 0, "valid_price_count": 0, "listed_count": None}
+    """
+    시장 온기(Breadth) 데이터를 수집합니다.
+    """
+    breadth_data = {
+        "up": 0, 
+        "down": 0, 
+        "same": 0, 
+        "valid_change_count": 0,
+        "outlier_count": 0,
+        "listed_count": None
+    }
+    
     try:
         krx = fdr.StockListing("KRX")
         if krx is not None and not krx.empty:
@@ -74,14 +84,20 @@ def get_market_breadth() -> dict:
             if chg_col:
                 numeric_series = pd.to_numeric(krx[chg_col], errors='coerce')
                 
-                # [수정 3] NaN 제외는 물론, 상하한가(-30~30%) 범위를 벗어나는 이상치(Sanity Check)까지 필터링
-                valid_mask = numeric_series.notna() & numeric_series.between(-31.0, 31.0)
+                # 1. 데이터 존재 여부 (NaN 제외)
+                valid_mask = numeric_series.notna()
+                breadth_data["valid_change_count"] = int(valid_mask.sum())
                 
-                breadth_data["up"] = int((numeric_series[valid_mask] > 0).sum())
-                breadth_data["down"] = int((numeric_series[valid_mask] < 0).sum())
-                breadth_data["same"] = int((numeric_series[valid_mask] == 0).sum())
+                # 2. 이상치 판단 (현행 가격제한폭을 크게 벗어나는 값)
+                outlier_mask = valid_mask & ~numeric_series.between(-31.0, 31.0)
+                breadth_data["outlier_count"] = int(outlier_mask.sum())
                 
-                breadth_data["valid_price_count"] = int(valid_mask.sum())
+                # 3. 실제 상승/하락/보합 카운트 (이상치를 배제한 순수 정상 데이터 안에서만)
+                sane_mask = valid_mask & numeric_series.between(-31.0, 31.0)
+                breadth_data["up"] = int((numeric_series[sane_mask] > 0).sum())
+                breadth_data["down"] = int((numeric_series[sane_mask] < 0).sum())
+                breadth_data["same"] = int((numeric_series[sane_mask] == 0).sum())
+                
             else:
                 _logger.warning(f"FDR KRX 데이터에 등락 컬럼 없음. 현재 컬럼: {krx.columns.tolist()}")
     except Exception as e:
@@ -90,9 +106,11 @@ def get_market_breadth() -> dict:
     return breadth_data
 
 def get_market_context() -> dict:
-    _logger.info("Checking market context (Conservative Auto-Trading Config)...")
+    KST = ZoneInfo("Asia/Seoul")
+    now = datetime.datetime.now(KST)
     
-    now = datetime.datetime.now()
+    _logger.info("Checking market context (V14 Frozen - Operation Validation Mode)...")
+    
     ctx = {
         "state": "UNKNOWN",
         "score": 0,
@@ -113,11 +131,13 @@ def get_market_context() -> dict:
         "confidence": 100,
         "confidence_level": "HIGH",
         "diagnostics": {}
+        # [TODO: V15] confidence_history 기반 히스테리시스 검토
+        # [TODO: V15] Breadth 데이터 공급자(fdr.StockListing) 자체 API로 교체 검토
     }
 
     warnings = []
     reasons = []
-    confidence = 100.0  # [수정 4] 가중치 곱연산을 위해 float로 시작
+    confidence = 100.0  
 
     with requests.Session() as session:
         kpi_price_rt, kpi_chg_rt = get_realtime_naver_index(session, "KOSPI")
@@ -127,7 +147,6 @@ def get_market_context() -> dict:
     if kpi_price_rt is not None: sources_success.append("KOSPI")
     if kdq_price_rt is not None: sources_success.append("KOSDAQ")
     
-    # [수정 4] 가중치 감점 방식 (*= 0.9, *= 0.7)
     if len(sources_success) == 2:
         source_label = SOURCE_NAVER
     elif len(sources_success) == 1:
@@ -178,11 +197,12 @@ def get_market_context() -> dict:
 
     breadth = get_market_breadth()
     up, down, same = breadth["up"], breadth["down"], breadth["same"]
-    valid_price_count = breadth["valid_price_count"]
+    valid_change_count = breadth["valid_change_count"]
+    outlier_count = breadth["outlier_count"]
     listed_count = breadth["listed_count"]
 
     advance_ratio = round((up / (up + down)) * 100, 1) if (up + down) > 0 else 0.0
-    coverage = round(valid_price_count / listed_count, 3) if listed_count else None
+    coverage = round(valid_change_count / listed_count, 3) if listed_count else None
 
     ctx["total_up"] = up
     ctx["total_down"] = down
@@ -198,11 +218,10 @@ def get_market_context() -> dict:
         
     if coverage is None or coverage < expected_coverage:
         is_breadth_stale = True
-        confidence *= 0.8  # [수정 4] 곱연산 가중치
+        confidence *= 0.8  
         cov_str = f"{coverage*100:.1f}%" if coverage is not None else "계산 불가"
         warnings.append(f"시장 온기 미완성/누락 (유효 커버리지 {cov_str}, 필요 {expected_coverage*100:.0f}%)")
     else:
-        # [수정 2] 장초반(09:30 이전)의 단순 변동성이 지연으로 오판되는 것 방지
         if now.time() >= datetime.time(9, 30):
             if (kpi_chg <= -1.5 and kdq_chg <= -1.5) and advance_ratio > 45.0:
                 is_breadth_stale = True
@@ -231,7 +250,8 @@ def get_market_context() -> dict:
     ctx["diagnostics"] = {
         "coverage": coverage,
         "listed_count": listed_count,
-        "valid_price_count": valid_price_count,
+        "valid_change_count": valid_change_count,
+        "outlier_count": outlier_count,
         "session_time": ctx["market_timestamp"],
         "source": source_label,
         "api_success": len(sources_success),
@@ -254,7 +274,7 @@ def get_market_context() -> dict:
 
     ctx["score"] = score
 
-    # 6. [판정 1순위] CRASH
+    # [판정 1순위] CRASH
     is_index_crash = (kpi_chg <= -2.0 and kdq_chg <= -2.0)
     is_breadth_crash = (not is_breadth_stale and coverage is not None and coverage >= 0.8 and advance_ratio < 15.0)
     
@@ -271,7 +291,7 @@ def get_market_context() -> dict:
         ctx["warning"] = " | ".join(warnings[:3]) if warnings else ""
         return ctx
 
-    # 7. [판정 2순위] Hard Cutoff
+    # [판정 2순위] Hard Cutoff (LOW 신뢰도 차단)
     if conf_level == "LOW":
         _logger.warning(f"Market data confidence is LOW ({confidence}). Blocking operations. Diagnostics: {ctx['diagnostics']}")
         ctx["state"] = "UNKNOWN"
@@ -280,8 +300,7 @@ def get_market_context() -> dict:
         ctx["warning"] = " | ".join(warnings[:3]) if warnings else "원인 불명"
         return ctx
 
-    # 8. [판정 3순위] NORMAL / CAUTION / WEAK
-    # [수정 1] NORMAL은 오직 HIGH 신뢰도에서만 허용. MEDIUM이면 최대 CAUTION으로 강제 격하
+    # [판정 3순위] NORMAL / CAUTION / WEAK
     if score >= normal_cutoff:
         if conf_level == "HIGH":
             ctx["state"] = "NORMAL"
