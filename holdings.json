@@ -15,6 +15,6 @@
         "entry_level": "LEVEL 3",
         "judgment": "EXIT",
         "return_rate": -58.45286885245902,
-        "action": "EXIT"
+        "action": "DATA_MISSING"
     }
 ]
