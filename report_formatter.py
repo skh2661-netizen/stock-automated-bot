@@ -1,99 +1,92 @@
 import logging
 import html
+from typing import Tuple, List
 
 _logger = logging.getLogger(__name__)
 
 def safe_html(text) -> str:
-    """Telegram HTML 파싱 에러( <, >, & 등 ) 방지를 위한 텍스트 이스케이프"""
     if not text: return ""
     return html.escape(str(text))
 
 def format_market_report(stats: dict) -> str:
-    state = stats.get('state', 'UNKNOWN')
-    scan_status = "✅ 허용" if stats.get("allow_scan") else "🚫 차단"
+    state = stats["state"]
+    scan_status = "✅ 허용" if stats["allow_scan"] else "🚫 차단"
 
     msg = f"=== 📊 [1/5] MARKET ===\n"
     msg += f"신규 추천 게이트 : <b>{scan_status}</b>\n"
-    msg += f"시장 국면 : {safe_html(state)} ({stats.get('score')}점)\n"
-    msg += f"KOSPI : {stats.get('kospi_1d')}% | KOSDAQ: {stats.get('kosdaq_1d')}%\n"
-    msg += f"Breadth (상승비율) : {stats.get('advance_ratio')}%\n"
+    msg += f"시장 국면 : {safe_html(state)} ({stats['score']:.0f}점)\n"
+    msg += f"KOSPI : {stats['kospi_1d']}% | KOSDAQ: {stats['kosdaq_1d']}%\n"
+    msg += f"Breadth (상승비율) : {stats['advance_ratio']}%\n"
     
-    warning = stats.get("warning", "")
+    warning = stats["warning"] if "warning" in stats else ""
     if warning: msg += f"⚠️ {safe_html(warning)}\n"
-    return msg + "\n"
+    return msg
 
-def format_holding_report(holding_evals: list) -> str:
+def format_holding_report(holding_evals: list, success: bool) -> str:
     msg = "=== 💼 [2/5] HOLDINGS ===\n"
+    
+    if not success:
+        return msg + "⚠️ <b>보유종목 상태 불명</b> (데이터 로드 실패 / 스키마 에러)\n"
+        
     if not holding_evals:
-        return msg + "보유 종목 없음\n\n"
+        return msg + "보유 종목 없음\n"
         
     lines = []
     for i, item in enumerate(holding_evals, 1):
-        name = safe_html(item.get("name", "Unknown"))
-        current_price = item.get("current_price", 0)
-        entry_price = item.get("entry_price", 0)
-        highest_price = item.get("highest_price", current_price)
-        rtn = item.get("return_rate", 0.0)
-        
-        action = item.get("action", "HOLD")
-        data_status = item.get("data_status", "")
-        
+        name = safe_html(item["name"])
+        action = item["action"]
         circle_num = chr(0x2460 + i - 1) if 1 <= i <= 20 else f"{i}."
         
-        if data_status == "MISSING" or action == "DATA_MISSING":
-            lines.append(f"{circle_num} <b>{name}</b>\n   현재가 : 조회 실패\n   판정   : ⚠️ DATA_MISSING (데이터 누락/판정 보류)\n")
+        if action == "DATA_MISSING":
+            lines.append(f"{circle_num} <b>{name}</b>\n   현재가 : 조회 실패\n   판정   : ⚠️ DATA_MISSING (데이터 누락/판정 보류)")
         elif action == "EXIT":
-            # [핵심 수술] 엔진이 주지 않은 사유를 지어내지 않음 (데이터 계약 준수)
-            reason = item.get("exit_reason")
+            rtn, cp, ep = item["return_rate"], item["current_price"], item["entry_price"]
+            reason = item["exit_reason"] if "exit_reason" in item else ""
             if reason:
-                lines.append(f"{circle_num} <b>{name}</b> (수익률: {rtn:.2f}%)\n   현재가 : {current_price:,}원 (매입가: {entry_price:,}원)\n   판정   : 🔴 <b>EXIT</b>\n   사유   : {safe_html(reason)}\n")
+                lines.append(f"{circle_num} <b>{name}</b> (수익률: {rtn:.2f}%)\n   현재가 : {cp:,}원 (매입가: {ep:,}원)\n   판정   : 🔴 <b>EXIT</b>\n   사유   : {safe_html(reason)}")
             else:
-                lines.append(f"{circle_num} <b>{name}</b> (수익률: {rtn:.2f}%)\n   현재가 : {current_price:,}원 (매입가: {entry_price:,}원)\n   판정   : 🔴 <b>EXIT</b>\n   사유   : ⚠️ 판정 근거 미전달 (데이터 계약 위반)\n")
+                lines.append(f"{circle_num} <b>{name}</b> (수익률: {rtn:.2f}%)\n   현재가 : {cp:,}원 (매입가: {ep:,}원)\n   판정   : 🔴 <b>EXIT</b>\n   사유   : ⚠️ 판정 근거 미전달")
+        # [핵심 수술 4] REDUCE 렌더링 분리
+        elif action == "REDUCE":
+            rtn, cp, hp = item["return_rate"], item["current_price"], item["highest_price"]
+            lines.append(f"{circle_num} <b>{name}</b> (수익률: {rtn:.2f}%)\n   현재가 : {cp:,}원 (고점: {hp:,}원)\n   판정   : 🟠 <b>REDUCE</b>")
         else:
-            lines.append(f"{circle_num} <b>{name}</b> (수익률: {rtn:.2f}%)\n   현재가 : {current_price:,}원 (고점: {highest_price:,}원)\n   판정   : ✅ HOLD\n")
+            rtn, cp, hp = item["return_rate"], item["current_price"], item["highest_price"]
+            lines.append(f"{circle_num} <b>{name}</b> (수익률: {rtn:.2f}%)\n   현재가 : {cp:,}원 (고점: {hp:,}원)\n   판정   : ✅ <b>HOLD</b>")
             
     return msg + "\n".join(lines)
 
 def format_scanner_health(telemetry: dict) -> str:
-    """정상 시 축소 출력, 장애 시 경고 노출 (Advisor 관점)"""
-    is_ran = telemetry.get("is_ran", False)
+    is_ran = telemetry["is_ran"]
     if not is_ran:
-        return "=== 🔬 [3/5] SCANNER ALERT ===\n스캐너 : ❌ FAILED (데이터 파이프라인 장애)\n\n"
+        return "=== 🔬 [3/5] SCANNER ALERT ===\n스캐너 : ❌ FAILED (데이터 파이프라인 장애)\n"
         
-    fetch_fail = telemetry.get('fetch_fail', 0)
+    fetch_fail = telemetry["fetch_fail"]
     if fetch_fail > 10:
         msg = "=== 🔬 [3/5] SCANNER WARNING ===\n"
-        msg += f"탐색 Universe : {telemetry.get('total_universe', 0):,}개\n"
+        msg += f"탐색 Universe : {telemetry['total_universe']:,}개\n"
         msg += f"FDR Fetch 실패 : {fetch_fail}건 (네트워크 불안정 의심)\n"
-        msg += f"Feature 통과   : {telemetry.get('feature_pass', 0)}개\n\n"
+        msg += f"Feature 통과   : {telemetry['feature_pass']}개\n"
         return msg
     
-    return f"=== 🔬 [3/5] SCANNER HEALTH ===\n스캐너 : ✅ 정상 (스캔 {telemetry.get('total_universe', 0):,}개 ➡️ 통과 {telemetry.get('feature_pass', 0)}개)\n\n"
+    return f"=== 🔬 [3/5] SCANNER HEALTH ===\n스캐너 : ✅ 정상 (스캔 {telemetry['total_universe']:,}개 ➡️ 통과 {telemetry['feature_pass']}개)\n"
 
 def format_decision_report(signal_stats: dict) -> str:
-    scanner_ran = signal_stats.get("scanner_ran", False)
-    engine_ran = signal_stats.get("engine_ran", False)
-    engine_error = signal_stats.get("engine_error", False)
-    level_counts = signal_stats.get("level_counts", {})
+    engine_status = signal_stats["engine_status"]
     
-    msg = "=== 🧠 [4/5] DECISION ENGINE ===\n"
-    
-    if engine_error:
-        msg += "상태 : ❌ ERROR\n사유 : Runtime Exception\n\n"
-        return msg
-    elif not scanner_ran:
-        msg += "상태 : ⚠️ NOT_RUN\n사유 : Scanner FAILURE\n\n"
-        return msg
-    elif not engine_ran:
-        msg += f"상태 : ⚠️ SKIPPED\n사유 : Scanner Feature 0건\n\n"
-        return msg
+    if engine_status == "ERROR":
+        return "=== 🧠 [4/5] DECISION ENGINE ===\n상태 : ❌ ERROR\n사유 : Runtime Exception\n"
+    elif engine_status in ("NOT_RUN", "SKIPPED"):
+        reason = safe_html(signal_stats["engine_skip_reason"])
+        return f"=== 🧠 [4/5] DECISION ENGINE ===\n상태 : ⚠️ {engine_status}\n사유 : {reason}\n"
         
-    msg += "상태 : ✅ SUCCESS\n\n[후보 등급 분포]\n"
+    msg = "=== 🧠 [4/5] DECISION ENGINE ===\n상태 : ✅ SUCCESS\n\n[후보 등급 분포]\n"
     display_order = ["LEVEL 3", "LEVEL 2", "LEVEL 1", "WATCH A", "WATCH B", "WATCH C", "HOLD", "REDUCE", "EXIT", "GATED"]
     
     has_data = False
+    level_counts = signal_stats["level_counts"]
     for lvl in display_order:
-        count = level_counts.get(lvl, 0)
+        count = level_counts[lvl] if lvl in level_counts else 0
         if count > 0:
             msg += f"- {lvl:<7} : {count}건\n"
             has_data = True
@@ -101,74 +94,69 @@ def format_decision_report(signal_stats: dict) -> str:
     if not has_data:
         msg += "- 분류된 후보 없음\n"
         
-    return msg + "\n"
+    return msg
 
-def format_promotion_report(signal_stats: dict) -> str:
-    gate_open = signal_stats.get("gate_open", False)
-    engine_ran = signal_stats.get("engine_ran", False)
-    engine_error = signal_stats.get("engine_error", False)
-    engine_buy_blocked = signal_stats.get("engine_buy_blocked", False)
-    block_reason = safe_html(signal_stats.get("block_reason", ""))
-    actual_signals = signal_stats.get("actual_signals", [])
+# [핵심 수술 3] 단일 문자열 쪼개기를 폐기하고 Block 단위 리스트 반환
+def format_promotion_blocks(signal_stats: dict) -> Tuple[str, List[str]]:
+    engine_status = signal_stats["engine_status"]
+    core_operational = signal_stats["core_operational"]
+    engine_buy_blocked = signal_stats["engine_buy_blocked"]
+    block_reason = safe_html(signal_stats["block_reason"])
+    actual_signals = signal_stats["actual_signals"]
+    gate_open = signal_stats["gate_open"]
+    promotion_safe = signal_stats["promotion_safe"]
     
-    msg = "=== 🎯 [5/5] NEW RECOMMENDATIONS ===\n"
+    header = "=== 🎯 [5/5] NEW RECOMMENDATIONS ===\n"
     
-    if engine_error:
-        msg += "🚫 <b>신규 매수 추천 없음</b>\n사유 : 판정 엔진 런타임 에러\n"
-        return msg
-    elif not engine_ran:
-        msg += "🚫 <b>신규 매수 추천 없음</b>\n사유 : 스캐너 통과 후보 0건\n"
-        return msg
+    if engine_status == "ERROR":
+        header += "🚫 <b>신규 매수 추천 없음</b>\n사유 : 판정 엔진 런타임 에러"
+        return header, []
+    elif engine_status in ("NOT_RUN", "SKIPPED"):
+        header += f"🚫 <b>신규 매수 추천 없음</b>\n사유 : {safe_html(signal_stats['engine_skip_reason'])}"
+        return header, []
+    elif not core_operational:
+        header += "🚫 <b>신규 매수 추천 없음</b>\n사유 : 파이프라인 코어 상태 불명확"
+        return header, []
     elif not gate_open:
-        msg += "🚫 <b>신규 매수 추천 없음</b>\n사유 : 시장 추천 게이트 차단 (관망 국면)\n"
-        return msg
+        header += "🚫 <b>신규 매수 추천 없음</b>\n사유 : 시장 추천 게이트 차단 (관망 국면)"
+        return header, []
     elif engine_buy_blocked:
-        msg += f"🚫 <b>신규 매수 추천 없음</b>\n사유 : {block_reason} (엔진 방어/계좌위험 로직 작동)\n"
-        return msg
+        header += f"🚫 <b>신규 매수 추천 없음</b>\n사유 : {block_reason} (계좌위험/엔진방어 작동)"
+        return header, []
+    elif not promotion_safe:
+        header += "🚫 <b>신규 매수 추천 없음</b>\n사유 : ⚠️ Candidate Contract Violation (신뢰성 저하 차단)"
+        return header, []
     elif len(actual_signals) == 0:
-        msg += "🚫 <b>신규 매수 추천 없음</b>\n사유 : 최우선 매수 등급(LEVEL 1~3) 기준 충족 종목 없음\n"
-        return msg
+        header += "🚫 <b>신규 매수 추천 없음</b>\n사유 : 매수 등급(LEVEL 1~3) 통과 종목 없음"
+        return header, []
 
-    msg += f"<b>신규 매수 추천 : {len(actual_signals)}종목</b>\n\n"
+    header += f"<b>신규 매수 추천 : {len(actual_signals)}종목</b>\n"
     
+    candidate_blocks = []
     for i, sig in enumerate(actual_signals, 1):
-        name = safe_html(sig.get("name", "Unknown"))
-        price = sig.get("price", 0)
-        chg = sig.get("chg", 0.0)
+        name, price, chg = safe_html(sig["name"]), sig["price"], sig["chg"]
+        decision, plan, sizing = sig["decision"], sig["plan"], sig["plan"]["sizing"]
         
-        decision = sig.get("decision", {})
-        plan = sig.get("plan", {})
-        sizing = plan.get("sizing", {})
-        
-        level = safe_html(decision.get("level", "N/A"))
-        score = decision.get("final_score", 0.0)
-        win_rate = decision.get("bayesian_win_rate", 0.0) * 100.0
-        
-        strats = sig.get("strategies", [])
+        level, score, win_rate = safe_html(decision["level"]), decision["final_score"], decision["bayesian_win_rate"] * 100.0
+        strats = sig["strategies"]
         strat_str = ", ".join([safe_html(s) for s in strats]) if strats else "일반"
         
-        entry = plan.get("entry", price)
-        stop_loss = plan.get("stop_loss", 0)
-        target1 = plan.get("target1", 0)
-        target2 = plan.get("target2", 0)
-        rr1 = plan.get("rr1", 0.0)
-        rr2 = plan.get("rr2", 0.0)
-        
-        # [핵심] EV 포맷팅 방어 (+0.42R / -0.12R 명확히 표시)
-        ev_val = sizing.get("ev", 0.0)
+        entry, stop_loss = plan["entry"], plan["stop_loss"]
+        target1, target2 = plan["target1"], plan["target2"]
+        rr1, rr2, ev_val = plan["rr1"], plan["rr2"], sizing["ev"]
         
         circle_num = chr(0x2460 + i - 1) if 1 <= i <= 20 else f"{i}."
         
-        msg += f"{circle_num} <b>{name}</b> (현재가: {price:,}원 / {chg}%)\n"
-        msg += f"   • 등급/점수 : <b>{level}</b> ({score}점)\n"
-        msg += f"   • 적용전략  : {strat_str}\n"
-        msg += f"   • 예상승률  : {win_rate:.1f}% | EV: {ev_val:+.2f}R\n"
-        msg += f"   -----------------------------------\n"
-        msg += f"   📍 권장진입 : {entry:,}원\n"
+        c_msg = f"{circle_num} <b>{name}</b> (현재가: {price:,}원 / {chg}%)\n"
+        c_msg += f"   • 등급/점수 : <b>{level}</b> ({score:.2f}점)\n"
+        c_msg += f"   • 적용전략  : {strat_str}\n"
+        c_msg += f"   • 예상승률  : {win_rate:.1f}% | EV: {ev_val:+.2f}R\n"
+        c_msg += f"   -----------------------------------\n"
+        c_msg += f"   📍 권장진입 : {entry:,}원\n"
+        c_msg += f"   🛑 손절기준 : {stop_loss:,}원 (-{((entry - stop_loss) / entry * 100):.1f}%)\n"
+        c_msg += f"   🎯 1차목표  : {target1:,}원 (RR {rr1:.2f})\n"
+        c_msg += f"   🎯 2차목표  : {target2:,}원 (RR {rr2:.2f})"
         
-        stop_pct = ((entry - stop_loss) / entry * 100) if entry > 0 else 0.0
-        msg += f"   🛑 손절기준 : {stop_loss:,}원 (-{stop_pct:.1f}%)\n"
-        msg += f"   🎯 1차목표  : {target1:,}원 (RR {rr1:.2f})\n"
-        msg += f"   🎯 2차목표  : {target2:,}원 (RR {rr2:.2f})\n\n"
+        candidate_blocks.append(c_msg)
             
-    return msg
+    return header, candidate_blocks
