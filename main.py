@@ -158,7 +158,9 @@ def send_telegram_blocks(blocks: list) -> bool:
 # ==========================================
 def load_sys_state(filepath: str) -> tuple[bool, dict]:
     default_state = {}
-    if not os.path.exists(filepath): return True, default_state 
+    if not os.path.exists(filepath):
+        _logger.warning(f"sys_state missing: {filepath}. 신규매수 차단 (Fail-Closed)")
+        return False, default_state 
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -345,7 +347,7 @@ def run_pipeline():
 
     market_success, cache_success = False, False
     holdings_eval_success, holdings_persistence_success = False, False
-    scanner_success, engine_success, render_success = False, False
+    scanner_success, engine_success, render_success = False, False, False
     sys_state_success, p_state_success = False, False
 
     engine_status = "NOT_RUN"
@@ -546,6 +548,10 @@ def run_pipeline():
     try:
         signal_stats = {
             "gate_open": gate_open, "engine_status": engine_status, "engine_skip_reason": engine_skip_reason,
+            "scanner_ran": scanner_success,
+            "engine_ran": engine_success,
+            "engine_error": engine_status == "ERROR",
+            "features_count": len(features_list),
             "portfolio_state_valid": holdings_eval_success and holdings_persistence_success, 
             "core_operational": core_operational, "promotion_state": promotion_state, "promotion_safe": promotion_safe,
             "engine_buy_blocked": engine_buy_blocked, "block_reason": decision_results.get("block_reason", "") if engine_success else "",
@@ -555,13 +561,12 @@ def run_pipeline():
         m_ctx_safe = market_ctx if market_success else {"state": "UNKNOWN", "score": 0.0, "kospi_1d": 0.0, "kosdaq_1d": 0.0, "advance_ratio": 0.0, "allow_scan": False}
         
         report_blocks.append(report_formatter.format_market_report(m_ctx_safe))
-        report_blocks.append(report_formatter.format_holding_report(holding_evals, holdings_eval_success and holdings_persistence_success and hold_status == "VALID"))
+        report_blocks.append(report_formatter.format_holding_report(holding_evals))
         report_blocks.append(report_formatter.format_scanner_health(scanner_telemetry))
         report_blocks.append(report_formatter.format_decision_report(signal_stats))
         
-        promo_header, promo_candidates = report_formatter.format_promotion_blocks(signal_stats)
-        report_blocks.append(promo_header)
-        report_blocks.extend(promo_candidates)
+        promo_report = report_formatter.format_promotion_report(signal_stats)
+        report_blocks.append(promo_report)
         
         if not validate_report_blocks(report_blocks):
             raise ValueError("Report Blocks Contract Violation")
