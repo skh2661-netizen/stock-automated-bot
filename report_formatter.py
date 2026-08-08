@@ -46,7 +46,7 @@ def format_holding_report(holding_evals: list) -> str:
         data_status = item.get("data_status", "")
         
         if data_status == "MISSING" or action == "DATA_MISSING":
-            lines.append(f"{i}. {name} | ❓ 가격조회실패 (데이터 누락)")
+            lines.append(f"{i}. {name} | ❓ 가격조회실패 (데이터 누락/판정 보류)")
         elif action == "EXIT":
             reason = safe_html(item.get("exit_reason", ""))
             reason_str = f" ({reason})" if reason else ""
@@ -91,7 +91,7 @@ def format_decision_report(signal_stats: dict) -> str:
     
     msg = "=== 🧠 [4/5] DECISION ENGINE ===\n"
     
-    # 4분할 엔진 상태 명시
+    # 4분할 상태 명시
     if engine_error:
         msg += "상태 : ❌ ERROR\n사유 : Runtime Exception\n\n"
     elif not scanner_ran:
@@ -107,7 +107,6 @@ def format_decision_report(signal_stats: dict) -> str:
     has_data = False
     for lvl in display_order:
         count = level_counts.get(lvl, 0)
-        # [핵심] 0건인 항목은 밀도를 위해 숨김
         if count > 0:
             msg += f"- {lvl:<7} : {count}건\n"
             has_data = True
@@ -133,7 +132,7 @@ def format_promotion_report(signal_stats: dict) -> str:
     msg += f"Market Gate  : {'✅ OPEN' if gate_open else '❌ BLOCKED'}\n"
     
     if engine_error: dec_state = "❌ ERROR"
-    elif not engine_ran: dec_state = "⚠️ SKIPPED"
+    elif not engine_ran: dec_state = "⚠️ SKIPPED/NOT_RUN"
     else: dec_state = "✅ SUCCESS"
     msg += f"Decision     : {dec_state}\n"
     
@@ -142,11 +141,10 @@ def format_promotion_report(signal_stats: dict) -> str:
         block_str += f" ({block_reason})"
     msg += f"Engine Block : {block_str}\n\n"
     
-    # 매수 승격 카운트 표시
     msg += f"Shadow Candidates : {len(shadow_candidates)}건\n"
     msg += f"Actual Buy Signal : {len(actual_signals)}건\n\n"
     
-    # [핵심] 명확한 승격 차단 우선순위 노출 방어
+    # [핵심] 명확한 승격 차단 우선순위 렌더링
     if engine_error:
         msg += "⚠️ 승격 차단됨 : 시스템 예외 (ENGINE ERROR)\n"
     elif not engine_ran:
@@ -166,7 +164,7 @@ def format_promotion_report(signal_stats: dict) -> str:
             score = decision.get("final_score", 0.0)
             level = safe_html(decision.get("level", "N/A"))
             
-            # 원형 기호 매핑 (0x2460부터 1번)
+            # 올바른 원문자 인코딩 (0x2460 = ①)
             circle_num = chr(0x2460 + i - 1) if 1 <= i <= 20 else f"{i}."
             msg += f"{circle_num} {name} ({chg}%)\n"
             msg += f"   점수: {score} | 등급: {level}\n\n"
