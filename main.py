@@ -27,7 +27,7 @@ _logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_LEN = 3900  
 
-# [핵심 불변 규칙] 승격 허용 등급 상수화
+# [불변 규칙] 승격 허용 등급 단일 상수화
 BUY_LEVELS = {"LEVEL 3", "LEVEL 2", "LEVEL 1"}
 
 def _split_message(message: str, max_len: int = TELEGRAM_MAX_LEN):
@@ -169,14 +169,23 @@ def run_pipeline():
                     total_equity=CONFIG.TOTAL_EQUITY
                 )
                 
-                # 타입 및 필수 키 인터페이스 검증
+                # 1. 반환 타입 1차 검증
                 if not isinstance(result, dict):
                     raise TypeError(f"Decision Engine returned {type(result).__name__}, expected dict")
                 
+                # 2. 필수 Key 존재 검증
                 required_keys = {"candidates", "buy_blocked", "block_reason", "level_counts"}
                 missing_keys = required_keys - result.keys()
                 if missing_keys:
                     raise ValueError(f"Decision Engine result missing keys: {sorted(missing_keys)}")
+                
+                # 3. 내부 필드 타입 2차 검증
+                if not isinstance(result.get("candidates"), list):
+                    raise TypeError("Decision Engine 'candidates' must be list")
+                if not isinstance(result.get("level_counts"), dict):
+                    raise TypeError("Decision Engine 'level_counts' must be dict")
+                if not isinstance(result.get("buy_blocked"), bool):
+                    raise TypeError("Decision Engine 'buy_blocked' must be bool")
                 
                 decision_results = result
                 engine_ran = True
@@ -194,7 +203,7 @@ def run_pipeline():
     shadow_candidates = decision_results.get("candidates", []) if engine_ran and not engine_error else []
     level_counts = decision_results.get("level_counts", {}) if engine_ran and not engine_error else {}
     
-    # [방어] 엔진이 온전히 돌았을 때만 엔진의 의사를 존중, 그 외는 무조건 Block True
+    # [방어] 엔진이 온전히 돌았을 때만 엔진의 판단 존중, 그 외는 무조건 차단(Fail-Closed)
     engine_buy_blocked = decision_results.get("buy_blocked", False) if engine_ran and not engine_error else True
 
     # [핵심] 4단 콤보 명시적 승격 규칙
