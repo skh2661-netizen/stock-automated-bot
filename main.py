@@ -4,6 +4,7 @@ import time
 import json
 import math
 import logging
+import numbers
 import tempfile
 import requests
 from dataclasses import dataclass
@@ -158,7 +159,9 @@ def send_telegram_blocks(blocks: list) -> bool:
 # ==========================================
 def load_sys_state(filepath: str) -> tuple[bool, dict]:
     default_state = {}
-    if not os.path.exists(filepath): return True, default_state 
+    if not os.path.exists(filepath):
+        _logger.warning(f"sys_state missing: {filepath}. 신규매수 차단 (Fail-Closed)")
+        return False, default_state 
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -253,81 +256,165 @@ def validate_and_normalize_market_context(ctx: dict) -> dict:
         ctx[field] = val
     return ctx
 
-# [수정] hasattr 껍데기 폐기 및 임의의 내부 스키마 강제 검증 삭제
-def is_valid_scanner_result(features_list) -> bool:
-    if type(features_list) is not list: return False
-    for f in features_list:
+def validate_scanner_result(features_list) -> tuple[bool, str]:
+    """Scanner의 실제 CandidateFeature 반환 구조에 맞춘 최소 계약 검증.
+
+    scanner.py가 실제로 반환하는 핵심 계약은 list[CandidateFeature]이며,
+    Decision Engine이 사용하는 필수 필드는 code/price/chg/struc/vty이다.
+    내부 숫자 타입은 numpy scalar일 수 있으므로 numbers.Real로 검증한다.
+    """
+    if type(features_list) is not list:
+        return False, "RESULT_NOT_LIST"
+
+    for i, f in enumerate(features_list):
         try:
-            code = getattr(f, "code", "")
-            if type(code) is not str or not code.strip(): return False
-            price, chg = float(getattr(f, "price")), float(getattr(f, "chg"))
-            if not math.isfinite(price) or price <= 0 or not math.isfinite(chg): return False
-            
-            # 구조체가 존재하는지만 최소한으로 확인
-            if getattr(f, "struc", None) is None or getattr(f, "vty", None) is None: return False
-        except Exception: return False
-    return True
+            code = getattr(f, "code", None)
+            if not isinstance(code, str) or not code.strip():
+                return False, f"ITEM_{i}:INVALID_CODE"
+
+            price = getattr(f, "price", None)
+            chg = getattr(f, "chg", None)
+            if not isinstance(price, numbers.Real) or not math.isfinite(float(price)) or float(price) <= 0:
+                return False, f"{code}:INVALID_PRICE"
+            if not isinstance(chg, numbers.Real) or not math.isfinite(float(chg)):
+                return False, f"{code}:INVALID_CHG"
+
+            if getattr(f, "struc", None) is None:
+                return False, f"{code}:MISSING_STRUC"
+            if getattr(f, "vty", None) is None:
+                return False, f"{code}:MISSING_VTY"
+
+            dist_ma20 = getattr(f.struc, "dist_ma20", None)
+            return_var_20d = getattr(f.vty, "return_var_20d", None)
+            if not isinstance(dist_ma20, numbers.Real) or not math.isfinite(float(dist_ma20)):
+                return False, f"{code}:INVALID_DIST_MA20"
+            if (not isinstance(return_var_20d, numbers.Real) or
+                    not math.isfinite(float(return_var_20d)) or float(return_var_20d) < 0):
+                return False, f"{code}:INVALID_RETURN_VAR_20D"
+        except Exception as e:
+            return False, f"ITEM_{i}:EXCEPTION:{type(e).__name__}"
+
+    return True, "PASS"
+
+
+def is_valid_scanner_result(features_list) -> bool:
+    valid, _ = validate_scanner_result(features_list)
+    return valid
 
 def safe_nonnegative_int(value) -> int:
     if type(value) is int and value >= 0: return value
     raise TypeError(f"Value is not a non-negative int")
 
-def is_valid_trade_plan(plan: dict) -> bool:
+def validate_trade_plan_contract(plan: dict) -> tuple[bool, str]:
+    """trade_plan.py가 실제 반환하는 스키마에 맞춘 계약 검증."""
     try:
-        if type(plan) is not dict or "sizing" not in plan: return False
-        sizing = plan["sizing"]
-        if type(sizing) is not dict or "ev" not in sizing: return False
+        if type(plan) is not dict:
+            return False, "PLAN_NOT_DICT"
 
-        req_keys = {"entry", "stop_loss", "target1", "target2", "rr1", "rr2"}
-        if not req_keys.issubset(plan.keys()): return False
-        for k in req_keys:
-            if type(plan[k]) not in (int, float): return False
-        if type(sizing["ev"]) not in (int, float): return False
+        required = {"entry", "stop_loss", "target1", "target2", "rr1", "rr2", "sizing"}
+        missing = required - set(plan.keys())
+        if missing:
+            return False, f"PLAN_MISSING:{','.join(sorted(missing))}"
 
-        entry, stop = float(plan["entry"]), float(plan["stop_loss"])
-        t1, t2 = float(plan["target1"]), float(plan["target2"])
-        rr1, rr2 = float(plan["rr1"]), float(plan["rr2"])
-        ev = float(sizing["ev"])
+        sizing = plan.get("sizing")
+        if type(sizing) is not dict or "ev" not in sizing:
+            return False, "PLAN_SIZING_EV_MISSING"
 
-        values = [entry, stop, t1, t2, rr1, rr2, ev]
-        if not all(math.isfinite(v) for v in values): return False
-        if not (entry > 0 and 0 < stop < entry and t1 > entry and t2 >= t1 and rr1 > 0 and rr2 >= rr1): return False
-            
+        numeric_keys = {"entry", "stop_loss", "target1", "target2", "rr1", "rr2"}
+        for key in numeric_keys:
+            value = plan.get(key)
+            if not isinstance(value, numbers.Real) or not math.isfinite(float(value)):
+                return False, f"PLAN_INVALID_{key.upper()}"
+
+        ev = sizing.get("ev")
+        if not isinstance(ev, numbers.Real) or not math.isfinite(float(ev)):
+            return False, "PLAN_INVALID_EV"
+
+        entry = float(plan["entry"])
+        stop = float(plan["stop_loss"])
+        target1 = float(plan["target1"])
+        target2 = float(plan["target2"])
+        rr1 = float(plan["rr1"])
+        rr2 = float(plan["rr2"])
+
+        if not (entry > 0 and 0 < stop < entry):
+            return False, "PLAN_INVALID_ENTRY_STOP"
+        if not (target1 > entry and target2 >= target1):
+            return False, "PLAN_INVALID_TARGETS"
+        if not (rr1 > 0 and rr2 >= rr1):
+            return False, "PLAN_INVALID_RR_ORDER"
+
         risk = entry - stop
-        if risk <= 0: return False 
+        calc_rr1 = (target1 - entry) / risk
+        calc_rr2 = (target2 - entry) / risk
+        if not math.isclose(rr1, calc_rr1, rel_tol=0.05, abs_tol=0.02):
+            return False, "PLAN_RR1_MISMATCH"
+        if not math.isclose(rr2, calc_rr2, rel_tol=0.05, abs_tol=0.02):
+            return False, "PLAN_RR2_MISMATCH"
 
-        if not math.isclose(rr1, (t1 - entry) / risk, rel_tol=0.05, abs_tol=0.02): return False
-        if not math.isclose(rr2, (t2 - entry) / risk, rel_tol=0.05, abs_tol=0.02): return False
-        return True
-    except (Exception): return False
+        return True, "PASS"
+    except Exception as e:
+        return False, f"PLAN_EXCEPTION:{type(e).__name__}"
+
+
+def is_valid_trade_plan(plan: dict) -> bool:
+    valid, _ = validate_trade_plan_contract(plan)
+    return valid
+
+
+def validate_candidate_contract(candidate: dict) -> tuple[bool, str]:
+    """decision_engine.py의 실제 후보 dict를 검증한다.
+
+    GATED/WATCH/HOLD/REDUCE/EXIT도 engine의 정상 결과이므로
+    여기서는 후보 구조 자체만 검증하고, BUY promotion은 별도 단계에서
+    LEVEL 1~3만 대상으로 한다.
+    """
+    if type(candidate) is not dict:
+        return False, "CANDIDATE_NOT_DICT"
+
+    required = {"code", "name", "price", "chg", "decision", "plan", "strategies"}
+    missing = required - set(candidate.keys())
+    if missing:
+        return False, f"CANDIDATE_MISSING:{','.join(sorted(missing))}"
+
+    code, name = candidate.get("code"), candidate.get("name")
+    if not isinstance(code, str) or not code.strip():
+        return False, "INVALID_CODE"
+    if not isinstance(name, str) or not name.strip():
+        return False, "INVALID_NAME"
+
+    price, chg = candidate.get("price"), candidate.get("chg")
+    if not isinstance(price, numbers.Real) or not math.isfinite(float(price)) or float(price) <= 0:
+        return False, "INVALID_PRICE"
+    if not isinstance(chg, numbers.Real) or not math.isfinite(float(chg)):
+        return False, "INVALID_CHG"
+
+    strats = candidate.get("strategies")
+    if type(strats) is not list or not all(isinstance(x, str) and x.strip() for x in strats):
+        return False, "INVALID_STRATEGIES"
+
+    decision = candidate.get("decision")
+    if type(decision) is not dict:
+        return False, "DECISION_NOT_DICT"
+    for key in ("level", "final_score", "bayesian_win_rate"):
+        if key not in decision:
+            return False, f"DECISION_MISSING:{key}"
+
+    if decision["level"] not in VALID_LEVELS:
+        return False, f"INVALID_LEVEL:{decision['level']}"
+    for key in ("final_score", "bayesian_win_rate"):
+        value = decision[key]
+        if not isinstance(value, numbers.Real) or not math.isfinite(float(value)):
+            return False, f"INVALID_DECISION_{key.upper()}"
+    if not 0 <= float(decision["bayesian_win_rate"]) <= 1:
+        return False, "INVALID_BAYESIAN_WIN_RATE"
+
+    return validate_trade_plan_contract(candidate.get("plan"))
+
 
 def is_valid_candidate(candidate: dict) -> bool:
-    if type(candidate) is not dict: return False
-    required = {"code", "name", "price", "chg", "decision", "plan", "strategies"}
-    if not required.issubset(candidate.keys()): return False
-    
-    code, name = candidate["code"], candidate["name"]
-    if type(code) is not str or not code.strip() or type(name) is not str or not name.strip(): return False
-    
-    if type(candidate["price"]) not in (int, float) or type(candidate["chg"]) not in (int, float): return False
-    price, chg = float(candidate["price"]), float(candidate["chg"])
-    if not math.isfinite(price) or price <= 0 or not math.isfinite(chg): return False
-    
-    strats = candidate["strategies"]
-    if type(strats) is not list or not all(type(s) is str and s.strip() for s in strats): return False
-
-    decision, plan = candidate["decision"], candidate["plan"]
-    if type(decision) is not dict or type(plan) is not dict: return False
-    
-    dec_req = {"level", "final_score", "bayesian_win_rate"}
-    if not dec_req.issubset(decision.keys()): return False
-    if decision["level"] not in BUY_LEVELS: return False
-    
-    for k in ["final_score", "bayesian_win_rate"]:
-        if type(decision[k]) not in (int, float) or not math.isfinite(float(decision[k])): return False
-    if not (0 <= float(decision["bayesian_win_rate"]) <= 1): return False
-    
-    return is_valid_trade_plan(plan)
+    valid, _ = validate_candidate_contract(candidate)
+    return valid
 
 def validate_report_blocks(blocks: list) -> bool:
     if type(blocks) is not list or not blocks: return False
@@ -378,7 +465,7 @@ def run_pipeline():
             _logger.exception("Price Cache Contract Violation: %s", e)
 
     # -------------------------------------------------------------
-    # [C] Holdings 
+    # [C] Holdings (강철 Durability: flush & fsync 적용)
     # -------------------------------------------------------------
     hold_status, holdings_data = safe_load_holdings("holdings.json")
     holding_evals = []
@@ -407,10 +494,11 @@ def run_pipeline():
             with tempfile.NamedTemporaryFile('w', delete=False, dir=dir_name, encoding='utf-8') as f:
                 json.dump(holding_evals, f, ensure_ascii=False, indent=4)
                 f.flush()
-                os.fsync(f.fileno()) 
+                os.fsync(f.fileno()) # [방어 P1] 디스크 물리적 영속성 보장 (Durability)
                 temp_name = f.name
             os.replace(temp_name, "holdings_eval.json")
             
+            # 디렉토리 fsync까지 완벽하게 수행
             dir_fd = os.open(dir_name, os.O_RDONLY)
             try:
                 os.fsync(dir_fd)
@@ -432,7 +520,9 @@ def run_pipeline():
     if cache_success:
         try:
             raw_features = scanner.run_scanner(market_ctx, price_cache)
-            if not is_valid_scanner_result(raw_features): raise TypeError("Scanner Result Contract Violation")
+            scanner_valid, scanner_reason = validate_scanner_result(raw_features)
+            if not scanner_valid:
+                raise TypeError(f"Scanner Result Contract Violation: {scanner_reason}")
             features_list = raw_features
             
             raw_rejects = market_ctx.get("scanner_rejects", {})
@@ -460,7 +550,7 @@ def run_pipeline():
             _logger.exception("Scanner Contract Violation: %s", e)
 
     # -------------------------------------------------------------
-    # [E] Decision Engine 
+    # [E] Decision Engine (P0 완벽한 Provenance 원인 보존 순서 정렬)
     # -------------------------------------------------------------
     sys_state_success, sys_state = load_sys_state("sys_state.json")
     p_state_success, p_state = load_p_state("p_state.json")
@@ -506,11 +596,11 @@ def run_pipeline():
             engine_status, engine_skip_reason = "ERROR", "RUNTIME_EXCEPTION"
 
     # -------------------------------------------------------------
-    # [F] Promotion Gate 
+    # [F] Promotion Gate (P0 3-State Promotion 정밀 분리)
     # -------------------------------------------------------------
-    shadow_candidates = decision_results.get("candidates", []) if engine_success else []
-    level_counts = decision_results.get("level_counts", {}) if engine_success else {}
-    engine_buy_blocked = decision_results.get("buy_blocked", False) if engine_success else True
+    shadow_candidates = decision_results["candidates"] if engine_success else []
+    level_counts = decision_results["level_counts"] if engine_success else {}
+    engine_buy_blocked = decision_results["buy_blocked"] if engine_success else True
 
     actual_signals = []
     candidate_contract_failures = 0
@@ -518,22 +608,34 @@ def run_pipeline():
                         holdings_persistence_success and sys_state_success and p_state_success and 
                         scanner_success and engine_success)
     
+    # 3-State Promotion 분리 정립
     if not core_operational or not gate_open or engine_buy_blocked:
         promotion_state = "NOT_EVALUATED"
-        promotion_safe = True 
+        promotion_safe = True # 평가하지 않았으므로 오염 여부와 무관하게 안전 (상태 불변식 준수)
     else:
         promotion_state = "EVALUATED"
+        # Decision Engine의 전체 candidates에는 LEVEL 1~3뿐 아니라
+        # WATCH/GATED/HOLD/REDUCE/EXIT가 정상적으로 함께 들어온다.
+        # 따라서 모든 shadow candidate를 BUY 계약으로 검증하면 정상적인 GATED
+        # 후보까지 계약 위반으로 판정하는 오류가 발생한다.
+        buy_candidates = []
         for c in shadow_candidates:
-            if is_valid_candidate(c):
+            if type(c) is dict and isinstance(c.get("decision"), dict) and c["decision"].get("level") in BUY_LEVELS:
+                buy_candidates.append(c)
+
+        for c in buy_candidates:
+            valid, reason = validate_candidate_contract(c)
+            if valid:
                 actual_signals.append(c)
             else:
                 candidate_contract_failures += 1
-                c_code = c["code"] if type(c) is dict and "code" in c else "INVALID_TYPE"
-                _logger.error(f"Candidate Contract Violation: {c_code} dropped.")
-        
+                c_code = c.get("code", "INVALID_TYPE") if type(c) is dict else "INVALID_TYPE"
+                c_level = c.get("decision", {}).get("level", "UNKNOWN") if type(c) is dict else "UNKNOWN"
+                _logger.error(f"Candidate Contract Violation: {c_code} [{c_level}] -> {reason}")
+
         promotion_safe = (candidate_contract_failures == 0)
         if not promotion_safe:
-            _logger.critical("Promotion Blocked: Candidate Contract Violations detected.")
+            _logger.critical("Promotion Blocked: BUY Candidate Contract Violations detected.")
             actual_signals = []
 
     # -------------------------------------------------------------
@@ -543,7 +645,9 @@ def run_pipeline():
     try:
         signal_stats = {
             "gate_open": gate_open, "engine_status": engine_status, "engine_skip_reason": engine_skip_reason,
-            "scanner_ran": scanner_success, "engine_ran": engine_success, "engine_error": engine_status == "ERROR",
+            "scanner_ran": scanner_success,
+            "engine_ran": engine_success,
+            "engine_error": engine_status == "ERROR",
             "features_count": len(features_list),
             "portfolio_state_valid": holdings_eval_success and holdings_persistence_success, 
             "core_operational": core_operational, "promotion_state": promotion_state, "promotion_safe": promotion_safe,
@@ -554,17 +658,12 @@ def run_pipeline():
         m_ctx_safe = market_ctx if market_success else {"state": "UNKNOWN", "score": 0.0, "kospi_1d": 0.0, "kosdaq_1d": 0.0, "advance_ratio": 0.0, "allow_scan": False}
         
         report_blocks.append(report_formatter.format_market_report(m_ctx_safe))
-        
-        # [수정] 성공 인자 복구
-        is_holdings_ok = holdings_eval_success and holdings_persistence_success and hold_status == "VALID"
-        report_blocks.append(report_formatter.format_holding_report(holding_evals, is_holdings_ok))
-        
+        report_blocks.append(report_formatter.format_holding_report(holding_evals, holdings_eval_success and holdings_persistence_success and hold_status == "VALID"))
         report_blocks.append(report_formatter.format_scanner_health(scanner_telemetry))
         report_blocks.append(report_formatter.format_decision_report(signal_stats))
         
-        promo_header, promo_candidates = report_formatter.format_promotion_blocks(signal_stats)
-        report_blocks.append(promo_header)
-        report_blocks.extend(promo_candidates)
+        promo_report = report_formatter.format_promotion_report(signal_stats)
+        report_blocks.append(promo_report)
         
         if not validate_report_blocks(report_blocks):
             raise ValueError("Report Blocks Contract Violation")
