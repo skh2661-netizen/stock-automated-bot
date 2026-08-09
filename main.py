@@ -662,8 +662,10 @@ def run_pipeline():
         report_blocks.append(report_formatter.format_scanner_health(scanner_telemetry))
         report_blocks.append(report_formatter.format_decision_report(signal_stats))
         
-        promo_report = report_formatter.format_promotion_report(signal_stats)
-        report_blocks.append(promo_report)
+        # 실제 report_formatter 계약: format_promotion_blocks()는 (header, candidate_blocks)를 반환
+        promo_header, promo_candidates = report_formatter.format_promotion_blocks(signal_stats)
+        report_blocks.append(promo_header)
+        report_blocks.extend(promo_candidates)
         
         if not validate_report_blocks(report_blocks):
             raise ValueError("Report Blocks Contract Violation")
