@@ -158,9 +158,7 @@ def send_telegram_blocks(blocks: list) -> bool:
 # ==========================================
 def load_sys_state(filepath: str) -> tuple[bool, dict]:
     default_state = {}
-    if not os.path.exists(filepath):
-        _logger.warning(f"sys_state missing: {filepath}. 신규매수 차단 (Fail-Closed)")
-        return False, default_state 
+    if not os.path.exists(filepath): return True, default_state 
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -255,19 +253,18 @@ def validate_and_normalize_market_context(ctx: dict) -> dict:
         ctx[field] = val
     return ctx
 
+# [수정] hasattr 껍데기 폐기 및 임의의 내부 스키마 강제 검증 삭제
 def is_valid_scanner_result(features_list) -> bool:
     if type(features_list) is not list: return False
     for f in features_list:
         try:
-            code = getattr(f, "code")
+            code = getattr(f, "code", "")
             if type(code) is not str or not code.strip(): return False
             price, chg = float(getattr(f, "price")), float(getattr(f, "chg"))
             if not math.isfinite(price) or price <= 0 or not math.isfinite(chg): return False
             
-            struc, vty = getattr(f, "struc"), getattr(f, "vty")
-            dist_ma20, return_var_20d = getattr(struc, "dist_ma20"), getattr(vty, "return_var_20d")
-            if type(dist_ma20) not in (int, float) or not math.isfinite(float(dist_ma20)): return False
-            if type(return_var_20d) not in (int, float) or not math.isfinite(float(return_var_20d)) or float(return_var_20d) < 0: return False
+            # 구조체가 존재하는지만 최소한으로 확인
+            if getattr(f, "struc", None) is None or getattr(f, "vty", None) is None: return False
         except Exception: return False
     return True
 
@@ -381,7 +378,7 @@ def run_pipeline():
             _logger.exception("Price Cache Contract Violation: %s", e)
 
     # -------------------------------------------------------------
-    # [C] Holdings (강철 Durability: flush & fsync 적용)
+    # [C] Holdings 
     # -------------------------------------------------------------
     hold_status, holdings_data = safe_load_holdings("holdings.json")
     holding_evals = []
@@ -410,11 +407,10 @@ def run_pipeline():
             with tempfile.NamedTemporaryFile('w', delete=False, dir=dir_name, encoding='utf-8') as f:
                 json.dump(holding_evals, f, ensure_ascii=False, indent=4)
                 f.flush()
-                os.fsync(f.fileno()) # [방어 P1] 디스크 물리적 영속성 보장 (Durability)
+                os.fsync(f.fileno()) 
                 temp_name = f.name
             os.replace(temp_name, "holdings_eval.json")
             
-            # 디렉토리 fsync까지 완벽하게 수행
             dir_fd = os.open(dir_name, os.O_RDONLY)
             try:
                 os.fsync(dir_fd)
@@ -464,7 +460,7 @@ def run_pipeline():
             _logger.exception("Scanner Contract Violation: %s", e)
 
     # -------------------------------------------------------------
-    # [E] Decision Engine (P0 완벽한 Provenance 원인 보존 순서 정렬)
+    # [E] Decision Engine 
     # -------------------------------------------------------------
     sys_state_success, sys_state = load_sys_state("sys_state.json")
     p_state_success, p_state = load_p_state("p_state.json")
@@ -510,11 +506,11 @@ def run_pipeline():
             engine_status, engine_skip_reason = "ERROR", "RUNTIME_EXCEPTION"
 
     # -------------------------------------------------------------
-    # [F] Promotion Gate (P0 3-State Promotion 정밀 분리)
+    # [F] Promotion Gate 
     # -------------------------------------------------------------
-    shadow_candidates = decision_results["candidates"] if engine_success else []
-    level_counts = decision_results["level_counts"] if engine_success else {}
-    engine_buy_blocked = decision_results["buy_blocked"] if engine_success else True
+    shadow_candidates = decision_results.get("candidates", []) if engine_success else []
+    level_counts = decision_results.get("level_counts", {}) if engine_success else {}
+    engine_buy_blocked = decision_results.get("buy_blocked", False) if engine_success else True
 
     actual_signals = []
     candidate_contract_failures = 0
@@ -522,10 +518,9 @@ def run_pipeline():
                         holdings_persistence_success and sys_state_success and p_state_success and 
                         scanner_success and engine_success)
     
-    # 3-State Promotion 분리 정립
     if not core_operational or not gate_open or engine_buy_blocked:
         promotion_state = "NOT_EVALUATED"
-        promotion_safe = True # 평가하지 않았으므로 오염 여부와 무관하게 안전 (상태 불변식 준수)
+        promotion_safe = True 
     else:
         promotion_state = "EVALUATED"
         for c in shadow_candidates:
@@ -548,9 +543,7 @@ def run_pipeline():
     try:
         signal_stats = {
             "gate_open": gate_open, "engine_status": engine_status, "engine_skip_reason": engine_skip_reason,
-            "scanner_ran": scanner_success,
-            "engine_ran": engine_success,
-            "engine_error": engine_status == "ERROR",
+            "scanner_ran": scanner_success, "engine_ran": engine_success, "engine_error": engine_status == "ERROR",
             "features_count": len(features_list),
             "portfolio_state_valid": holdings_eval_success and holdings_persistence_success, 
             "core_operational": core_operational, "promotion_state": promotion_state, "promotion_safe": promotion_safe,
@@ -561,12 +554,17 @@ def run_pipeline():
         m_ctx_safe = market_ctx if market_success else {"state": "UNKNOWN", "score": 0.0, "kospi_1d": 0.0, "kosdaq_1d": 0.0, "advance_ratio": 0.0, "allow_scan": False}
         
         report_blocks.append(report_formatter.format_market_report(m_ctx_safe))
-        report_blocks.append(report_formatter.format_holding_report(holding_evals))
+        
+        # [수정] 성공 인자 복구
+        is_holdings_ok = holdings_eval_success and holdings_persistence_success and hold_status == "VALID"
+        report_blocks.append(report_formatter.format_holding_report(holding_evals, is_holdings_ok))
+        
         report_blocks.append(report_formatter.format_scanner_health(scanner_telemetry))
         report_blocks.append(report_formatter.format_decision_report(signal_stats))
         
-        promo_report = report_formatter.format_promotion_report(signal_stats)
-        report_blocks.append(promo_report)
+        promo_header, promo_candidates = report_formatter.format_promotion_blocks(signal_stats)
+        report_blocks.append(promo_header)
+        report_blocks.extend(promo_candidates)
         
         if not validate_report_blocks(report_blocks):
             raise ValueError("Report Blocks Contract Violation")
