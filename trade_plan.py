@@ -4,55 +4,37 @@ from models import CandidateFeature, QuantConfig
 from typing import Dict, Any, List, Tuple
 
 def calculate_dynamic_sizing(entry: float, stop_distance: float, return_var_20d: float, atr_pct: float, adv_100m: float, bayesian_win_rate: float, expected_reward_rr: float, m_state: str, total_equity: float) -> Dict[str, Any]:
-    # 순수 기대값(EV) 연산 (단위: R)
     ev = (bayesian_win_rate * expected_reward_rr) - ((1.0 - bayesian_win_rate) * 1.0) - QuantConfig.FEE_SLIPPAGE_COST
     
     if stop_distance <= 0 or expected_reward_rr <= 0 or ev < QuantConfig.MIN_EV_THRESHOLD: 
         return {"qty": 0, "amount": 0, "weight_pct": 0.0, "actual_risk_pct": 0.0, "ev": round(ev, 3)}
     
-    # =========================================================================
-    # [수술 1] 차원 불일치 해결: 이산형 트레이딩 표준 Kelly 공식 적용
-    # =========================================================================
-    # 기존: R단위 기대값을 주가수익률 분산으로 나누는 논리적 오류 폐기
-    # 신규: 승률(W)과 기대손익비(R)를 활용한 정확한 켈리 비중 산출 (f = W - (1-W)/R)
+    # [핵심] 수익률 분산(Return Variance) 기반의 Merton-Kelly 공식 도입 (f = μ / σ²)
+    # expected_return 근사치 산출 (리스크 금액 기준)
+    mu = ev
+    sigma_sq = return_var_20d + 1e-8 
     
-    W = bayesian_win_rate
-    R = expected_reward_rr
+    merton_kelly = mu / sigma_sq
+    # 과대 베팅 방지를 위한 스케일 다운 및 Half-Kelly 적용
+    kelly_fraction = min(max(0.0, merton_kelly * 0.05), QuantConfig.KELLY_MAX_CAP)
     
-    kelly_fraction = W - ((1.0 - W) / R)
-    
-    # 켈리 비중이 음수(통계적 우위 없음)면 매수 차단
-    if kelly_fraction <= 0:
-        return {"qty": 0, "amount": 0, "weight_pct": 0.0, "actual_risk_pct": 0.0, "ev": round(ev, 3)}
-        
-    # 과대 베팅 방지를 위한 Half-Kelly (또는 설정된 비율) 적용
-    adjusted_kelly = kelly_fraction * QuantConfig.KELLY_FRACTION_MULT
-    
-    # 켈리 캡 적용 (예: 아무리 좋아도 최대 허용 리스크 이상 베팅 금지)
-    target_risk_pct = min(adjusted_kelly * 100.0, QuantConfig.KELLY_MAX_CAP * 100.0)
+    target_risk_pct = kelly_fraction * QuantConfig.KELLY_FRACTION_MULT * 100.0
 
-    # =========================================================================
-    # [방어 로직] 변동성(ATR) 기반 타겟 리스크 조정 및 유동성 캡
-    # =========================================================================
-    # 변동성이 너무 큰 종목은 리스크 비중을 강제로 축소
     vol_target_risk = QuantConfig.VOLATILITY_TARGET_PCT / max(atr_pct, 1e-5)
     target_risk_pct = min(target_risk_pct, vol_target_risk)
     
-    # 리스크(Risk) 기반 진입 금액 산출 (target_risk_pct는 계좌 전체 대비 잃을 수 있는 최대 금액 비율)
     risk_amount = total_equity * (target_risk_pct / 100.0)
     position_size_krw = (risk_amount / stop_distance) * entry if stop_distance > 0 else 0
     
-    # ADV + Spread/Depth 고려 (유동성 참여율 캡)
+    # [핵심] ADV + Spread/Depth 고려 (단순 ADV 참여율이 아닌 변동성 연동 유동성 캡)
     slippage_adj = max(1.0, atr_pct * 10.0)
     liq_cap_krw = (adv_100m * 100_000_000 * QuantConfig.ADV_PARTICIPATION_RATE) / slippage_adj
     position_size_krw = min(position_size_krw, liq_cap_krw)
     
-    # 시장 상태별 최대 비중 캡 적용 (예: 특정 종목에 계좌의 30% 이상 투자 금지)
     max_weight = QuantConfig.MAX_WEIGHTS.get(m_state, 0.20)
     max_amount = total_equity * max_weight
     position_size_krw = min(position_size_krw, max_amount)
     
-    # 최종 수량 계산
     position_qty = int(position_size_krw / entry)
     if position_qty <= 0:
         return {"qty": 0, "amount": 0, "weight_pct": 0.0, "actual_risk_pct": 0.0, "ev": round(ev, 3)}
@@ -130,15 +112,17 @@ def generate_trade_plan(cf: CandidateFeature, strategies: List[str], bayesian_wi
     else:
         target1 = int(optimal_entry + (atr14 * QuantConfig.TARGET1_ATR_MULT))
     
+    # =========================================================================
+    # [수술 1순위] T2가 2.09로 고정되던 Fibo 강제 비교(max) 로직 폐기
+    # =========================================================================
     m_state_mult = QuantConfig.TARGET2_MARKET_MULT.get(m_state, 1.0)
     adjusted_target2_mult = target2_mult * m_state_mult
-    target2_3r = optimal_entry + (stop_distance * adjusted_target2_mult)
     
-    fibo_target2 = optimal_entry + (stop_distance * 2.618 * m_state_mult)
-    target2 = max(int(target2_3r), int(fibo_target2))
+    # 전략별 타겟 배수(target2_mult)를 순수하게 반영
+    base_target2 = optimal_entry + (stop_distance * adjusted_target2_mult)
     
-    if target2 <= target1:
-        target2 = target1 + int(atr14)
+    # 단, T2가 T1과 같거나 작아지는 모순을 방지하기 위해 최소 간격(1 ATR) 강제 보장
+    target2 = max(int(base_target2), target1 + int(atr14))
     
     target_dist_1 = target1 - optimal_entry
     target_dist_2 = target2 - optimal_entry
