@@ -9,24 +9,28 @@ def calculate_dynamic_sizing(entry: float, stop_distance: float, return_var_20d:
     if stop_distance <= 0 or expected_reward_rr <= 0 or ev < QuantConfig.MIN_EV_THRESHOLD: 
         return {"qty": 0, "amount": 0, "weight_pct": 0.0, "actual_risk_pct": 0.0, "ev": round(ev, 3)}
     
-    # [핵심] 수익률 분산(Return Variance) 기반의 Merton-Kelly 공식 도입 (f = μ / σ²)
-    # expected_return 근사치 산출 (리스크 금액 기준)
-    mu = ev
-    sigma_sq = return_var_20d + 1e-8 
+    # [Kelly 수정] 이산형 트레이딩 표준 Kelly 공식 적용
+    W = bayesian_win_rate
+    R = expected_reward_rr
     
-    merton_kelly = mu / sigma_sq
-    # 과대 베팅 방지를 위한 스케일 다운 및 Half-Kelly 적용
-    kelly_fraction = min(max(0.0, merton_kelly * 0.05), QuantConfig.KELLY_MAX_CAP)
+    kelly_fraction = W - ((1.0 - W) / R)
     
-    target_risk_pct = kelly_fraction * QuantConfig.KELLY_FRACTION_MULT * 100.0
+    # 켈리 비중이 음수(통계적 우위 없음)면 매수 차단
+    if kelly_fraction <= 0:
+        return {"qty": 0, "amount": 0, "weight_pct": 0.0, "actual_risk_pct": 0.0, "ev": round(ev, 3)}
+        
+    # 과대 베팅 방지를 위한 Half-Kelly (또는 설정된 비율) 적용
+    adjusted_kelly = kelly_fraction * QuantConfig.KELLY_FRACTION_MULT
+    target_risk_pct = min(adjusted_kelly * 100.0, QuantConfig.KELLY_MAX_CAP * 100.0)
 
+    # 변동성(ATR) 기반 타겟 리스크 조정
     vol_target_risk = QuantConfig.VOLATILITY_TARGET_PCT / max(atr_pct, 1e-5)
     target_risk_pct = min(target_risk_pct, vol_target_risk)
     
     risk_amount = total_equity * (target_risk_pct / 100.0)
     position_size_krw = (risk_amount / stop_distance) * entry if stop_distance > 0 else 0
     
-    # [핵심] ADV + Spread/Depth 고려 (단순 ADV 참여율이 아닌 변동성 연동 유동성 캡)
+    # ADV + Spread/Depth 고려 (단순 ADV 참여율이 아닌 변동성 연동 유동성 캡)
     slippage_adj = max(1.0, atr_pct * 10.0)
     liq_cap_krw = (adv_100m * 100_000_000 * QuantConfig.ADV_PARTICIPATION_RATE) / slippage_adj
     position_size_krw = min(position_size_krw, liq_cap_krw)
@@ -112,16 +116,13 @@ def generate_trade_plan(cf: CandidateFeature, strategies: List[str], bayesian_wi
     else:
         target1 = int(optimal_entry + (atr14 * QuantConfig.TARGET1_ATR_MULT))
     
-    # =========================================================================
-    # [수술 1순위] T2가 2.09로 고정되던 Fibo 강제 비교(max) 로직 폐기
-    # =========================================================================
+    # [T2 수정] Fibo 강제 비교 폐기, 전략별 멀티플(adjusted_target2_mult) 정상 작동
     m_state_mult = QuantConfig.TARGET2_MARKET_MULT.get(m_state, 1.0)
     adjusted_target2_mult = target2_mult * m_state_mult
     
-    # 전략별 타겟 배수(target2_mult)를 순수하게 반영
     base_target2 = optimal_entry + (stop_distance * adjusted_target2_mult)
     
-    # 단, T2가 T1과 같거나 작아지는 모순을 방지하기 위해 최소 간격(1 ATR) 강제 보장
+    # 단, T2가 T1과 같거나 작아지는 모순 방지를 위해 최소 간격(1 ATR) 보장
     target2 = max(int(base_target2), target1 + int(atr14))
     
     target_dist_1 = target1 - optimal_entry
