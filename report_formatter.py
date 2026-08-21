@@ -1,119 +1,121 @@
 # report_formatter.py
 import logging
 import html
-from typing import Tuple, List
+from typing import Tuple, List, Dict, Any
 
 _logger = logging.getLogger(__name__)
 
-def safe_html(text) -> str:
-    if not text:
-        return ""
-    return html.escape(str(text))
+def format_market_report(m_ctx: dict) -> str:
+    try:
+        state = m_ctx.get("state", "UNKNOWN")
+        score = m_ctx.get("score", 0.0)
+        kospi = m_ctx.get("kospi_1d", 0.0)
+        kosdaq = m_ctx.get("kosdaq_1d", 0.0)
+        advance = m_ctx.get("advance_ratio", 0.0)
+        allow_scan = m_ctx.get("allow_scan", False)
 
-def format_market_report(stats: dict) -> str:
-    state = stats.get("state", "UNKNOWN")
-    scan_status = "✅ 허용" if stats.get("allow_scan") else "🚫 차단"
-    msg = f"=== 📊 [1/5] MARKET ===\n"
-    msg += f"신규 추천 게이트 : <b>{scan_status}</b>\n"
-    msg += f"시장 국면 : {safe_html(state)} ({stats.get('score', 0):.0f}점)\n"
-    msg += f"KOSPI : {stats.get('kospi_1d', 0.0)}% | KOSDAQ: {stats.get('kosdaq_1d', 0.0)}%\n"
-    msg += f"Breadth (상승비율) : {stats.get('advance_ratio', 0.0)}%\n"
-    warning = stats.get("warning", "")
-    if warning:
-        msg += f"⚠️ {safe_html(warning)}\n"
-    return msg
+        lines = [
+            "📈 <b>[시장 환경 및 상태 리포트]</b>",
+            f"• 시장 상태: <b>{state}</b> (점수: {score:.1f})",
+            f"• 신규 매수 허용: <b>{'허용 (GATE OPEN)' if allow_scan else '차단 (GATE CLOSED)'}</b>",
+            f"• 지수 변동: KOSPI {kospi:+.2f}% | KOSDAQ {kosdaq:+.2f}%",
+            f"• 상승 종목 비율: {advance:.1f}%"
+        ]
+        return "\n".join(lines)
+    except Exception as e:
+        _logger.error(f"Market report formatting failed: {e}")
+        return "📈 <b>[시장 환경 및 상태 리포트]</b>\n- 데이터 포맷팅 중 오류 발생"
 
-def format_holding_report(holding_evals: list, success: bool = True) -> str:
-    msg = "=== 💼 [2/5] HOLDINGS ===\n"
-    if not success:
-        return msg + "⚠️ 보유종목 상태 불명 (데이터 로드 실패)\n"
-    if not holding_evals:
-        return msg + "보유 종목 없음\n"
-    
-    lines = []
-    for i, item in enumerate(holding_evals, 1):
-        name = safe_html(item.get("name", "UNKNOWN"))
-        action = item.get("action", "HOLD")
-        rtn = item.get("return_rate", 0.0)
-        circle_num = chr(0x2460 + i - 1) if 1 <= i <= 20 else f"{i}."
-        lines.append(f"{circle_num} <b>{name}</b>")
-        lines.append(f"   {rtn:+.2f}%")
-        
-        if action == "EXIT":
-            reason = item.get("exit_reason", "판정 근거 미전달")
-            lines.append(f"   🔴 EXIT\n   {safe_html(reason)}\n")
-        elif action == "REDUCE":
-            lines.append(f"   🟠 REDUCE\n   비중 축소 필요\n")
-        elif action == "DATA_MISSING":
-            lines.append(f"   ⚠️ DATA_MISSING\n   시세 확인 불가\n")
-        else:
-            lines.append(f"   🟢 HOLD\n   트레일링 스탑 유지\n")
-            
-    return msg + "\n".join(lines)
+def format_holding_report(holdings: list) -> str:
+    try:
+        if not holdings:
+            return "📋 <b>[보유 종목 평가 리포트]</b>\n- 현재 보유 중인 종목이 없습니다."
+
+        lines = ["📋 <b>[보유 종목 평가 리포트]</b>"]
+        for h in holdings:
+            name = html.escape(str(h.get("name", "Unknown")))
+            action = h.get("action", "HOLD")
+            rtn = h.get("return_rate", 0.0)
+            lines.append(f"• <b>{name}</b>: 액션 <b>{action}</b> (수익률: {rtn:+.2f}%)")
+        return "\n".join(lines)
+    except Exception as e:
+        _logger.error(f"Holding report formatting failed: {e}")
+        return "📋 <b>[보유 종목 평가 리포트]</b>\n- 데이터 포맷팅 중 오류 발생"
 
 def format_scanner_health(telemetry: dict) -> str:
-    is_ran = telemetry.get("is_ran", False)
-    if not is_ran:
-        return "=== 🔬 [3/5] SCANNER ALERT ===\n스캐너 : ❌ FAILED (데이터 파이프라인 장애)\n"
-    fetch_fail = telemetry.get("fetch_fail", 0)
-    if fetch_fail > 10:
-        msg = "=== 🔬 [3/5] SCANNER WARNING ===\n"
-        msg += f"탐색 Universe : {telemetry.get('total_universe', 0):,}개\n"
-        msg += f"FDR Fetch 실패 : {fetch_fail}건 (네트워크 불안정 의심)\n"
-        msg += f"Feature 통과   : {telemetry.get('feature_pass', 0)}개\n"
-        return msg
-    return f"=== 🔬 [3/5] SCANNER HEALTH ===\n스캐너 : ✅ 정상 (스캔 {telemetry.get('total_universe', 0):,}개 ➡️ 통과 {telemetry.get('feature_pass', 0)}개)\n"
+    try:
+        is_ran = telemetry.get("is_ran", False)
+        if not is_ran:
+            return "🔍 <b>[스캐너 헬스 리포트]</b>\n- 스캐너가 실행되지 않았습니다."
 
-def format_decision_report(signal_stats: dict) -> str:
-    engine_status = signal_stats.get("engine_status", "UNKNOWN")
-    if engine_status == "ERROR":
-        return "=== 🧠 [4/5] DECISION ENGINE ===\n상태 : ❌ ERROR\n사유 : Runtime Exception\n"
-    elif engine_status in ("NOT_RUN", "SKIPPED"):
-        reason = safe_html(signal_stats.get("engine_skip_reason", "알 수 없는 사유"))
-        return f"=== 🧠 [4/5] DECISION ENGINE ===\n상태 : ⚠️ {engine_status}\n사유 : {reason}\n"
+        total = telemetry.get("total_universe", 0)
+        pass_cnt = telemetry.get("feature_pass", 0)
+        fail_cnt = telemetry.get("fetch_fail", 0)
+        active_scanned = telemetry.get("active_scanned", 0)
+        active_tracked = telemetry.get("active_tracked", 0)
 
-    msg = "=== 🧠 [4/5] DECISION ENGINE ===\n상태 : ✅ SUCCESS\n\n[후보 등급 분포]\n"
-    display_order = ["LEVEL 3", "LEVEL 2", "LEVEL 1", "WATCH A", "WATCH B", "WATCH C", "HOLD", "REDUCE", "EXIT", "GATED"]
-    has_data = False
-    level_counts = signal_stats.get("level_counts", {})
-    for lvl in display_order:
-        count = level_counts.get(lvl, 0)
-        if count > 0:
-            msg += f"- {lvl:<7} : {count}건\n"
-            has_data = True
-    if not has_data:
-        msg += "- 분류된 후보 없음\n"
-    return msg
+        lines = [
+            "🔍 <b>[스캐너 헬스 리포트]</b>",
+            f"• 전체 유니버스: {total}개",
+            f"• 통과 후보: {pass_cnt}개 (수집 실패: {fail_cnt}개)",
+            f"• 활성 종목 스캔 커버리지: {active_scanned}/{active_tracked}"
+        ]
+        return "\n".join(lines)
+    except Exception as e:
+        _logger.error(f"Scanner health report formatting failed: {e}")
+        return "🔍 <b>[스캐너 헬스 리포트]</b>\n- 헬스 데이터 포맷팅 중 오류 발생"
 
-def format_promotion_blocks(signal_stats: dict) -> Tuple[str, List[str]]:
-    engine_status = signal_stats.get("engine_status", "UNKNOWN")
-    if engine_status != "SUCCESS":
-        return "", []
-    
-    promotions = signal_stats.get("promotions", [])
-    if not promotions:
-        return "", []
+def format_decision_report(stats: dict) -> str:
+    try:
+        counts = stats.get("level_counts", {})
+        block_reason = stats.get("block_reason", "")
+        buy_blocked = stats.get("engine_buy_blocked", True)
+
+        lines = [
+            "🤖 <b>[의사결정 엔진 리포트]</b>",
+            f"• 매수 차단 여부: <b>{'차단됨' if buy_blocked else '정상'}</b>"
+        ]
+        if block_reason:
+            lines.append(f"• 차단 사유: {html.escape(block_reason)}")
         
-    blocks = []
-    summary_msg = f"=== 🚀 [5/5] PROMOTIONS ===\n총 {len(promotions)}건 신규 편입/승격\n"
-    for item in promotions:
-        code = item.get("code", "")
-        name = safe_html(item.get("name", ""))
-        lvl = item.get("level", "")
-        entry = item.get("entry", 0)
-        t1 = item.get("target1", 0)
-        stop = item.get("stop_loss", 0)
-        
-        block = f"🔥 <b>[{lvl}] {name}</b> ({code})\n"
-        block += f"• 매수가 : {entry:,}원\n"
-        block += f"• 목표가 : {t1:,}원\n"
-        block += f"• 손절가 : {stop:,}원"
-        blocks.append(block)
-        
-    return summary_msg, blocks
+        if counts:
+            level_strs = [f"{lvl}: {cnt}" for lvl, cnt in counts.items()]
+            lines.append(f"• 레벨별 분포: {', '.join(level_strs)}")
+        else:
+            lines.append("• 레벨별 분포: 평가된 후보 없음")
 
-def format_promotion_report(signal_stats: dict) -> str:
-    summary_msg, blocks = format_promotion_blocks(signal_stats)
-    if not summary_msg:
-        return ""
-    return summary_msg + "\n\n" + "\n\n".join(blocks)
+        return "\n".join(lines)
+    except Exception as e:
+        _logger.error(f"Decision report formatting failed: {e}")
+        return "🤖 <b>[의사결정 엔진 리포트]</b>\n- 엔진 리포트 포맷팅 중 오류 발생"
+
+def format_promotion_report(stats: dict) -> str:
+    """
+    [수정됨] 빈 문자열 반환으로 인한 Report Blocks Contract Violation 에러 방지 및 온전한 마크업 생성
+    """
+    try:
+        promotion_state = stats.get("promotion_state", "NOT_EVALUATED")
+        promotion_safe = stats.get("promotion_safe", True)
+        buy_failures = stats.get("buy_contract_failures", 0)
+        actual_signals = stats.get("actual_signals", [])
+
+        status_text = "승인됨 (SAFE)" if promotion_safe else f"차단됨 (FAIL: {buy_failures}건)"
+
+        lines = [
+            "🚀 <b>[프로모션 및 최종 시그널 리포트]</b>",
+            f"• 프로모션 상태: <b>{promotion_state}</b> ({status_text})",
+            f"• 최종 실행 시그널 수: {len(actual_signals)}개"
+        ]
+
+        if actual_signals:
+            for sig in actual_signals:
+                name = html.escape(str(sig.get("name", "Unknown")))
+                code = html.escape(str(sig.get("code", "")))
+                decision = sig.get("decision", {})
+                level = decision.get("level", "UNKNOWN")
+                lines.append(f"  - [{level}] {name} ({code})")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _logger.error(f"Promotion report formatting failed: {e}")
+        return "🚀 <b>[프로모션 및 최종 시그널 리포트]</b>\n- 프로모션 리포트 포맷팅 중 오류 발생"
