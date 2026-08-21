@@ -237,9 +237,6 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
         return "PATTERN_FAIL", None, latency
 
 def run_scanner(*args, **kwargs) -> List[CandidateFeature]:
-    """
-    위치 인자 및 키워드 인자 충돌(TypeError)을 100% 방어하기 위한 가변 인자 수용 함수
-    """
     active_tracked_codes = kwargs.get("active_tracked_codes") or (args[0] if len(args) > 0 and isinstance(args[0], list) else None)
     market_ctx = kwargs.get("market_ctx") or (args[1] if len(args) > 1 and isinstance(args[1], dict) else {})
     price_cache = kwargs.get("price_cache") or (args[2] if len(args) > 2 and isinstance(args[2], dict) else None)
@@ -250,6 +247,7 @@ def run_scanner(*args, **kwargs) -> List[CandidateFeature]:
         price_cache = build_price_cache()
     if not price_cache:
         _logger.error("Price cache empty, scanner aborted.")
+        market_ctx.update({"is_ran": False, "total_universe": 0, "fetch_fail": 0, "feature_pass": 0})
         return []
 
     valid_items = []
@@ -319,5 +317,13 @@ def run_scanner(*args, **kwargs) -> List[CandidateFeature]:
             "total_p99": round(np.percentile(latency_stats["total"], 99), 1),
         }
     market_ctx["scanner_rejects"] = reject_counts
+
+    # 필수 텔레메트리 키 주입 (Missing scanner telemetry keys 에러 방지)
+    market_ctx.update({
+        "is_ran": True,
+        "total_universe": len(price_cache),
+        "fetch_fail": reject_counts.get("FETCH_FAIL", 0),
+        "feature_pass": len(features_list)
+    })
 
     return features_list
