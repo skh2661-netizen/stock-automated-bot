@@ -56,7 +56,6 @@ def _table_exists(conn, table_name: str) -> bool:
     return conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,)).fetchone() is not None
 
 def _column_exists(conn, table_name: str, column_name: str) -> bool:
-    """테이블 내 특정 컬럼의 존재 여부를 확인합니다."""
     if not _table_exists(conn, table_name):
         return False
     cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table_name})").fetchall()]
@@ -98,11 +97,11 @@ def _create_v3_schema(conn):
     c.execute(f'''CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, run_type TEXT, code TEXT, name TEXT, score INTEGER, buy_p INTEGER, target_1 INTEGER, target_2 INTEGER, stop_p INTEGER, price INTEGER, chg REAL, ma_gap REAL, prime_score INTEGER, final_rank REAL, conviction INTEGER, amount_strength REAL, rs_1d REAL, rs_5d REAL, rs_20d REAL, defense INTEGER, risk_level INTEGER, sent_telegram INTEGER DEFAULT 0, engine_version TEXT DEFAULT '{ENGINE_VERSION}')''')
     c.execute(f'''CREATE TABLE IF NOT EXISTS candidate_history (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_datetime TEXT, run_type TEXT, code TEXT, name TEXT, rank_position INTEGER, price INTEGER, chg REAL, prime_final REAL, prime_score REAL, conviction REAL, rs_1d REAL, rs_5d REAL, rs_20d REAL, ma_gap REAL, amount INTEGER, amount_strength REAL, risk_level INTEGER, is_leader INTEGER DEFAULT 0, created_at TEXT, feature_snapshot_json TEXT, engine_version TEXT DEFAULT '{ENGINE_VERSION}')''')
     c.execute('''CREATE TABLE IF NOT EXISTS top10_tracking (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_datetime TEXT, code TEXT, name TEXT, rank_position INTEGER, final_score REAL, risk_level INTEGER)''')
-    c.execute('''CREATE TABLE signal_master (signal_id TEXT NOT NULL PRIMARY KEY, code TEXT NOT NULL, signal_date TEXT NOT NULL, strategies TEXT NOT NULL, revision INTEGER NOT NULL, identity_origin TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(code, signal_date, revision))''')
-    c.execute('''CREATE TABLE signal_registry (signal_id TEXT NOT NULL PRIMARY KEY, code TEXT NOT NULL, name TEXT, signal_state TEXT CHECK(signal_state IN ('WATCH', 'CONFIRMED', 'INVALIDATED', 'EXPIRED')), first_seen_at TEXT, last_seen_at TEXT, last_price REAL, entry_price REAL, stop_loss REAL, target1 REAL, target2 REAL, ev REAL, expected_reward_rr REAL, current_level TEXT, confirmation_count INTEGER DEFAULT 1, invalidation_reason TEXT, updated_at TEXT, FOREIGN KEY(signal_id) REFERENCES signal_master(signal_id))''')
-    c.execute('''CREATE TABLE signal_history_log (id INTEGER PRIMARY KEY AUTOINCREMENT, signal_id TEXT NOT NULL, code TEXT, timestamp TEXT, level TEXT, ev REAL, signal_state TEXT, price REAL, action_note TEXT, FOREIGN KEY(signal_id) REFERENCES signal_master(signal_id))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS signal_master (signal_id TEXT NOT NULL PRIMARY KEY, code TEXT NOT NULL, signal_date TEXT NOT NULL, strategies TEXT NOT NULL, revision INTEGER NOT NULL, identity_origin TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(code, signal_date, revision))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS signal_registry (signal_id TEXT NOT NULL PRIMARY KEY, code TEXT NOT NULL, name TEXT, signal_state TEXT CHECK(signal_state IN ('WATCH', 'CONFIRMED', 'INVALIDATED', 'EXPIRED')), first_seen_at TEXT, last_seen_at TEXT, last_price REAL, entry_price REAL, stop_loss REAL, target1 REAL, target2 REAL, ev REAL, expected_reward_rr REAL, current_level TEXT, confirmation_count INTEGER DEFAULT 1, invalidation_reason TEXT, updated_at TEXT, FOREIGN KEY(signal_id) REFERENCES signal_master(signal_id))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS signal_history_log (id INTEGER PRIMARY KEY AUTOINCREMENT, signal_id TEXT NOT NULL, code TEXT, timestamp TEXT, level TEXT, ev REAL, signal_state TEXT, price REAL, action_note TEXT, FOREIGN KEY(signal_id) REFERENCES signal_master(signal_id))''')
     c.execute("CREATE INDEX IF NOT EXISTS idx_signal_history_log_id_time ON signal_history_log(signal_id, timestamp)")
-    c.execute('''CREATE TABLE signal_outcome (id INTEGER PRIMARY KEY AUTOINCREMENT, history_id INTEGER NOT NULL, signal_id TEXT NOT NULL, code TEXT, name TEXT, signal_date TEXT, price_at_signal INTEGER, after_1d_chg REAL DEFAULT 0.0, after_3d_chg REAL DEFAULT 0.0, after_5d_chg REAL DEFAULT 0.0, max_gain REAL DEFAULT 0.0, max_drawdown REAL DEFAULT 0.0, evaluation_status TEXT DEFAULT 'PENDING', market_regime TEXT, FOREIGN KEY(history_id) REFERENCES signal_history_log(id), FOREIGN KEY(signal_id) REFERENCES signal_master(signal_id), UNIQUE(history_id))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS signal_outcome (id INTEGER PRIMARY KEY AUTOINCREMENT, history_id INTEGER NOT NULL, signal_id TEXT NOT NULL, code TEXT, name TEXT, signal_date TEXT, price_at_signal INTEGER, after_1d_chg REAL DEFAULT 0.0, after_3d_chg REAL DEFAULT 0.0, after_5d_chg REAL DEFAULT 0.0, max_gain REAL DEFAULT 0.0, max_drawdown REAL DEFAULT 0.0, evaluation_status TEXT DEFAULT 'PENDING', market_regime TEXT, FOREIGN KEY(history_id) REFERENCES signal_history_log(id), FOREIGN KEY(signal_id) REFERENCES signal_master(signal_id), UNIQUE(history_id))''')
 
 def _migrate_v0_to_v3(conn):
     c = conn.cursor()
@@ -119,24 +118,22 @@ def bootstrap_db():
             raise RuntimeError("SQLITE_WAL_MODE_NOT_ACTIVE")
 
         current_ver = _get_current_schema_version(conn)
-        if current_ver < DB_SCHEMA_VERSION:
-            v9_exists = _table_exists(conn, "signal_master")
-            v8_exists = _table_exists(conn, "signal_registry") and not _column_exists(conn, "signal_registry", "signal_id")
+        
+        # 무조건 테이블 존재 여부를 확인하고 없으면 V3 스키마를 생성하도록 보완
+        conn.execute("BEGIN IMMEDIATE")
+        _create_v3_schema(conn)
 
+        if current_ver < DB_SCHEMA_VERSION:
+            v8_exists = _table_exists(conn, "signal_registry") and not _column_exists(conn, "signal_registry", "signal_id")
             if current_ver == 0 and v8_exists:
                 _backup_db_before_migration(conn)
-                conn.execute("BEGIN IMMEDIATE")
                 _migrate_v0_to_v3(conn)
-            elif current_ver == 0 and not v8_exists:
-                conn.execute("BEGIN IMMEDIATE")
-                _create_v3_schema(conn)
-            
-            _validate_v9_schema(conn)
-            c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO schema_meta (key, value, updated_at) VALUES ('version', ?, ?)", (str(DB_SCHEMA_VERSION), get_kst_now()))
-            conn.commit()
-        elif current_ver == DB_SCHEMA_VERSION:
-            _validate_v9_schema(conn)
+
+        _validate_v9_schema(conn)
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO schema_meta (key, value, updated_at) VALUES ('version', ?, ?)", (str(DB_SCHEMA_VERSION), get_kst_now()))
+        conn.commit()
+        _logger.info(f"DB Bootstrap to V{DB_SCHEMA_VERSION} Completed Safely.")
     except Exception as e:
         conn.rollback()
         _logger.critical(f"CRITICAL: DB Bootstrap Failed: {e}")
