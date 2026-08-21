@@ -153,10 +153,7 @@ def validate_trade_plan_contract(plan: dict, total_equity: float, market_state: 
     except Exception as e:
         return False, f"PLAN_EXCEPTION:{type(e).__name__}"
 
-def validate_scanner_result(raw_features: Any) -> tuple[bool, str]:
-    """
-    main.py 연동을 위해 기존 원본에 추가된 스캐너 결과 검증 함수
-    """
+def validate_scanner_result(raw_features) -> tuple[bool, str]:
     if raw_features is None:
         return False, "Scanner result is None"
     if not isinstance(raw_features, list):
