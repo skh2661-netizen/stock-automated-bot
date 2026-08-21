@@ -117,12 +117,10 @@ def bootstrap_db():
         if mode.lower() != "wal":
             raise RuntimeError("SQLITE_WAL_MODE_NOT_ACTIVE")
 
-        current_ver = _get_current_schema_version(conn)
-        
-        # 무조건 테이블 존재 여부를 확인하고 없으면 V3 스키마를 생성하도록 보완
         conn.execute("BEGIN IMMEDIATE")
         _create_v3_schema(conn)
 
+        current_ver = _get_current_schema_version(conn)
         if current_ver < DB_SCHEMA_VERSION:
             v8_exists = _table_exists(conn, "signal_registry") and not _column_exists(conn, "signal_registry", "signal_id")
             if current_ver == 0 and v8_exists:
@@ -176,9 +174,18 @@ def save_signal_transition(master_data: dict, registry_data: dict, log_data: dic
 
 def get_active_signals() -> dict:
     conn = get_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT * FROM signal_registry WHERE signal_state IN ('WATCH', 'CONFIRMED')")
-    rows = c.fetchall()
-    conn.close()
-    return {row['signal_id']: dict(row) for row in rows}
+    try:
+        c = conn.cursor()
+        # Self-Healing: 테이블이 존재하지 않으면 강제로 생성
+        if not _table_exists(conn, "signal_registry"):
+            _create_v3_schema(conn)
+            conn.commit()
+            
+        c.execute("SELECT * FROM signal_registry WHERE signal_state IN ('WATCH', 'CONFIRMED')")
+        rows = c.fetchall()
+        return {row['signal_id']: dict(row) for row in rows}
+    except Exception as e:
+        _logger.error(f"Failed to get active signals: {e}")
+        return {}
+    finally:
+        conn.close()
