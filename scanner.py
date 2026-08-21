@@ -1,4 +1,4 @@
-# scanner.py
+# scanner.py (Commit cdcb687 이전 원본 코드)
 import os
 import time
 import logging
@@ -247,7 +247,6 @@ def run_scanner(*args, **kwargs) -> List[CandidateFeature]:
         price_cache = build_price_cache()
     if not price_cache:
         _logger.error("Price cache empty, scanner aborted.")
-        market_ctx.update({"is_ran": False, "total_universe": 0, "fetch_fail": 0, "feature_pass": 0})
         return []
 
     valid_items = []
@@ -317,13 +316,5 @@ def run_scanner(*args, **kwargs) -> List[CandidateFeature]:
             "total_p99": round(np.percentile(latency_stats["total"], 99), 1),
         }
     market_ctx["scanner_rejects"] = reject_counts
-
-    # 필수 텔레메트리 키 주입 (Missing scanner telemetry keys 에러 방지)
-    market_ctx.update({
-        "is_ran": True,
-        "total_universe": len(price_cache),
-        "fetch_fail": reject_counts.get("FETCH_FAIL", 0),
-        "feature_pass": len(features_list)
-    })
 
     return features_list
