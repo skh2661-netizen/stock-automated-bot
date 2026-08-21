@@ -18,7 +18,7 @@ from models import CandidateFeature, PriceStructure, PricePattern, Volatility, M
 @dataclass
 class ScannerConfig:
     MAX_WORKERS: int = min(8, (os.cpu_count() or 4))
-    MAX_IO_WORKERS: int = 12           # FDR 다운로드용 스레드풀 (32는 차단 위험 있어 12로 완화)
+    MAX_IO_WORKERS: int = 12
     MIN_PRICE: int = 1000
     MAX_PRICE: int = 500000
     MIN_VOLUME: int = 100000
@@ -38,9 +38,6 @@ def _get_fdr_data_safe(symbol: str, start_date: str) -> Optional[pd.DataFrame]:
         return None
 
 def build_price_cache() -> Dict[str, Dict[str, Any]]:
-    """
-    KRX 전체 종목의 '당일' 시세를 한 번에 로드해서 캐시로 만든다.
-    """
     _logger.info("Building global price cache (KRX listing snapshot)...")
     def _try_load() -> Dict[str, Dict[str, Any]]:
         cache: Dict[str, Dict[str, Any]] = {}
@@ -239,12 +236,13 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
     except Exception:
         return "PATTERN_FAIL", None, latency
 
-def run_scanner(active_tracked_codes: Optional[List[str]] = None, market_ctx: Optional[Dict] = None, price_cache: Optional[Dict[str, Dict[str, Any]]] = None) -> List[CandidateFeature]:
+def run_scanner(*args, **kwargs) -> List[CandidateFeature]:
     """
-    스캐너 실행 함수 (active_tracked_codes 및 기존 인자 모두 수용)
+    위치 인자 및 키워드 인자 충돌(TypeError)을 100% 방어하기 위한 가변 인자 수용 함수
     """
-    if market_ctx is None:
-        market_ctx = {}
+    active_tracked_codes = kwargs.get("active_tracked_codes") or (args[0] if len(args) > 0 and isinstance(args[0], list) else None)
+    market_ctx = kwargs.get("market_ctx") or (args[1] if len(args) > 1 and isinstance(args[1], dict) else {})
+    price_cache = kwargs.get("price_cache") or (args[2] if len(args) > 2 and isinstance(args[2], dict) else None)
 
     _logger.info("Starting target generation (PriceCache pre-filter + ThreadPool I/O + multiprocessing CPU)")
 
