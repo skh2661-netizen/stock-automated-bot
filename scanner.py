@@ -1,4 +1,4 @@
-# scanner.py (Commit cdcb687 이전 원본 코드)
+# scanner.py (완전한 전체 코드 - 수정 반영)
 import os
 import time
 import logging
