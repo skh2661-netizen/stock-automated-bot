@@ -111,3 +111,9 @@ def format_promotion_blocks(signal_stats: dict) -> Tuple[str, List[str]]:
         blocks.append(block)
         
     return summary_msg, blocks
+
+def format_promotion_report(signal_stats: dict) -> str:
+    summary_msg, blocks = format_promotion_blocks(signal_stats)
+    if not summary_msg:
+        return ""
+    return summary_msg + "\n\n" + "\n\n".join(blocks)
