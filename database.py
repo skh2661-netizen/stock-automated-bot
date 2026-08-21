@@ -175,6 +175,7 @@ def save_signal_transition(master_data: dict, registry_data: dict, log_data: dic
 def get_active_signals() -> dict:
     conn = get_connection()
     try:
+        conn.row_factory = sqlite3.Row  # row_factory 복구 완료
         c = conn.cursor()
         # Self-Healing: 테이블이 존재하지 않으면 강제로 생성
         if not _table_exists(conn, "signal_registry"):
