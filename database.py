@@ -1,4 +1,3 @@
-# database.py
 import sqlite3
 import logging
 import hashlib
@@ -47,7 +46,7 @@ def is_valid_transition(old_state: str, new_state: str) -> bool:
     return new_state in VALID_TRANSITIONS.get(old_state, [])
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=5.0)
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -139,49 +138,86 @@ def bootstrap_db():
     finally:
         conn.close()
 
-def save_signal_transition(master_data: dict, registry_data: dict, log_data: dict) -> bool:
+def save_signal_transition(master_data: dict, registry_data: dict, log_data: dict) -> str:
+    """
+    [수정] 반환 타입을 bool -> str 상태값으로 변경.
+    signal_tracker.py는 "SUCCESS"/"DB_BUSY"/"REVISION_COLLISION"/"ACTIVE_LINEAGE_COLLISION"
+    문자열을 기대하는데, 기존엔 True/False만 반환해서 성공한 저장까지도
+    매번 실패로 오인되어 파이프라인 전체가 죽는 상태였음.
+    """
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         c = conn.cursor()
         sig_id = registry_data["signal_id"]
-        
+
         c.execute("SELECT 1 FROM signal_master WHERE signal_id=?", (sig_id,))
         master_exists = c.fetchone() is not None
-        
+
         now_str = get_kst_now()
         registry_data["updated_at"] = now_str
         log_data["timestamp"] = now_str
 
         if not master_exists and master_data:
+            code = master_data["code"]
+            # [ACTIVE_LINEAGE_COLLISION] 같은 종목에 이미 WATCH/CONFIRMED 활성 신호가
+            # 있는데 새 마스터를 또 만들려는 경우를 명시적으로 구분해서 반환한다.
+            c.execute(
+                "SELECT signal_id FROM signal_registry WHERE code=? AND signal_state IN ('WATCH','CONFIRMED')",
+                (code,),
+            )
+            existing_active = c.fetchone()
+            if existing_active and existing_active[0] != sig_id:
+                conn.rollback()
+                return "ACTIVE_LINEAGE_COLLISION"
+
             master_data["strategies"] = json.dumps(canonicalize_strategies(master_data.get("strategies", [])), ensure_ascii=False)
             master_data["identity_origin"] = "V9_RUNTIME"
             master_data["created_at"] = now_str
-            c.execute('''INSERT INTO signal_master (signal_id, code, signal_date, strategies, revision, identity_origin, created_at) VALUES (:signal_id, :code, :signal_date, :strategies, :revision, :identity_origin, :created_at)''', master_data)
+            try:
+                c.execute(
+                    '''INSERT INTO signal_master (signal_id, code, signal_date, strategies, revision, identity_origin, created_at)
+                       VALUES (:signal_id, :code, :signal_date, :strategies, :revision, :identity_origin, :created_at)''',
+                    master_data,
+                )
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                return "REVISION_COLLISION"
 
         c.execute('''INSERT INTO signal_registry (signal_id, code, name, signal_state, first_seen_at, last_seen_at, last_price, entry_price, stop_loss, target1, target2, ev, expected_reward_rr, current_level, confirmation_count, invalidation_reason, updated_at) VALUES (:signal_id, :code, :name, :signal_state, :first_seen_at, :last_seen_at, :last_price, :entry_price, :stop_loss, :target1, :target2, :ev, :expected_reward_rr, :current_level, :confirmation_count, :invalidation_reason, :updated_at) ON CONFLICT(signal_id) DO UPDATE SET signal_state = excluded.signal_state, last_seen_at = excluded.last_seen_at, last_price = excluded.last_price, entry_price = excluded.entry_price, stop_loss = excluded.stop_loss, target1 = excluded.target1, target2 = excluded.target2, ev = excluded.ev, expected_reward_rr = excluded.expected_reward_rr, current_level = excluded.current_level, confirmation_count = excluded.confirmation_count, invalidation_reason = excluded.invalidation_reason, updated_at = excluded.updated_at''', registry_data)
 
         c.execute('''INSERT INTO signal_history_log (signal_id, code, timestamp, level, ev, signal_state, price, action_note) VALUES (:signal_id, :code, :timestamp, :level, :ev, :signal_state, :price, :action_note)''', log_data)
 
         conn.commit()
-        return True
+        return "SUCCESS"
+
+    except sqlite3.OperationalError as e:
+        conn.rollback()
+        if "lock" in str(e).lower() or "busy" in str(e).lower():
+            _logger.warning(f"DB busy/locked: {e}")
+            return "DB_BUSY"
+        _logger.error(f"DB operational error: {e}")
+        return "DB_ERROR"
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
+        _logger.warning(f"Revision/uniqueness collision: {e}")
+        return "REVISION_COLLISION"
     except Exception as e:
         conn.rollback()
         _logger.error(f"Atomic Transition Failed: {e}")
-        return False
+        return "DB_ERROR"
     finally:
         conn.close()
 
 def get_active_signals() -> dict:
     conn = get_connection()
     try:
-        conn.row_factory = sqlite3.Row  # row_factory 복구 완료
+        conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        # Self-Healing: 테이블이 존재하지 않으면 강제로 생성
         if not _table_exists(conn, "signal_registry"):
             _create_v3_schema(conn)
             conn.commit()
-            
+
         c.execute("SELECT * FROM signal_registry WHERE signal_state IN ('WATCH', 'CONFIRMED')")
         rows = c.fetchall()
         return {row['signal_id']: dict(row) for row in rows}
