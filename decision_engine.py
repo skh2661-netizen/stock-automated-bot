@@ -23,7 +23,7 @@ def _optimize_portfolio(candidates: List[Dict], max_sector_exposure: int = 2) ->
 
 
 # ==========================================
-# 1단계: Evaluate — 필터링 + 전략 판별 + 트레이드플랜 산출 (원본 evaluate_candidates 전반부와 동일)
+# 1단계: Evaluate — 필터링 + 전략 판별 + 트레이드플랜 산출
 # ==========================================
 def evaluate_features(
     features_list: List[CandidateFeature],
@@ -33,7 +33,9 @@ def evaluate_features(
     p_state=None,
     is_holding_eval: bool = False,
     total_equity: float = 10_000_000,
-) -> Tuple[List[Dict], bool, str, Dict[str, int], set]:
+    active_tracked_codes: List[str] = None,
+) -> Tuple[List[Dict], bool, str, Dict[str, int], set, set]:
+    active_tracked_codes = set(active_tracked_codes or [])
     m_state = market_context.get("state", "UNKNOWN")
     holding_codes = {h["code"] for h in holdings_data} if holdings_data else set()
 
@@ -49,10 +51,15 @@ def evaluate_features(
             buy_blocked, block_reason = True, "슬롯 소진"
 
     pre_eval_data = []
+    engine_evaluated_codes = set()
     level_counts = {"LEVEL 3": 0, "LEVEL 2": 0, "LEVEL 1": 0, "WATCH A": 0, "WATCH B": 0, "WATCH C": 0, "HOLD": 0, "REDUCE": 0, "EXIT": 0, "GATED": 0}
 
     for cf in features_list:
-        if not is_holding_eval and cf.code in holding_codes:
+        code = cf.code
+        # 실제 엔진 평가 루프에 진입한 종목만 기록 (위조 add 배제)
+        engine_evaluated_codes.add(code)
+
+        if not is_holding_eval and code in holding_codes:
             continue
         if not is_holding_eval and cf.chg >= cf.risk.chg_limit:
             continue
@@ -96,13 +103,16 @@ def evaluate_features(
             "risk_score": risk_score
         })
 
-    return pre_eval_data, buy_blocked, block_reason, level_counts, holding_codes
+    return pre_eval_data, buy_blocked, block_reason, level_counts, holding_codes, engine_evaluated_codes
 
 
 # ==========================================
-# 2단계: Score — James-Stein Z-Score 및 종목별 점수 산출 (원본 중반부와 동일)
+# 2단계: Score — James-Stein Z-Score 및 종목별 점수 산출
 # ==========================================
 def score_features(pre_eval_data: List[Dict]) -> List[Dict]:
+    if not pre_eval_data:
+        return []
+
     df_eval = pd.DataFrame([{
         "code": d["cf"].code, "sector": d["sector"], "adj": d["adj"], "rs": d["rs"], "tval": np.log1p(max(0, d["tval"])), "risk": d["risk_score"]
     } for d in pre_eval_data])
@@ -163,7 +173,7 @@ def score_features(pre_eval_data: List[Dict]) -> List[Dict]:
 
 
 # ==========================================
-# 3단계: Rank — EV 필터, 정규화, 정렬, 티어(LEVEL/WATCH/HOLD) 부여 (원본 후반부와 동일)
+# 3단계: Rank — EV 필터, 정규화, 정렬, 티어 부여
 # ==========================================
 def rank_features(
     scored_results: List[Dict],
@@ -268,7 +278,7 @@ def rank_features(
 
 
 # ==========================================
-# 오케스트레이터 — 기존 evaluate_candidates와 동일한 시그니처/반환값
+# 오케스트레이터
 # ==========================================
 def evaluate_candidates(
     features_list: List[CandidateFeature],
@@ -278,20 +288,30 @@ def evaluate_candidates(
     p_state=None,
     is_holding_eval: bool = False,
     total_equity: float = 10_000_000,
-):
-    pre_eval_data, buy_blocked, block_reason, level_counts, holding_codes = evaluate_features(
-        features_list, market_context, sys_state, holdings_data, p_state, is_holding_eval, total_equity
+    active_tracked_codes: List[str] = None,
+) -> Dict[str, Any]:
+    active_tracked_codes = set(active_tracked_codes or [])
+
+    pre_eval_data, buy_blocked, block_reason, level_counts, holding_codes, engine_evaluated_codes = evaluate_features(
+        features_list, market_context, sys_state, holdings_data, p_state, is_holding_eval, total_equity, active_tracked_codes
     )
 
     if not pre_eval_data:
-        return {"market": market_context, "candidates": [], "alert_candidates": [], "buy_blocked": buy_blocked, "block_reason": block_reason, "level_counts": level_counts}
+        scored_results = []
+    else:
+        scored_results = score_features(pre_eval_data)
 
-    scored_results = score_features(pre_eval_data)
     final_portfolio = rank_features(scored_results, holding_codes, buy_blocked, is_holding_eval, level_counts)
 
     alert_cands = [r for r in final_portfolio if r["decision"]["level"] in ["LEVEL 3", "WATCH A"]]
 
     return {
-        "market": market_context, "candidates": final_portfolio, "alert_candidates": alert_cands,
-        "buy_blocked": buy_blocked, "block_reason": block_reason, "level_counts": level_counts
+        "market": market_context,
+        "candidates": final_portfolio,
+        "alert_candidates": alert_cands,
+        "buy_blocked": buy_blocked,
+        "block_reason": block_reason,
+        "level_counts": level_counts,
+        "active_tracked_codes": active_tracked_codes,
+        "engine_evaluated_codes": engine_evaluated_codes,
     }
