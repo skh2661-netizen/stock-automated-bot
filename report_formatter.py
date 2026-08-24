@@ -35,8 +35,20 @@ def format_holding_report(holdings: list) -> str:
         for h in holdings:
             name = html.escape(str(h.get("name", "Unknown")))
             action = h.get("action", "HOLD")
+
+            if action == "DATA_MISSING":
+                data_status = html.escape(str(h.get("data_status", "가격조회실패")))
+                lines.append(f"• <b>{name}</b>: <b>❓ 데이터 누락</b> ({data_status})")
+                continue
+
             rtn = h.get("return_rate", 0.0)
-            lines.append(f"• <b>{name}</b>: 액션 <b>{action}</b> (수익률: {rtn:+.2f}%)")
+            line = f"• <b>{name}</b>: 액션 <b>{action}</b> (수익률: {rtn:+.2f}%)"
+
+            exit_reason = h.get("exit_reason", "")
+            if action == "EXIT" and exit_reason:
+                line += f"\n   └ 사유: {html.escape(str(exit_reason))}"
+
+            lines.append(line)
         return "\n".join(lines)
     except Exception as e:
         _logger.error(f"Holding report formatting failed: {e}")
@@ -77,7 +89,7 @@ def format_decision_report(stats: dict) -> str:
         ]
         if block_reason:
             lines.append(f"• 차단 사유: {html.escape(block_reason)}")
-        
+
         if counts:
             level_strs = [f"{lvl}: {cnt}" for lvl, cnt in counts.items()]
             lines.append(f"• 레벨별 분포: {', '.join(level_strs)}")
@@ -90,9 +102,6 @@ def format_decision_report(stats: dict) -> str:
         return "🤖 <b>[의사결정 엔진 리포트]</b>\n- 엔진 리포트 포맷팅 중 오류 발생"
 
 def format_promotion_report(stats: dict) -> str:
-    """
-    [수정됨] 빈 문자열 반환으로 인한 Report Blocks Contract Violation 에러 방지 및 온전한 마크업 생성
-    """
     try:
         promotion_state = stats.get("promotion_state", "NOT_EVALUATED")
         promotion_safe = stats.get("promotion_safe", True)
