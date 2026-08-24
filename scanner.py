@@ -1,4 +1,3 @@
-# scanner.py (완전한 전체 코드 - 수정 반영)
 import os
 import time
 import logging
@@ -75,45 +74,45 @@ def build_price_cache() -> Dict[str, Dict[str, Any]]:
     _logger.info("Price cache built: %d symbols", len(cache))
     return cache
 
-def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature], Dict[str, float]]:
+def build_candidate_feature(args: Tuple) -> Tuple[str, str, Optional[CandidateFeature], Dict[str, float]]:
     symbol, name, market_str, sector_str, market_returns, df = args
     latency = {"ta": 0.0, "total": 0.0}
     t_start = time.perf_counter()
 
     if df is None or df.empty:
-        return "FETCH_FAIL", None, latency
+        return symbol, "FETCH_FAIL", None, latency
     try:
         close, volume, low, high, open_p = df['Close'], df['Volume'], df['Low'], df['High'], df['Open']
         current_price, current_vol = close.iloc[-1], volume.iloc[-1]
     except (KeyError, IndexError):
-        return "DATA_CORRUPT", None, latency
+        return symbol, "DATA_CORRUPT", None, latency
 
     if current_price <= 0 or current_vol <= 0:
-        return "INVALID_DATA", None, latency
+        return symbol, "INVALID_DATA", None, latency
     if not (CONFIG.MIN_PRICE <= current_price <= CONFIG.MAX_PRICE):
-        return "LOW_PRICE", None, latency
+        return symbol, "LOW_PRICE", None, latency
     if current_vol < CONFIG.MIN_VOLUME:
-        return "LOW_VOL", None, latency
+        return symbol, "LOW_VOL", None, latency
 
     trading_value_100m_today = (float(current_price) * float(current_vol)) / 100_000_000.0
     trading_value_100m_avg20 = float(np.mean(close.iloc[-20:].values * volume.iloc[-20:].values)) / 100_000_000.0 if len(close) >= 20 else trading_value_100m_today
     mixed_tval = (trading_value_100m_today * 0.7) + (trading_value_100m_avg20 * 0.3)
     if mixed_tval < QuantConfig.MIN_TRADING_VALUE_100M:
-        return "LOW_TVAL", None, latency
+        return symbol, "LOW_TVAL", None, latency
 
     if len(close) >= 60:
         ma60_fast = close.iloc[-60:].mean()
         if current_price < ma60_fast * 0.90:
-            return "MA60_DOWN", None, latency
+            return symbol, "MA60_DOWN", None, latency
     else:
-        return "DATA_LACK", None, latency
+        return symbol, "DATA_LACK", None, latency
 
     t1 = time.perf_counter()
     try:
         chg = round((current_price / close.iloc[-2] - 1) * 100, 2) if len(close) > 1 else 0.0
         vol_ma20 = np.mean(volume.iloc[-21:-1]) if len(volume) > 21 else np.mean(volume.iloc[:-1])
         if current_vol < vol_ma20 * 0.3:
-            return "VOL_DRY", None, latency
+            return symbol, "VOL_DRY", None, latency
         relative_vol_today = current_vol / vol_ma20 if vol_ma20 > 0 else 0.0
 
         ma5 = close.rolling(window=5).mean().iloc[-1]
@@ -130,7 +129,7 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
         mfi14 = mfi_series.iloc[-1] if mfi_series is not None and not mfi_series.empty else 50.0
 
         if not (np.isfinite(ma20) and np.isfinite(atr14) and atr14 > 0 and ma20 > 0):
-            return "INDICATOR_FAIL", None, latency
+            return symbol, "INDICATOR_FAIL", None, latency
 
         is_trend_up = bool(ma20 > ma60)
         if len(close) >= 5:
@@ -146,7 +145,7 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
         max_gap_allowed = min(max(3.0, atr_pct), QuantConfig.GAP_CHASE_MAX_PCT)
         return_var_20d = float(close.pct_change().iloc[-20:].var() * 252) if len(close) >= 20 else 0.0
     except Exception:
-        return "TA_CALC_FAIL", None, latency
+        return symbol, "TA_CALC_FAIL", None, latency
 
     latency["ta"] = (time.perf_counter() - t1) * 1000.0
 
@@ -164,7 +163,7 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
         if ma120 > 0 and current_price < ma120:
             true_rs_composite *= 0.5
     except Exception:
-        return "RS_FAIL", None, latency
+        return symbol, "RS_FAIL", None, latency
 
     try:
         vr_20 = np.sum(np.where(close.iloc[-20:] > close.shift(1).iloc[-20:], volume.iloc[-20:], 0)) / (np.sum(np.where(close.iloc[-20:] < close.shift(1).iloc[-20:], volume.iloc[-20:], 0)) + 1)
@@ -198,7 +197,7 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
         high_stay_days = int(np.sum(close.iloc[-60:] >= high_52w * 0.90)) if len(close) > 0 else 0
         is_5d_breakout = bool(current_price > high.iloc[-6:-1].max()) if len(high) > 6 else False
     except Exception:
-        return "PIVOT_FAIL", None, latency
+        return symbol, "PIVOT_FAIL", None, latency
 
     try:
         is_gap_up = low.iloc[-1] > high.iloc[-2] if len(high) > 1 else False
@@ -232,14 +231,16 @@ def build_candidate_feature(args: Tuple) -> Tuple[str, Optional[CandidateFeature
         risk = RiskProfile(atr_pct, chg_limit, max_gap_allowed)
 
         latency["total"] = (time.perf_counter() - t_start) * 1000.0
-        return "PASS", CandidateFeature(symbol, name, sector_str, float(current_price), chg, struc, pat, vty, mom, vol, risk), latency
+        return symbol, "PASS", CandidateFeature(symbol, name, sector_str, float(current_price), chg, struc, pat, vty, mom, vol, risk), latency
     except Exception:
-        return "PATTERN_FAIL", None, latency
+        return symbol, "PATTERN_FAIL", None, latency
 
-def run_scanner(*args, **kwargs) -> List[CandidateFeature]:
+def run_scanner(*args, **kwargs) -> Dict[str, Any]:
     active_tracked_codes = kwargs.get("active_tracked_codes") or (args[0] if len(args) > 0 and isinstance(args[0], list) else None)
     market_ctx = kwargs.get("market_ctx") or (args[1] if len(args) > 1 and isinstance(args[1], dict) else {})
     price_cache = kwargs.get("price_cache") or (args[2] if len(args) > 2 and isinstance(args[2], dict) else None)
+
+    active_tracked_codes = set(active_tracked_codes or [])
 
     _logger.info("Starting target generation (PriceCache pre-filter + ThreadPool I/O + multiprocessing CPU)")
 
@@ -247,14 +248,24 @@ def run_scanner(*args, **kwargs) -> List[CandidateFeature]:
         price_cache = build_price_cache()
     if not price_cache:
         _logger.error("Price cache empty, scanner aborted.")
-        return []
+        return {"features_list": [], "active_scanned_codes": set(), "active_tracked_codes": active_tracked_codes}
 
     valid_items = []
-    for code, meta in price_cache.items():
-        if (CONFIG.MIN_PRICE <= meta['price'] <= CONFIG.MAX_PRICE and meta['volume'] >= CONFIG.MIN_VOLUME and meta['trading_value_100m'] >= CONFIG.PRE_FILTER_MIN_TVAL_100M):
-            valid_items.append((code, meta))
+    scanner_target_codes = set()
+    scanner_fetch_failed_codes = set()
 
-    _logger.info("Pre-filter: %d / %d symbols kept for download", len(valid_items), len(price_cache))
+    for code, meta in price_cache.items():
+        is_tracked = code in active_tracked_codes
+        prefilter_pass = (
+            CONFIG.MIN_PRICE <= meta['price'] <= CONFIG.MAX_PRICE 
+            and meta['volume'] >= CONFIG.MIN_VOLUME 
+            and meta['trading_value_100m'] >= CONFIG.PRE_FILTER_MIN_TVAL_100M
+        )
+        if prefilter_pass or is_tracked:
+            valid_items.append((code, meta))
+            scanner_target_codes.add(code)
+
+    _logger.info("Pre-filter: %d / %d symbols kept for download (tracked forced-in=%d)", len(valid_items), len(price_cache), sum(1 for code, _ in valid_items if code in active_tracked_codes))
 
     market_returns = {"KOSPI": {}, "KOSDAQ": {}}
     idx_start_date = (datetime.datetime.now() - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
@@ -281,6 +292,8 @@ def run_scanner(*args, **kwargs) -> List[CandidateFeature]:
             df = future.result()
             if df is not None:
                 df_cache[code] = df
+            else:
+                scanner_fetch_failed_codes.add(code)
 
     reject_counts = {
         "FETCH_FAIL": 0, "INVALID_DATA": 0, "LOW_PRICE": 0, "LOW_VOL": 0, 
@@ -299,15 +312,21 @@ def run_scanner(*args, **kwargs) -> List[CandidateFeature]:
         args_list.append((code, meta['name'], meta['market'], meta['sector'], market_returns, df))
 
     features_list: List[CandidateFeature] = []
+    active_scanned_codes = set()
     latency_stats = {"ta": [], "total": []}
 
     with mp.Pool(processes=CONFIG.MAX_WORKERS, maxtasksperchild=50) as pool:
-        for reason, res, latency in pool.imap_unordered(build_candidate_feature, args_list):
+        for code, reason, res, latency in pool.imap_unordered(build_candidate_feature, args_list):
+            active_scanned_codes.add(code)
             reject_counts[reason] = reject_counts.get(reason, 0) + 1
-            if res:
+            if res is not None:
                 features_list.append(res)
                 latency_stats["ta"].append(latency["ta"])
                 latency_stats["total"].append(latency["total"])
+
+    scanner_missing_tracked = active_tracked_codes - active_scanned_codes
+    if scanner_missing_tracked:
+        _logger.warning("Scanner coverage gap detected (tracked not fully scanned): %s", sorted(scanner_missing_tracked))
 
     if latency_stats["total"]:
         market_ctx["latency_metrics_ms"] = {
@@ -316,5 +335,16 @@ def run_scanner(*args, **kwargs) -> List[CandidateFeature]:
             "total_p99": round(np.percentile(latency_stats["total"], 99), 1),
         }
     market_ctx["scanner_rejects"] = reject_counts
+    market_ctx["scanner_coverage"] = {
+        "tracked_count": len(active_tracked_codes),
+        "targeted_count": len(scanner_target_codes),
+        "scanned_count": len(active_scanned_codes),
+        "fetch_failed_count": len(scanner_fetch_failed_codes),
+        "missing_tracked_count": len(scanner_missing_tracked),
+    }
 
-    return features_list
+    return {
+        "features_list": features_list,
+        "active_scanned_codes": active_scanned_codes,
+        "active_tracked_codes": active_tracked_codes,
+    }
